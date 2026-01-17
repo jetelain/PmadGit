@@ -41,7 +41,7 @@ internal sealed class GitObjectStore
 			}
 		}
 
-		var result = await ReadObjectNoCacheAsync(hash, cancellationToken).ConfigureAwait(false);
+		var result = await ReadObjectImplAsync(hash, ReadObjectAsync, cancellationToken).ConfigureAwait(false);
 
 		lock (_cacheLock)
 		{
@@ -53,6 +53,19 @@ internal sealed class GitObjectStore
 
     public async Task<GitObjectData> ReadObjectNoCacheAsync(GitHash hash, CancellationToken cancellationToken = default)
     {
+        lock (_cacheLock)
+        {
+            if (_cache.TryGetValue(hash, out var cached))
+            {
+                return cached;
+            }
+        }
+
+        return await ReadObjectImplAsync(hash, ReadObjectNoCacheAsync, cancellationToken);
+    }
+
+    private async Task<GitObjectData> ReadObjectImplAsync(GitHash hash, Func<GitHash, CancellationToken, Task<GitObjectData>> resolver, CancellationToken cancellationToken)
+    {
         cancellationToken.ThrowIfCancellationRequested();
 
         var loose = await TryReadLooseObjectAsync(hash, cancellationToken).ConfigureAwait(false);
@@ -61,7 +74,6 @@ internal sealed class GitObjectStore
             return loose;
         }
 
-        var resolver = new Func<GitHash, CancellationToken, Task<GitObjectData>>(ReadObjectNoCacheAsync);
         var packs = await _packsTask.ConfigureAwait(false);
 
         foreach (var pack in packs)
@@ -75,7 +87,6 @@ internal sealed class GitObjectStore
 
         throw new FileNotFoundException($"Git object {hash} could not be found");
     }
-
 
     private async Task<GitObjectData?> TryReadLooseObjectAsync(GitHash hash, CancellationToken cancellationToken)
 	{
