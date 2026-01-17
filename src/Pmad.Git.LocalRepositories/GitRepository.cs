@@ -18,14 +18,14 @@ public sealed class GitRepository
     private readonly Dictionary<GitHash, GitTree> _treeCache = new();
     private readonly object _commitLock = new();
     private readonly object _treeLock = new();
-    private readonly Lazy<Dictionary<string, GitHash>> _references;
+    private readonly Lazy<Task<Dictionary<string, GitHash>>> _references;
 
     private GitRepository(string rootPath, string gitDirectory)
     {
         RootPath = rootPath;
         GitDirectory = gitDirectory;
         _objectStore = new GitObjectStore(gitDirectory);
-        _references = new Lazy<Dictionary<string, GitHash>>(LoadReferences, LazyThreadSafetyMode.ExecutionAndPublication);
+        _references = new Lazy<Task<Dictionary<string, GitHash>>>(LoadReferencesAsync, LazyThreadSafetyMode.ExecutionAndPublication);
     }
 
     /// <summary>
@@ -72,8 +72,11 @@ public sealed class GitRepository
     /// <param name="reference">Commit hash or reference name; HEAD if omitted.</param>
     /// <param name="cancellationToken">Token used to cancel the async operation.</param>
     /// <returns>The resolved <see cref="GitCommit"/>.</returns>
-    public Task<GitCommit> GetCommitAsync(string? reference = null, CancellationToken cancellationToken = default)
-        => GetCommitAsync(ResolveReference(reference ?? "HEAD"), cancellationToken);
+    public async Task<GitCommit> GetCommitAsync(string? reference = null, CancellationToken cancellationToken = default)
+    {
+        var hash = await ResolveReferenceAsync(reference, cancellationToken).ConfigureAwait(false);
+        return await GetCommitAsync(hash, cancellationToken).ConfigureAwait(false);
+    }
 
     /// <summary>
     /// Enumerates commits reachable from <paramref name="reference"/> in depth-first order.
@@ -83,7 +86,7 @@ public sealed class GitRepository
     /// <returns>An async stream of commits, newest first.</returns>
     public async IAsyncEnumerable<GitCommit> EnumerateCommitsAsync(string? reference = null, [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
-        var start = ResolveReference(reference ?? "HEAD");
+        var start = await ResolveReferenceAsync(reference, cancellationToken).ConfigureAwait(false);
         var visited = new HashSet<string>(StringComparer.Ordinal);
         var stack = new Stack<GitHash>();
         stack.Push(start);
@@ -294,42 +297,40 @@ public sealed class GitRepository
         return tree;
     }
 
-    private GitHash ResolveReference(string? reference)
+    private async Task<GitHash> ResolveReferenceAsync(string? reference, CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(reference) || reference!.Equals("HEAD", StringComparison.OrdinalIgnoreCase))
         {
-            return ResolveHead();
+            return await ResolveHeadAsync(cancellationToken).ConfigureAwait(false);
         }
 
-        if (GitHash.TryParse(reference, out var hash))
+        var nonEmptyReference = reference!;
+        if (GitHash.TryParse(nonEmptyReference, out var hash))
         {
             return hash;
         }
 
-        if (TryResolveReferencePath(reference, out hash))
+        var candidates = new[]
         {
-            return hash;
-        }
+            nonEmptyReference,
+            $"refs/heads/{nonEmptyReference}",
+            $"refs/tags/{nonEmptyReference}",
+            $"refs/remotes/{nonEmptyReference}"
+        };
 
-        if (TryResolveReferencePath($"refs/heads/{reference}", out hash))
+        foreach (var candidate in candidates)
         {
-            return hash;
-        }
-
-        if (TryResolveReferencePath($"refs/tags/{reference}", out hash))
-        {
-            return hash;
-        }
-
-        if (TryResolveReferencePath($"refs/remotes/{reference}", out hash))
-        {
-            return hash;
+            var resolved = await TryResolveReferencePathAsync(candidate, cancellationToken).ConfigureAwait(false);
+            if (resolved.HasValue)
+            {
+                return resolved.Value;
+            }
         }
 
         throw new InvalidOperationException($"Unknown reference '{reference}'");
     }
 
-    private GitHash ResolveHead()
+    private async Task<GitHash> ResolveHeadAsync(CancellationToken cancellationToken)
     {
         var headPath = Path.Combine(GitDirectory, "HEAD");
         if (!File.Exists(headPath))
@@ -337,13 +338,14 @@ public sealed class GitRepository
             throw new FileNotFoundException("HEAD reference not found", headPath);
         }
 
-        var content = File.ReadAllText(headPath).Trim();
+        var content = (await File.ReadAllTextAsync(headPath, cancellationToken).ConfigureAwait(false)).Trim();
         if (content.StartsWith("ref: ", StringComparison.Ordinal))
         {
             var target = content[5..].Trim();
-            if (TryResolveReferencePath(target, out var hash))
+            var resolved = await TryResolveReferencePathAsync(target, cancellationToken).ConfigureAwait(false);
+            if (resolved.HasValue)
             {
-                return hash;
+                return resolved.Value;
             }
 
             throw new InvalidOperationException($"Unable to resolve ref '{target}' pointed by HEAD");
@@ -357,30 +359,29 @@ public sealed class GitRepository
         throw new InvalidDataException("HEAD does not contain a valid reference");
     }
 
-    private bool TryResolveReferencePath(string referencePath, out GitHash hash)
+    private async Task<GitHash?> TryResolveReferencePathAsync(string referencePath, CancellationToken cancellationToken)
     {
         var normalized = referencePath.Replace('\\', '/');
-        var refs = _references.Value;
-        if (refs.TryGetValue(normalized, out hash))
+        var refs = await _references.Value.ConfigureAwait(false);
+        if (refs.TryGetValue(normalized, out var hash))
         {
-            return true;
+            return hash;
         }
 
         var filePath = Path.Combine(GitDirectory, normalized.Replace('/', Path.DirectorySeparatorChar));
         if (File.Exists(filePath))
         {
-            var content = File.ReadAllText(filePath).Trim();
+            var content = (await File.ReadAllTextAsync(filePath, cancellationToken).ConfigureAwait(false)).Trim();
             if (GitHash.TryParse(content, out hash))
             {
-                return true;
+                return hash;
             }
         }
 
-        hash = default;
-        return false;
+        return null;
     }
 
-    private Dictionary<string, GitHash> LoadReferences()
+    private async Task<Dictionary<string, GitHash>> LoadReferencesAsync()
     {
         var refs = new Dictionary<string, GitHash>(StringComparer.Ordinal);
         var refsRoot = Path.Combine(GitDirectory, "refs");
@@ -389,7 +390,7 @@ public sealed class GitRepository
             foreach (var file in Directory.EnumerateFiles(refsRoot, "*", SearchOption.AllDirectories))
             {
                 var relative = Path.GetRelativePath(GitDirectory, file).Replace('\\', '/');
-                var content = File.ReadAllText(file).Trim();
+                var content = (await File.ReadAllTextAsync(file).ConfigureAwait(false)).Trim();
                 if (GitHash.TryParse(content, out var hash))
                 {
                     refs[relative] = hash;
@@ -400,7 +401,8 @@ public sealed class GitRepository
         var packedRefs = Path.Combine(GitDirectory, "packed-refs");
         if (File.Exists(packedRefs))
         {
-            foreach (var line in File.ReadLines(packedRefs))
+            var lines = await File.ReadAllLinesAsync(packedRefs).ConfigureAwait(false);
+            foreach (var line in lines)
             {
                 var trimmed = line.Trim();
                 if (string.IsNullOrEmpty(trimmed) || trimmed.StartsWith('#') || trimmed.StartsWith('^'))
