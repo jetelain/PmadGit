@@ -2,7 +2,7 @@ name: .NET Linux Publish Pre-Release
 
 on:
   push:
-    branches: [ "main", "v*" ]
+    branches: [ "master", "v*" ]
     
 jobs:
   build:
