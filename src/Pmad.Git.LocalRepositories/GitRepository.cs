@@ -18,14 +18,14 @@ public sealed class GitRepository
     private readonly Dictionary<GitHash, GitTree> _treeCache = new();
     private readonly object _commitLock = new();
     private readonly object _treeLock = new();
-    private readonly Lazy<Task<Dictionary<string, GitHash>>> _references;
+    private Lazy<Task<Dictionary<string, GitHash>>> _references;
 
     private GitRepository(string rootPath, string gitDirectory)
     {
         RootPath = rootPath;
         GitDirectory = gitDirectory;
         _objectStore = new GitObjectStore(gitDirectory);
-        _references = new Lazy<Task<Dictionary<string, GitHash>>>(LoadReferencesAsync, LazyThreadSafetyMode.ExecutionAndPublication);
+        _references = CreateReferenceCache();
     }
 
     /// <summary>
@@ -247,6 +247,30 @@ public sealed class GitRepository
         }
     }
 
+    /// <summary>
+    /// Clears cached git metadata so subsequent operations reflect the current repository state.
+    /// </summary>
+    /// <param name="clearAllData">Clears all cached data, including data that should not change on normal git operations</param>
+    public void InvalidateCaches(bool clearAllData = false)
+    {
+        _objectStore.InvalidateCaches(clearAllData);
+
+        if (clearAllData)
+        {
+            lock (_commitLock)
+            {
+                _commitCache.Clear();
+            }
+
+            lock (_treeLock)
+            {
+                _treeCache.Clear();
+            }
+        }
+
+        Interlocked.Exchange(ref _references, CreateReferenceCache());
+    }
+
     private async Task<GitCommit> GetCommitAsync(GitHash hash, CancellationToken cancellationToken)
     {
         lock (_commitLock)
@@ -427,6 +451,9 @@ public sealed class GitRepository
 
         return refs;
     }
+
+    private Lazy<Task<Dictionary<string, GitHash>>> CreateReferenceCache()
+        => new Lazy<Task<Dictionary<string, GitHash>>>(LoadReferencesAsync, LazyThreadSafetyMode.ExecutionAndPublication);
 
     private static string NormalizePath(string path)
     {

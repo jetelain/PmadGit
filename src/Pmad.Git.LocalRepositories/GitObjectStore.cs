@@ -14,7 +14,7 @@ internal sealed class GitObjectStore
 	private readonly string _gitDirectory;
 	private readonly Dictionary<GitHash, GitObjectData> _cache = new();
 	private readonly object _cacheLock = new();
-	private readonly Task<List<PackEntry>> _packsTask;
+	private Task<List<PackEntry>> _packsTask;
 	private readonly int _hashLengthBytes;
 
 	public GitObjectStore(string gitDirectory)
@@ -28,6 +28,19 @@ internal sealed class GitObjectStore
 	/// Gets the number of bytes used to represent object hashes in this repository.
 	/// </summary>
 	public int HashLengthBytes => _hashLengthBytes;
+
+	public void InvalidateCaches(bool clearAllData = false)
+	{
+		if (clearAllData)
+		{
+			lock (_cacheLock)
+			{
+				_cache.Clear();
+			}
+		}
+
+		Interlocked.Exchange(ref _packsTask, LoadPackEntriesAsync());
+	}
 
 	public async Task<GitObjectData> ReadObjectAsync(GitHash hash, CancellationToken cancellationToken = default)
 	{

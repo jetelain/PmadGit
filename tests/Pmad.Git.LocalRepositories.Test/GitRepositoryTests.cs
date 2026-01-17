@@ -113,4 +113,36 @@ public sealed class GitRepositoryTests
 		Assert.Equal(targetCommit, commit.Id);
 		Assert.Equal("sha256 payload", Encoding.UTF8.GetString(fileContent));
 	}
+
+	[Fact]
+	public async Task InvalidateCaches_RefreshesBranchReferences()
+	{
+		using var repo = GitTestRepository.Create();
+		var gitRepository = GitRepository.Open(repo.WorkingDirectory);
+		var headRef = GetHeadReference(repo);
+
+		var initialCommit = await gitRepository.GetCommitAsync(headRef);
+		var updatedCommit = repo.Commit("Update after caching", ("cache.txt", Guid.NewGuid().ToString("N")));
+
+		var staleCommit = await gitRepository.GetCommitAsync(headRef);
+		Assert.Equal(initialCommit.Id, staleCommit.Id);
+
+		gitRepository.InvalidateCaches();
+
+		var refreshedCommit = await gitRepository.GetCommitAsync(headRef);
+		Assert.Equal(updatedCommit, refreshedCommit.Id);
+	}
+
+	private static string GetHeadReference(GitTestRepository repo)
+	{
+		var headPath = Path.Combine(repo.GitDirectory, "HEAD");
+		var content = File.ReadAllText(headPath).Trim();
+		if (!content.StartsWith("ref: ", StringComparison.Ordinal))
+		{
+			throw new InvalidOperationException("HEAD is not pointing to a symbolic reference");
+		}
+
+		return content[5..].Trim();
+	}
 }
+
