@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Text;
@@ -133,6 +134,142 @@ public sealed class GitRepositoryTests
 		Assert.Equal(updatedCommit, refreshedCommit.Id);
 	}
 
+	[Fact]
+	public async Task CreateCommitAsync_AddsFileAndUpdatesBranch()
+	{
+		using var repo = GitTestRepository.Create();
+		var gitRepository = GitRepository.Open(repo.WorkingDirectory);
+		var headRef = GetHeadReference(repo);
+		var metadata = CreateMetadata("Add file through API");
+
+		var commitHash = await gitRepository.CreateCommitAsync(
+			headRef,
+			new GitCommitOperation[]
+			{
+				new AddFileOperation("src/api.txt", Encoding.UTF8.GetBytes("api payload"))
+			},
+			metadata);
+
+		var headValue = repo.RunGit("rev-parse HEAD").Trim();
+		Assert.Equal(headValue, commitHash.Value);
+
+		var commit = await gitRepository.GetCommitAsync(commitHash.Value);
+		Assert.Equal(metadata.Message, commit.Message);
+		var content = await gitRepository.ReadFileAsync("src/api.txt", commitHash.Value);
+		Assert.Equal("api payload", Encoding.UTF8.GetString(content));
+	}
+
+	[Fact]
+	public async Task CreateCommitAsync_SupportsUpdateAndRemoveOperations()
+	{
+		using var repo = GitTestRepository.Create();
+		repo.Commit("Seed files", ("src/app.txt", "v1"), ("docs/old.md", "legacy"));
+		var gitRepository = GitRepository.Open(repo.WorkingDirectory);
+		var headRef = GetHeadReference(repo);
+		var metadata = CreateMetadata("Update and cleanup");
+
+		var commitHash = await gitRepository.CreateCommitAsync(
+			headRef,
+			new GitCommitOperation[]
+			{
+				new UpdateFileOperation("src/app.txt", Encoding.UTF8.GetBytes("v2")),
+				new RemoveFileOperation("docs/old.md"),
+				new AddFileOperation("src/new.txt", Encoding.UTF8.GetBytes("new"))
+			},
+			metadata);
+
+		var updatedApp = await gitRepository.ReadFileAsync("src/app.txt", commitHash.Value);
+		Assert.Equal("v2", Encoding.UTF8.GetString(updatedApp));
+
+		var newFile = await gitRepository.ReadFileAsync("src/new.txt", commitHash.Value);
+		Assert.Equal("new", Encoding.UTF8.GetString(newFile));
+
+		await Assert.ThrowsAsync<FileNotFoundException>(() => gitRepository.ReadFileAsync("docs/old.md", commitHash.Value));
+	}
+
+	[Fact]
+	public async Task CreateCommitAsync_CanMoveFiles()
+	{
+		using var repo = GitTestRepository.Create();
+		repo.Commit("Seed file", ("docs/readme.txt", "hello"));
+		var gitRepository = GitRepository.Open(repo.WorkingDirectory);
+		var headRef = GetHeadReference(repo);
+		var metadata = CreateMetadata("Move file");
+
+		var commitHash = await gitRepository.CreateCommitAsync(
+			headRef,
+			new GitCommitOperation[]
+			{
+				new MoveFileOperation("docs/readme.txt", "src/docs/readme.txt")
+			},
+			metadata);
+
+		var movedContent = await gitRepository.ReadFileAsync("src/docs/readme.txt", commitHash.Value);
+		Assert.Equal("hello", Encoding.UTF8.GetString(movedContent));
+		await Assert.ThrowsAsync<FileNotFoundException>(() => gitRepository.ReadFileAsync("docs/readme.txt", commitHash.Value));
+
+		var cliListing = repo.RunGit("ls-tree -r --name-only HEAD");
+		Assert.Contains("src/docs/readme.txt", cliListing.Split('\n', StringSplitOptions.RemoveEmptyEntries));
+	}
+
+	[Fact]
+	public async Task CreateCommitAsync_ReflectsChangesForGitCli()
+	{
+		using var repo = GitTestRepository.Create();
+		var gitRepository = GitRepository.Open(repo.WorkingDirectory);
+		var headRef = GetHeadReference(repo);
+		var metadata = CreateMetadata("CLI verification");
+
+		await gitRepository.CreateCommitAsync(
+			headRef,
+			new GitCommitOperation[]
+			{
+				new AddFileOperation("cli/sample.txt", Encoding.UTF8.GetBytes("cli payload"))
+			},
+			metadata);
+
+		var cliContent = repo.RunGit("show HEAD:cli/sample.txt").Trim();
+		Assert.Equal("cli payload", cliContent);
+
+		var gitAuthor = repo.RunGit("log -1 --pretty=%an").Trim();
+		Assert.Equal(metadata.AuthorName, gitAuthor);
+	}
+
+	[Fact]
+	public async Task CreateCommitAsync_RemoveMissingFileThrows()
+	{
+		using var repo = GitTestRepository.Create();
+		var gitRepository = GitRepository.Open(repo.WorkingDirectory);
+		var headRef = GetHeadReference(repo);
+
+		await Assert.ThrowsAsync<FileNotFoundException>(
+			() => gitRepository.CreateCommitAsync(
+				headRef,
+				new GitCommitOperation[]
+				{
+					new RemoveFileOperation("missing.txt")
+				},
+				CreateMetadata("Remove missing")));
+	}
+
+	[Fact]
+	public async Task CreateCommitAsync_NoEffectiveChangesThrows()
+	{
+		using var repo = GitTestRepository.Create();
+		repo.Commit("Seed", ("data.txt", "same"));
+		var gitRepository = GitRepository.Open(repo.WorkingDirectory);
+		var headRef = GetHeadReference(repo);
+
+		await Assert.ThrowsAsync<InvalidOperationException>(
+			() => gitRepository.CreateCommitAsync(
+				headRef,
+				new GitCommitOperation[]
+				{
+					new UpdateFileOperation("data.txt", Encoding.UTF8.GetBytes("same"))
+				},
+				CreateMetadata("No change")));
+	}
+
 	private static string GetHeadReference(GitTestRepository repo)
 	{
 		var headPath = Path.Combine(repo.GitDirectory, "HEAD");
@@ -144,5 +281,12 @@ public sealed class GitRepositoryTests
 
 		return content[5..].Trim();
 	}
+
+	private static GitCommitMetadata CreateMetadata(string message)
+		=> new(
+			message,
+			new GitCommitSignature("Api User",
+			"api@example.com",
+			new DateTimeOffset(2024, 1, 1, 12, 0, 0, TimeSpan.Zero)));
 }
 

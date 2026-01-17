@@ -1,6 +1,6 @@
 # Pmad.Git.LocalRepositories
 
-`Pmad.Git.LocalRepositories` is a lightweight .NET 8 library that lets you inspect local Git repositories without shelling out to the `git` executable. It can open a repository, resolve commits, enumerate trees, read blobs, and inspect file history directly from the `.git` directory. Both SHA-1 and SHA-256 object formats are supported.
+`Pmad.Git.LocalRepositories` is a lightweight .NET 8 library that lets you inspect local Git repositories, and do basic commit operations, without shelling out to the `git` executable. It can open a repository, resolve commits, enumerate trees, read blobs, and inspect file history directly from the `.git` directory. Both SHA-1 and SHA-256 object formats are supported.
 
 ## Installation
 
@@ -29,6 +29,23 @@ await foreach (var commit in repository.EnumerateCommitsAsync())
 {
     Console.WriteLine($"{commit.Id} {commit.Message}");
 }
+
+var metadata = new GitCommitMetadata(
+    message: "Automated change",
+    author: new GitCommitSignature(
+      name: "CI Bot",
+      email: "ci@example.com",
+      timestamp: DateTimeOffset.UtcNow));
+
+var commitId = await repository.CreateCommitAsync(
+    branchName: "main",
+    operations: new GitRepository.GitCommitOperation[]
+    {
+        new GitRepository.AddFileOperation("src/NewFile.txt", Encoding.UTF8.GetBytes("payload"))
+    },
+    metadata);
+
+Console.WriteLine($"Created commit {commitId.Value}");
 ```
 
 ### Opening a repository
@@ -43,6 +60,11 @@ await foreach (var commit in repository.EnumerateCommitsAsync())
 ### Reading file contents
 - `ReadFileAsync(path, reference)` returns the blob content at a path for a given commit/reference.
 - `GetFileHistoryAsync(path, reference)` yields commits where the blob hash changes.
+
+### Creating commits
+- `CreateCommitAsync(branch, operations, metadata)` applies add/update/remove operations directly to the Git object store and updates the provided branch reference without invoking the CLI.
+- Available operations derive from `GitCommitOperation` (`AddFileOperation`, `UpdateFileOperation`, `RemoveFileOperation`).
+- `GitCommitMetadata` captures the commit message plus author/committer identity and timestamps used to build the commit object.
 
 ## Testing
 

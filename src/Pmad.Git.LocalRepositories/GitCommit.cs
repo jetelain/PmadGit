@@ -1,5 +1,3 @@
-using System;
-using System.Collections.Generic;
 using System.Text;
 
 namespace Pmad.Git.LocalRepositories;
@@ -19,6 +17,8 @@ public sealed record GitCommit(
     IReadOnlyDictionary<string, string> Headers,
     string Message)
 {
+    private GitCommitMetadata? _metadata;
+
     /// <summary>
     /// Gets the raw author header, if present.
     /// </summary>
@@ -28,6 +28,11 @@ public sealed record GitCommit(
     /// Gets the raw committer header, if present.
     /// </summary>
     public string? Committer => Headers.TryGetValue("committer", out var value) ? value : null;
+
+    /// <summary>
+    /// Lazily parsed metadata derived from author and committer headers.
+    /// </summary>
+    public GitCommitMetadata Metadata => _metadata ??= CreateMetadata();
 
     /// <summary>
     /// Parses raw commit object content into a <see cref="GitCommit"/> instance.
@@ -104,5 +109,15 @@ public sealed record GitCommit(
         }
 
         return -1;
+    }
+
+    private GitCommitMetadata CreateMetadata()
+    {
+        var authorHeader = Author ?? throw new InvalidOperationException($"Commit {Id} does not contain an author header");
+        var author = GitCommitSignature.Parse(authorHeader);
+        var committerHeader = Committer;
+        var committer = committerHeader is null ? author : GitCommitSignature.Parse(committerHeader);
+
+        return new GitCommitMetadata(Message, author, committer);
     }
 }

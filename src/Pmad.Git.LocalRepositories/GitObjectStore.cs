@@ -1,11 +1,6 @@
-using System;
 using System.Buffers;
 using System.Buffers.Binary;
-using System.Collections.Generic;
-using System.IO;
 using System.IO.Compression;
-using System.Threading;
-using System.Threading.Tasks;
 
 namespace Pmad.Git.LocalRepositories;
 
@@ -138,7 +133,7 @@ internal sealed class GitObjectStore
 
 		var typeString = header[..spaceIndex];
 		var payload = content[(separator + 1)..];
-		return new GitObjectData(ParseType(typeString), payload);
+		return new GitObjectData(GitObjectTypeHelper.ParseType(typeString), payload);
 	}
 
 	private async Task<List<PackEntry>> LoadPackEntriesAsync()
@@ -218,14 +213,6 @@ internal sealed class GitObjectStore
 		return null;
 	}
 
-    private static GitObjectType ParseType(string type) => type switch
-    {
-        "commit" => GitObjectType.Commit,
-        "tree" => GitObjectType.Tree,
-        "blob" => GitObjectType.Blob,
-        "tag" => GitObjectType.Tag,
-        _ => throw new NotSupportedException($"Unsupported git object type '{type}'")
-    };
 
 	private sealed class PackEntry
 	{
@@ -735,5 +722,4 @@ internal sealed class GitObjectStore
 			return (offsets, largeOffsets);
 		}
 	}
-
 }

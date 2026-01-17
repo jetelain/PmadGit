@@ -1,5 +1,3 @@
-using System;
-
 namespace Pmad.Git.LocalRepositories;
 
 /// <summary>

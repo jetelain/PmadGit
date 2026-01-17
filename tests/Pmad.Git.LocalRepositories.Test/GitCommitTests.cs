@@ -56,4 +56,43 @@ public sealed class GitCommitTests
 
         Assert.Throws<InvalidOperationException>(() => GitCommit.Parse(commitId, Encoding.UTF8.GetBytes(payload)));
     }
+
+	[Fact]
+	public void ToMetadata_ParsesAuthorAndCommitterSignatures()
+	{
+		var commitId = new GitHash("dddddddddddddddddddddddddddddddddddddddd");
+		var treeId = new GitHash("eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee");
+		var payload = $"tree {treeId}\n" +
+		             "author Alice Author <alice@example.com> 1700000000 +0230\n" +
+		             "committer Carol Committer <carol@example.com> 1700003600 -0100\n\n" +
+		             "Metadata message";
+
+		var commit = GitCommit.Parse(commitId, Encoding.UTF8.GetBytes(payload));
+		var metadata = commit.Metadata;
+
+		Assert.Equal("Metadata message", metadata.Message);
+		Assert.Equal("Alice Author", metadata.AuthorName);
+		Assert.Equal("alice@example.com", metadata.AuthorEmail);
+		Assert.Equal(DateTimeOffset.FromUnixTimeSeconds(1_700_000_000).ToOffset(new TimeSpan(2, 30, 0)), metadata.AuthorDate);
+		Assert.Equal("Carol Committer", metadata.CommitterName);
+		Assert.Equal("carol@example.com", metadata.CommitterEmail);
+		Assert.Equal(DateTimeOffset.FromUnixTimeSeconds(1_700_003_600).ToOffset(new TimeSpan(-1, 0, 0)), metadata.CommitterDate);
+	}
+
+	[Fact]
+	public void ToMetadata_FallsBackToAuthorWhenCommitterMissing()
+	{
+		var commitId = new GitHash("ffffffffffffffffffffffffffffffffffffffff");
+		var treeId = new GitHash("1111111111111111111111111111111111111111");
+		var payload = $"tree {treeId}\n" +
+		             "author Solo Author <solo@example.com> 1700000000 +0000\n\n" +
+		             "Solo message";
+
+		var commit = GitCommit.Parse(commitId, Encoding.UTF8.GetBytes(payload));
+		var metadata = commit.Metadata;
+
+		Assert.Equal("Solo Author", metadata.CommitterName);
+		Assert.Equal("solo@example.com", metadata.CommitterEmail);
+		Assert.Equal(metadata.AuthorDate, metadata.CommitterDate);
+	}
 }
