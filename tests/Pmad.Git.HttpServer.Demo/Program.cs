@@ -1,3 +1,5 @@
+using Pmad.Git.HttpServer;
+
 namespace Pmad.Git.HttpServer.Demo
 {
     public class Program
@@ -8,6 +10,15 @@ namespace Pmad.Git.HttpServer.Demo
 
             // Add services to the container.
             builder.Services.AddRazorPages();
+
+            // Add Git Smart HTTP service (recommended - uses DI)
+            builder.Services.AddGitSmartHttp(options =>
+            {
+                options.RepositoryRoot = Path.Combine(builder.Environment.ContentRootPath, "Repositories");
+                options.EnableUploadPack = true;
+                options.EnableReceivePack = true;
+                options.Agent = "Pmad.Git.HttpServer.Demo/1.0";
+            });
 
             var app = builder.Build();
 
@@ -28,7 +39,11 @@ namespace Pmad.Git.HttpServer.Demo
 
             app.MapRazorPages();
 
+            // Map Git Smart HTTP endpoints (uses service from DI)
+            app.MapGitSmartHttp();
+
             app.Run();
         }
     }
 }
+

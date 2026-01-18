@@ -434,17 +434,19 @@ public sealed class GitSmartHttpEndToEndTest : IDisposable
             options.AllowSynchronousIO = true;
         });
 
+        // Register Git Smart HTTP service
+        builder.Services.AddGitSmartHttp(options =>
+        {
+            options.RepositoryRoot = _serverRepoRoot;
+            options.RoutePrefix = routePrefix;
+            options.EnableUploadPack = enableUploadPack;
+            options.EnableReceivePack = enableReceivePack;
+        });
+
         var app = builder.Build();
 
-        var options = new GitSmartHttpOptions
-        {
-            RepositoryRoot = _serverRepoRoot,
-            RoutePrefix = routePrefix,
-            EnableUploadPack = enableUploadPack,
-            EnableReceivePack = enableReceivePack
-        };
-
-        app.MapGitSmartHttp(options);
+        // Map Git Smart HTTP endpoints
+        app.MapGitSmartHttp();
 
         _host = app;
         await _host.StartAsync();
