@@ -119,6 +119,8 @@ public sealed class GitSmartHttpEndToEndTest : IDisposable
         {
             var bareRepoPath = Path.Combine(_serverRepoRoot, "fetch-test.git");
             RunGit(tempWorkDir, $"clone \"{bareRepoPath}\" .");
+            RunGit(tempWorkDir, "config user.name \"Test\"");
+            RunGit(tempWorkDir, "config user.email test@test.com");
             
             File.WriteAllText(Path.Combine(tempWorkDir, "new-file.txt"), "new content");
             RunGit(tempWorkDir, "add new-file.txt");
@@ -155,6 +157,8 @@ public sealed class GitSmartHttpEndToEndTest : IDisposable
         {
             var bareRepoPath = Path.Combine(_serverRepoRoot, "pull-test.git");
             RunGit(tempWorkDir, $"clone \"{bareRepoPath}\" .");
+            RunGit(tempWorkDir, "config user.name \"Test\"");
+            RunGit(tempWorkDir, "config user.email test@test.com");
             
             File.WriteAllText(Path.Combine(tempWorkDir, "pulled-file.txt"), "pulled content");
             RunGit(tempWorkDir, "add pulled-file.txt");
@@ -186,6 +190,8 @@ public sealed class GitSmartHttpEndToEndTest : IDisposable
 
         var cloneDir = Path.Combine(_clientWorkingDir, "push-test-clone");
         RunGit(_clientWorkingDir, $"clone {_serverUrl}/push-test.git {cloneDir}");
+        RunGit(cloneDir, "config user.name \"Test\"");
+        RunGit(cloneDir, "config user.email test@test.com");
 
         // Create new commit in clone
         File.WriteAllText(Path.Combine(cloneDir, "pushed-file.txt"), "pushed content");
