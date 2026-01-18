@@ -10,6 +10,7 @@ public sealed class GitCommitSignature
 {
     public GitCommitSignature(string name, string email, DateTimeOffset timestamp)
     {
+        // Note: git does not enforce any constraint on name and email
         if (string.IsNullOrWhiteSpace(name))
         {
             throw new ArgumentException("Signature name cannot be empty", nameof(name));
@@ -44,7 +45,7 @@ public sealed class GitCommitSignature
     }
 
     /// <summary>
-    /// Parses a git header signature value ("Name <email> 123456 +0100").
+    /// Parses a git header signature value ("Name &lt;email&gt; 123456 +0100").
     /// </summary>
     public static GitCommitSignature Parse(string header)
     {

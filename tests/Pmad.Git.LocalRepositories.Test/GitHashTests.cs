@@ -66,4 +66,41 @@ public sealed class GitHashTests
 		var hash = GitHash.FromBytes(bytes);
 		Assert.Equal(bytes, hash.ToByteArray());
 	}
+
+	[Fact]
+	public void TryParse_AllowsWhitespaceAroundValue()
+	{
+		var inner = new string('B', GitHash.Sha1HexLength);
+		var success = GitHash.TryParse($" \t{inner} \r\n", out var hash);
+		Assert.True(success);
+		Assert.Equal(inner.ToLowerInvariant(), hash.Value);
+	}
+
+	[Fact]
+	public void TryParse_NullValue_ReturnsFalse()
+	{
+		var success = GitHash.TryParse(null, out var hash);
+		Assert.False(success);
+		Assert.Equal(default, hash);
+	}
+
+	[Theory]
+	[InlineData(0)]
+	[InlineData(19)]
+	[InlineData(21)]
+	[InlineData(31)]
+	[InlineData(33)]
+	public void FromBytes_InvalidLength_Throws(int length)
+	{
+		var bytes = new byte[length];
+		Assert.Throws<ArgumentException>(() => GitHash.FromBytes(bytes));
+	}
+
+	[Fact]
+	public void Constructor_TrimsInputBeforeNormalizing()
+	{
+		var inner = new string('c', GitHash.Sha1HexLength);
+		var hash = new GitHash($" \n{inner} \t");
+		Assert.Equal(inner, hash.Value);
+	}
 }

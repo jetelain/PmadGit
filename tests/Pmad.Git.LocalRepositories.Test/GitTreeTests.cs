@@ -51,6 +51,49 @@ public sealed class GitTreeTests
         Assert.Throws<InvalidOperationException>(() => GitTree.Parse(treeId, entry));
     }
 
+	[Fact]
+	public void Parse_InvalidHashLength_Throws()
+	{
+		var treeId = new GitHash("3333333333333333333333333333333333333333");
+		Assert.Throws<ArgumentOutOfRangeException>(() => GitTree.Parse(treeId, Array.Empty<byte>(), 10));
+	}
+
+	[Fact]
+	public void Parse_NonOctalMode_Throws()
+	{
+		var treeId = new GitHash("4444444444444444444444444444444444444444");
+		var entry = CreateTreeEntry("100648", "invalid", GitHash.FromBytes(CreateSequentialBytes(4)));
+		Assert.Throws<InvalidOperationException>(() => GitTree.Parse(treeId, entry));
+	}
+
+	[Fact]
+	public void Parse_MissingNameTerminator_Throws()
+	{
+		var treeId = new GitHash("5555555555555555555555555555555555555555");
+		var entry = CreateEntryWithoutNameTerminator("100644", "file.txt", GitHash.FromBytes(CreateSequentialBytes(5)));
+		Assert.Throws<InvalidOperationException>(() => GitTree.Parse(treeId, entry));
+	}
+
+	[Fact]
+	public void Parse_RecognizesSubmoduleKind()
+	{
+		var treeId = new GitHash("6666666666666666666666666666666666666666");
+		var entry = CreateTreeEntry("160000", "submodule", GitHash.FromBytes(CreateSequentialBytes(6)));
+		var tree = GitTree.Parse(treeId, entry);
+		Assert.Single(tree.Entries);
+		Assert.Equal(GitTreeEntryKind.Submodule, tree.Entries[0].Kind);
+	}
+
+	[Fact]
+	public void Parse_SupportsSha256Entries()
+	{
+		var treeId = new GitHash("7777777777777777777777777777777777777777");
+		var sha256Hash = GitHash.FromBytes(CreateSequentialBytes(7, GitHash.Sha256ByteLength));
+		var content = CreateTreeEntry("100644", "payload.bin", sha256Hash);
+		var tree = GitTree.Parse(treeId, content, GitHash.Sha256ByteLength);
+		Assert.Equal(sha256Hash, tree.Entries[0].Hash);
+	}
+
     private static byte[] CreateTreeEntry(string mode, string name, GitHash hash)
     {
         using var buffer = new MemoryStream();
@@ -76,9 +119,9 @@ public sealed class GitTreeTests
         return result;
     }
 
-    private static byte[] CreateSequentialBytes(int seed)
-    {
-        var bytes = new byte[20];
+	private static byte[] CreateSequentialBytes(int seed, int length = GitHash.Sha1ByteLength)
+	{
+		var bytes = new byte[length];
         for (var i = 0; i < bytes.Length; i++)
         {
             bytes[i] = (byte)((i + seed) % 256);
@@ -86,6 +129,16 @@ public sealed class GitTreeTests
 
         return bytes;
     }
+
+	private static byte[] CreateEntryWithoutNameTerminator(string mode, string name, GitHash hash)
+	{
+		using var buffer = new MemoryStream();
+		buffer.Write(Encoding.ASCII.GetBytes(mode));
+		buffer.WriteByte((byte)' ');
+		buffer.Write(Encoding.UTF8.GetBytes(name));
+		buffer.Write(hash.ToByteArray());
+		return buffer.ToArray();
+	}
 
 	private static int ParseOctal(string value) => Convert.ToInt32(value, 8);
 }
