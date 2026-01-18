@@ -69,11 +69,11 @@ public sealed class GitSmartHttpEndpointRouteBuilderExtensionsTest
         // Arrange
         var services = new ServiceCollection();
         services.AddRouting();
-        // Add service but not options (unusual case)
-        services.AddSingleton(new GitSmartHttpService(new GitSmartHttpOptions 
-        { 
-            RepositoryRoot = CreateTemporaryDirectory() 
-        }));
+        // Add service and repository service but not options (unusual case)
+        services.AddSingleton<IGitRepositoryService, GitRepositoryService>();
+        services.AddSingleton(sp => new GitSmartHttpService(
+            new GitSmartHttpOptions { RepositoryRoot = CreateTemporaryDirectory() },
+            sp.GetRequiredService<IGitRepositoryService>()));
         var provider = services.BuildServiceProvider();
         
         var endpoints = new TestEndpointRouteBuilder(provider);

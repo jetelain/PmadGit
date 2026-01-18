@@ -18,13 +18,16 @@ public sealed class GitSmartHttpService
     private const string RepositoryRouteKey = "repository";
 
     private readonly GitSmartHttpOptions _options;
+    private readonly IGitRepositoryService _repositoryService;
     private readonly string _rootFullPath;
     private readonly GitPackBuilder _packBuilder = new();
     private readonly GitPackReader _packReader = new();
 
-    public GitSmartHttpService(GitSmartHttpOptions options)
+    public GitSmartHttpService(GitSmartHttpOptions options, IGitRepositoryService repositoryService)
     {
         _options = options ?? throw new ArgumentNullException(nameof(options));
+        _repositoryService = repositoryService ?? throw new ArgumentNullException(nameof(repositoryService));
+        
         if (string.IsNullOrWhiteSpace(_options.RepositoryRoot))
         {
             throw new ArgumentException("Repository root must be provided", nameof(options));
@@ -60,6 +63,10 @@ public sealed class GitSmartHttpService
         }
 
         var (repository, _) = repositoryContext.Value;
+        
+        // Invalidate caches to ensure we see latest refs from external changes
+        repository.InvalidateCaches();
+        
         context.Response.StatusCode = StatusCodes.Status200OK;
         context.Response.Headers.CacheControl = "no-cache";
         context.Response.ContentType = $"application/x-{serviceName}-advertisement";
@@ -118,7 +125,8 @@ public sealed class GitSmartHttpService
             return;
         }
 
-        var (repository, _) = repositoryContext.Value;
+        var (repository, repositoryName) = repositoryContext.Value;
+        var repositoryPath = ResolveRepositoryPath(repositoryName);
         var expectedHashLength = repository.HashLengthBytes * 2;
         var (updates, capabilities) = await ParseReceivePackCommandsAsync(context.Request.Body, expectedHashLength, cancellationToken).ConfigureAwait(false);
 
@@ -130,6 +138,9 @@ public sealed class GitSmartHttpService
             {
                 await _packReader.ReadAsync(repository, context.Request.Body, cancellationToken).ConfigureAwait(false);
                 unpackStatus = "unpack ok";
+                
+                // Invalidate caches after receiving new objects
+                repository.InvalidateCaches();
             }
             catch (Exception ex)
             {
@@ -186,7 +197,7 @@ public sealed class GitSmartHttpService
         try
         {
             var repositoryPath = ResolveRepositoryPath(repositoryName);
-            var repository = GitRepository.Open(repositoryPath);
+            var repository = _repositoryService.GetRepository(repositoryPath);
             return (repository, repositoryName);
         }
         catch

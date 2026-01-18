@@ -24,6 +24,9 @@ public sealed class GitSmartHttpServiceCollectionExtensionsTest
         Assert.NotNull(registeredOptions);
         Assert.Same(options, registeredOptions);
 
+        var repositoryService = provider.GetService<IGitRepositoryService>();
+        Assert.NotNull(repositoryService);
+
         var service = provider.GetService<GitSmartHttpService>();
         Assert.NotNull(service);
     }
@@ -51,6 +54,9 @@ public sealed class GitSmartHttpServiceCollectionExtensionsTest
         Assert.True(registeredOptions.EnableUploadPack);
         Assert.False(registeredOptions.EnableReceivePack);
 
+        var repositoryService = provider.GetService<IGitRepositoryService>();
+        Assert.NotNull(repositoryService);
+
         var service = provider.GetService<GitSmartHttpService>();
         Assert.NotNull(service);
     }
@@ -75,6 +81,12 @@ public sealed class GitSmartHttpServiceCollectionExtensionsTest
         Assert.NotNull(service1);
         Assert.NotNull(service2);
         Assert.Same(service1, service2); // Should be the same instance
+
+        var repoService1 = provider.GetService<IGitRepositoryService>();
+        var repoService2 = provider.GetService<IGitRepositoryService>();
+        Assert.NotNull(repoService1);
+        Assert.NotNull(repoService2);
+        Assert.Same(repoService1, repoService2); // Should be the same instance
     }
 
     [Fact]

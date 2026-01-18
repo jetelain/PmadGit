@@ -30,6 +30,7 @@ public static class GitSmartHttpServiceCollectionExtensions
         }
 
         services.TryAddSingleton(options);
+        services.TryAddSingleton<IGitRepositoryService, GitRepositoryService>();
         services.TryAddSingleton<GitSmartHttpService>();
 
         return services;

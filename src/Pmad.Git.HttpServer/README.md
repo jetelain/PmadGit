@@ -9,7 +9,7 @@
 
 ```csharp
 var builder = WebApplication.CreateBuilder(args);
-builder.Services.AddSingleton(new GitSmartHttpOptions
+builder.Services.AddGitSmartHttp(new GitSmartHttpOptions
 {
     RepositoryRoot = "/srv/git",
     EnableUploadPack = true,
