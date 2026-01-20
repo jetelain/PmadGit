@@ -126,7 +126,6 @@ public sealed class GitSmartHttpService
         }
 
         var (repository, repositoryName) = repositoryContext.Value;
-        var repositoryPath = ResolveRepositoryPath(repositoryName);
         var expectedHashLength = repository.HashLengthBytes * 2;
         var (updates, capabilities) = await ParseReceivePackCommandsAsync(context.Request.Body, expectedHashLength, cancellationToken).ConfigureAwait(false);
 
@@ -273,10 +272,11 @@ public sealed class GitSmartHttpService
             return;
         }
 
+        var builder = new StringBuilder();
         var first = true;
         foreach (var entry in entries)
         {
-            var builder = new StringBuilder();
+            builder.Clear();
             builder.Append(entry.Hash.Value).Append(' ').Append(entry.Name);
             if (first)
             {
@@ -558,7 +558,7 @@ public sealed class GitSmartHttpService
                 return RefStatus.Error(update.Name, "non-fast-forward");
             }
         }
-        else if (!update.OldValue.HasValue && snapshot.ContainsKey(normalized))
+        else if (snapshot.ContainsKey(normalized))
         {
             return RefStatus.Error(update.Name, "reference exists");
         }

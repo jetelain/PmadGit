@@ -434,12 +434,6 @@ public sealed class GitSmartHttpEndToEndTest : IDisposable
         // Configure to listen on a random available port
         builder.WebHost.UseUrls("http://127.0.0.1:0");
 
-        // Enable synchronous IO for compatibility with git clients
-        builder.Services.Configure<Microsoft.AspNetCore.Server.Kestrel.Core.KestrelServerOptions>(options =>
-        {
-            options.AllowSynchronousIO = true;
-        });
-
         // Register Git Smart HTTP service
         builder.Services.AddGitSmartHttp(options =>
         {
