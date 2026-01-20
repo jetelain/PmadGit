@@ -15,6 +15,12 @@ Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "Github", "Github", "{02EA68
 		README.md = README.md
 	EndProjectSection
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Pmad.Git.HttpServer.Demo", "tests\Pmad.Git.HttpServer.Demo\Pmad.Git.HttpServer.Demo.csproj", "{EF18F22D-8DEE-4096-BEC0-E746A6B3FC7C}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Pmad.Git.HttpServer", "src\Pmad.Git.HttpServer\Pmad.Git.HttpServer.csproj", "{4B9B5635-232D-47ED-92C8-94E7FC44CC80}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Pmad.Git.HttpServer.Test", "tests\Pmad.Git.HttpServer.Test\Pmad.Git.HttpServer.Test.csproj", "{18FABFFC-4A3F-4452-BA59-0A345C1EE186}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -29,6 +35,18 @@ Global
 		{BA8F4C20-3C86-48AA-AE40-63BB7687104B}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{BA8F4C20-3C86-48AA-AE40-63BB7687104B}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{BA8F4C20-3C86-48AA-AE40-63BB7687104B}.Release|Any CPU.Build.0 = Release|Any CPU
+		{EF18F22D-8DEE-4096-BEC0-E746A6B3FC7C}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{EF18F22D-8DEE-4096-BEC0-E746A6B3FC7C}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{EF18F22D-8DEE-4096-BEC0-E746A6B3FC7C}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{EF18F22D-8DEE-4096-BEC0-E746A6B3FC7C}.Release|Any CPU.Build.0 = Release|Any CPU
+		{4B9B5635-232D-47ED-92C8-94E7FC44CC80}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{4B9B5635-232D-47ED-92C8-94E7FC44CC80}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{4B9B5635-232D-47ED-92C8-94E7FC44CC80}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{4B9B5635-232D-47ED-92C8-94E7FC44CC80}.Release|Any CPU.Build.0 = Release|Any CPU
+		{18FABFFC-4A3F-4452-BA59-0A345C1EE186}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{18FABFFC-4A3F-4452-BA59-0A345C1EE186}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{18FABFFC-4A3F-4452-BA59-0A345C1EE186}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{18FABFFC-4A3F-4452-BA59-0A345C1EE186}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE

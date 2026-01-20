@@ -5,12 +5,13 @@
 		<ImplicitUsings>enable</ImplicitUsings>
 		<Nullable>enable</Nullable>
 		<IsAotCompatible>true</IsAotCompatible>
-
+		<EnableRequestDelegateGenerator>true</EnableRequestDelegateGenerator>
+		
 		<GeneratePackageOnBuild>true</GeneratePackageOnBuild>
 		<PackageLicenseExpression>MIT</PackageLicenseExpression>
 		<PackageProjectUrl>https://github.com/jetelain/PmadGit</PackageProjectUrl>
 		<PackageReadmeFile>README.md</PackageReadmeFile>
-		<Description>Lightweight .NET library that lets you inspect local Git repositories and do basic commit operations.</Description>
+		<Description>ASP.NET Core library that lets git synchronize with a server side stored repository.</Description>
 		<PublishRepositoryUrl>true</PublishRepositoryUrl>
 		<IncludeSymbols>true</IncludeSymbols>
 		<SymbolPackageFormat>snupkg</SymbolPackageFormat>
@@ -18,14 +19,19 @@
 	</PropertyGroup>
 
 	<ItemGroup>
+		<ProjectReference Include="..\Pmad.Git.LocalRepositories\Pmad.Git.LocalRepositories.csproj" />
 		<PackageReference Include="Microsoft.SourceLink.GitHub" Version="10.0.102" PrivateAssets="All" />
 	</ItemGroup>
+
 	<ItemGroup>
-		<InternalsVisibleTo Include="Pmad.Git.LocalRepositories.Test" />
-		<InternalsVisibleTo Include="Pmad.Git.HttpServer" />
+		<FrameworkReference Include="Microsoft.AspNetCore.App" />
 	</ItemGroup>
+	
+	<ItemGroup>
+		<InternalsVisibleTo Include="Pmad.Git.HttpServer.Test" />
+	</ItemGroup>
+	
 	<ItemGroup>
 		<None Include="README.md" Pack="true" PackagePath="\" />
 	</ItemGroup>
-
 </Project>

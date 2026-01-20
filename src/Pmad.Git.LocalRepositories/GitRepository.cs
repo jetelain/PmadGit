@@ -38,6 +38,11 @@ public sealed class GitRepository
     public string GitDirectory { get; }
 
     /// <summary>
+    /// Gets the number of bytes used for object identifiers in this repository.
+    /// </summary>
+    public int HashLengthBytes => _objectStore.HashLengthBytes;
+
+    /// <summary>
     /// Opens a git repository located at <paramref name="path"/> or its parent folders.
     /// </summary>
     /// <param name="path">Path pointing to a working tree or .git directory.</param>
@@ -361,6 +366,65 @@ public sealed class GitRepository
         Interlocked.Exchange(ref _references, CreateReferenceCache());
     }
 
+    /// <summary>
+    /// Reads a raw git object from the repository object database.
+    /// </summary>
+    /// <param name="hash">Identifier of the object to retrieve.</param>
+    /// <param name="cancellationToken">Token used to cancel the async operation.</param>
+    /// <returns>The decoded object payload.</returns>
+    public Task<GitObjectData> ReadObjectAsync(GitHash hash, CancellationToken cancellationToken = default)
+        => _objectStore.ReadObjectAsync(hash, cancellationToken);
+
+    /// <summary>
+    /// Writes a raw git object to the repository object database.
+    /// </summary>
+    /// <param name="type">Object kind to persist.</param>
+    /// <param name="content">Raw payload without headers.</param>
+    /// <param name="cancellationToken">Token used to cancel the async operation.</param>
+    /// <returns>The hash assigned to the stored object.</returns>
+    public Task<GitHash> WriteObjectAsync(GitObjectType type, ReadOnlyMemory<byte> content, CancellationToken cancellationToken = default)
+        => WriteObjectCoreAsync(type, content, cancellationToken);
+
+    /// <summary>
+    /// Returns a snapshot of all references stored in the repository.
+    /// </summary>
+    /// <param name="cancellationToken">Token used to cancel the async operation.</param>
+    /// <returns>A dictionary keyed by fully qualified reference names.</returns>
+    public async Task<IReadOnlyDictionary<string, GitHash>> GetReferencesAsync(CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        var snapshot = await _references.Value.ConfigureAwait(false);
+        return new Dictionary<string, GitHash>(snapshot, StringComparer.Ordinal);
+    }
+
+    /// <summary>
+    /// Writes or overwrites the value of a reference file inside the repository.
+    /// </summary>
+    /// <param name="referencePath">Fully qualified reference path (for example refs/heads/main).</param>
+    /// <param name="commitHash">Hash to persist.</param>
+    /// <param name="cancellationToken">Token used to cancel the async operation.</param>
+    public Task WriteReferenceAsync(string referencePath, GitHash commitHash, CancellationToken cancellationToken = default)
+        => UpdateReferenceAsync(NormalizeAbsoluteReferencePath(referencePath), commitHash, cancellationToken);
+
+    /// <summary>
+    /// Deletes the specified reference when it exists.
+    /// </summary>
+    /// <param name="referencePath">Fully qualified reference path (for example refs/tags/v1.0).</param>
+    /// <param name="cancellationToken">Token used to cancel the async operation.</param>
+    public Task DeleteReferenceAsync(string referencePath, CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        var normalized = NormalizeAbsoluteReferencePath(referencePath);
+        var refPath = Path.Combine(GitDirectory, normalized.Replace('/', Path.DirectorySeparatorChar));
+        if (File.Exists(refPath))
+        {
+            File.Delete(refPath);
+        }
+
+        Interlocked.Exchange(ref _references, CreateReferenceCache());
+        return Task.CompletedTask;
+    }
+
     private async Task<GitCommit> GetCommitAsync(GitHash hash, CancellationToken cancellationToken)
     {
         lock (_commitLock)
@@ -514,6 +578,22 @@ public sealed class GitRepository
         }
 
         return $"refs/heads/{trimmed}";
+    }
+
+    private static string NormalizeAbsoluteReferencePath(string referencePath)
+    {
+        if (string.IsNullOrWhiteSpace(referencePath))
+        {
+            throw new ArgumentException("Reference path cannot be empty", nameof(referencePath));
+        }
+
+        var normalized = referencePath.Replace('\\', '/').Trim();
+        if (string.IsNullOrEmpty(normalized))
+        {
+            throw new ArgumentException("Reference path cannot be empty", nameof(referencePath));
+        }
+
+        return normalized;
     }
 
     private async Task<Dictionary<string, TreeLeaf>> LoadLeafEntriesAsync(GitHash treeHash, CancellationToken cancellationToken)
@@ -687,7 +767,7 @@ public sealed class GitRepository
         File.Move(tempPath, refPath, overwrite: true);
     }
 
-    private async Task<GitHash> WriteObjectAsync(GitObjectType type, ReadOnlyMemory<byte> content, CancellationToken cancellationToken)
+    private async Task<GitHash> WriteObjectCoreAsync(GitObjectType type, ReadOnlyMemory<byte> content, CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
 
