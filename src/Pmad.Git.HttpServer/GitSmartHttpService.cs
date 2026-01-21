@@ -15,7 +15,7 @@ namespace Pmad.Git.HttpServer;
 
 public sealed class GitSmartHttpService
 {
-    private const string RepositoryRouteKey = "repository";
+    internal const string RepositoryRouteKey = "repository";
 
     private readonly GitSmartHttpOptions _options;
     private readonly IGitRepositoryService _repositoryService;

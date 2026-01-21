@@ -438,7 +438,6 @@ public sealed class GitSmartHttpEndToEndTest : IDisposable
         builder.Services.AddGitSmartHttp(options =>
         {
             options.RepositoryRoot = _serverRepoRoot;
-            options.RoutePrefix = routePrefix;
             options.EnableUploadPack = enableUploadPack;
             options.EnableReceivePack = enableReceivePack;
         });
@@ -446,7 +445,7 @@ public sealed class GitSmartHttpEndToEndTest : IDisposable
         var app = builder.Build();
 
         // Map Git Smart HTTP endpoints
-        app.MapGitSmartHttp();
+        app.MapGitSmartHttp("/" + routePrefix + "/{repository}.git");
 
         _host = app;
         await _host.StartAsync();

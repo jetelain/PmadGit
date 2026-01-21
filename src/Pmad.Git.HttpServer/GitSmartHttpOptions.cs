@@ -1,6 +1,3 @@
-using System;
-using System.Threading;
-using System.Threading.Tasks;
 using Microsoft.AspNetCore.Http;
 
 namespace Pmad.Git.HttpServer;
@@ -11,11 +8,6 @@ public sealed class GitSmartHttpOptions
     /// Gets or sets the absolute path containing all repositories served by the HTTP endpoints.
     /// </summary>
     public string RepositoryRoot { get; set; } = string.Empty;
-
-    /// <summary>
-    /// Gets or sets an optional route prefix (for example "git") used by the endpoint mapping helper.
-    /// </summary>
-    public string RoutePrefix { get; set; } = "git";
 
     /// <summary>
     /// Allows disabling fetch/clone operations.
