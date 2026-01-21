@@ -1,11 +1,5 @@
-using System;
-using System.Diagnostics;
-using System.IO;
-using System.Linq;
 using System.Text;
-using System.Threading.Tasks;
-using Pmad.Git.LocalRepositories;
-using Xunit;
+using Pmad.Git.LocalRepositories.Test.Infrastructure;
 
 namespace Pmad.Git.LocalRepositories.Test;
 
@@ -50,7 +44,8 @@ public sealed class GitRepositoryInitTests : IDisposable
 
 		// Assert
 		var headContent = File.ReadAllText(Path.Combine(repoPath, ".git", "HEAD"));
-		Assert.Contains("ref: refs/heads/develop", headContent);
+        Assert.NotNull(repository);
+        Assert.Contains("ref: refs/heads/develop", headContent);
 	}
 
 	[Fact]
@@ -64,7 +59,8 @@ public sealed class GitRepositoryInitTests : IDisposable
 
 		// Assert
 		var headContent = File.ReadAllText(Path.Combine(repoPath, ".git", "HEAD"));
-		Assert.Contains("ref: refs/heads/main", headContent);
+        Assert.NotNull(repository);
+        Assert.Contains("ref: refs/heads/main", headContent);
 	}
 
 	[Fact]
@@ -78,7 +74,8 @@ public sealed class GitRepositoryInitTests : IDisposable
 
 		// Assert
 		var configContent = File.ReadAllText(Path.Combine(repoPath, ".git", "config"));
-		Assert.Contains("[core]", configContent);
+        Assert.NotNull(repository);
+        Assert.Contains("[core]", configContent);
 		Assert.Contains("repositoryformatversion = 0", configContent);
 		Assert.Contains("bare = false", configContent);
 	}
@@ -94,7 +91,8 @@ public sealed class GitRepositoryInitTests : IDisposable
 
 		// Assert
 		var configContent = File.ReadAllText(Path.Combine(repoPath, "config"));
-		Assert.Contains("bare = true", configContent);
+        Assert.NotNull(repository);
+        Assert.Contains("bare = true", configContent);
 		Assert.True(File.Exists(Path.Combine(repoPath, "HEAD")));
 		Assert.True(Directory.Exists(Path.Combine(repoPath, "objects")));
 		Assert.True(Directory.Exists(Path.Combine(repoPath, "refs")));
@@ -110,8 +108,9 @@ public sealed class GitRepositoryInitTests : IDisposable
 		var repository1 = GitRepository.Init(repoPath);
 		var repository2 = GitRepository.Open(repoPath);
 
-		// Assert
-		Assert.NotNull(repository2);
+        // Assert
+        Assert.NotNull(repository1);
+        Assert.NotNull(repository2);
 		Assert.Equal(repository1.RootPath, repository2.RootPath);
 		Assert.Equal(repository1.GitDirectory, repository2.GitDirectory);
 	}
@@ -169,8 +168,9 @@ public sealed class GitRepositoryInitTests : IDisposable
 		var repository = GitRepository.Init(repoPath);
 
 		// Assert - Use git CLI to verify it's a valid repository
-		var output = RunGit(repoPath, "rev-parse --git-dir");
-		Assert.Contains(".git", output);
+		var output = GitTestHelper.RunGit(repoPath, "rev-parse --git-dir");
+        Assert.NotNull(repository);
+        Assert.Contains(".git", output);
 	}
 
 	[Fact]
@@ -183,8 +183,9 @@ public sealed class GitRepositoryInitTests : IDisposable
 		var repository = GitRepository.Init(repoPath);
 
 		// Assert - git status should work without errors
-		var output = RunGit(repoPath, "status");
-		Assert.Contains("No commits yet", output);
+		var output = GitTestHelper.RunGit(repoPath, "status");
+        Assert.NotNull(repository);
+        Assert.Contains("No commits yet", output);
 		Assert.Contains("nothing to commit", output);
 	}
 
@@ -197,14 +198,15 @@ public sealed class GitRepositoryInitTests : IDisposable
 
 		// Act - Create a commit using git CLI
 		File.WriteAllText(Path.Combine(repoPath, "test.txt"), "test content");
-		RunGit(repoPath, "config user.name \"Test User\"");
-		RunGit(repoPath, "config user.email test@example.com");
-		RunGit(repoPath, "add test.txt");
-		RunGit(repoPath, "commit -m \"Initial commit\"");
+		GitTestHelper.RunGit(repoPath, "config user.name \"Test User\"");
+		GitTestHelper.RunGit(repoPath, "config user.email test@example.com");
+		GitTestHelper.RunGit(repoPath, "add test.txt");
+        GitTestHelper.RunGit(repoPath, "commit -m \"Initial commit\"");
 
 		// Assert
-		var log = RunGit(repoPath, "log --oneline");
-		Assert.Contains("Initial commit", log);
+		var log = GitTestHelper.RunGit(repoPath, "log --oneline");
+        Assert.NotNull(repository);
+        Assert.Contains("Initial commit", log);
 	}
 
 	[Fact]
@@ -216,10 +218,10 @@ public sealed class GitRepositoryInitTests : IDisposable
 
 		// First create initial commit with git CLI to establish the branch
 		File.WriteAllText(Path.Combine(repoPath, "initial.txt"), "initial");
-		RunGit(repoPath, "config user.name \"Test User\"");
-		RunGit(repoPath, "config user.email test@example.com");
-		RunGit(repoPath, "add initial.txt");
-		RunGit(repoPath, "commit -m \"Initial commit\"");
+		GitTestHelper.RunGit(repoPath, "config user.name \"Test User\"");
+		GitTestHelper.RunGit(repoPath, "config user.email test@example.com");
+		GitTestHelper.RunGit(repoPath, "add initial.txt");
+        GitTestHelper.RunGit(repoPath, "commit -m \"Initial commit\"");
 
 		// Act - Create another commit using the library
 		var metadata = new GitCommitMetadata(
@@ -235,11 +237,12 @@ public sealed class GitRepositoryInitTests : IDisposable
 			metadata);
 
 		// Assert
-		var log = RunGit(repoPath, "log --oneline");
-		Assert.Contains("Second commit", log);
+		var log = GitTestHelper.RunGit(repoPath, "log --oneline");
+        Assert.NotNull(repository);
+        Assert.Contains("Second commit", log);
 		Assert.Contains("Initial commit", log);
 
-		var showOutput = RunGit(repoPath, $"show {commitHash.Value}:second.txt");
+		var showOutput = GitTestHelper.RunGit(repoPath, $"show {commitHash.Value}:second.txt");
 		Assert.Equal("second content", showOutput.Trim());
 	}
 
@@ -253,8 +256,9 @@ public sealed class GitRepositoryInitTests : IDisposable
 		var repository = GitRepository.Init(repoPath, bare: true);
 
 		// Assert
-		var output = RunGit(repoPath, "rev-parse --is-bare-repository");
-		Assert.Equal("true", output.Trim());
+		var output = GitTestHelper.RunGit(repoPath, "rev-parse --is-bare-repository");
+        Assert.NotNull(repository);
+        Assert.Equal("true", output.Trim());
 	}
 
 	[Fact]
@@ -267,8 +271,9 @@ public sealed class GitRepositoryInitTests : IDisposable
 		var repository = GitRepository.Init(repoPath, initialBranch: "feature");
 
 		// Assert
-		var output = RunGit(repoPath, "symbolic-ref HEAD");
-		Assert.Contains("refs/heads/feature", output);
+		var output = GitTestHelper.RunGit(repoPath, "symbolic-ref HEAD");
+        Assert.NotNull(repository);
+        Assert.Contains("refs/heads/feature", output);
 	}
 
 	[Fact]
@@ -280,8 +285,9 @@ public sealed class GitRepositoryInitTests : IDisposable
 		// Act
 		var repository = GitRepository.Init(repoPath);
 
-		// Assert
-		Assert.True(Directory.Exists(Path.Combine(repoPath, ".git", "objects", "info")));
+        // Assert
+        Assert.NotNull(repository);
+        Assert.True(Directory.Exists(Path.Combine(repoPath, ".git", "objects", "info")));
 		Assert.True(Directory.Exists(Path.Combine(repoPath, ".git", "objects", "pack")));
 		Assert.True(Directory.Exists(Path.Combine(repoPath, ".git", "refs", "heads")));
 		Assert.True(Directory.Exists(Path.Combine(repoPath, ".git", "refs", "tags")));
@@ -300,7 +306,8 @@ public sealed class GitRepositoryInitTests : IDisposable
 
 		// Assert
 		var excludePath = Path.Combine(repoPath, ".git", "info", "exclude");
-		Assert.True(File.Exists(excludePath));
+        Assert.NotNull(repository);
+        Assert.True(File.Exists(excludePath));
 		var content = File.ReadAllText(excludePath);
 		Assert.Contains("# git ls-files --others --exclude-from=.git/info/exclude", content);
 	}
@@ -316,7 +323,8 @@ public sealed class GitRepositoryInitTests : IDisposable
 
 		// Assert
 		var descPath = Path.Combine(repoPath, ".git", "description");
-		Assert.True(File.Exists(descPath));
+        Assert.NotNull(repository);
+        Assert.True(File.Exists(descPath));
 		var content = File.ReadAllText(descPath);
 		Assert.Contains("Unnamed repository", content);
 	}
@@ -330,8 +338,9 @@ public sealed class GitRepositoryInitTests : IDisposable
 		// Act
 		var repository = GitRepository.Init(repoPath);
 
-		// Assert
-		Assert.Equal(Path.GetFullPath(repoPath), repository.RootPath);
+        // Assert
+        Assert.NotNull(repository);
+        Assert.Equal(Path.GetFullPath(repoPath), repository.RootPath);
 		Assert.Equal(Path.GetFullPath(Path.Combine(repoPath, ".git")), repository.GitDirectory);
 		Assert.Equal(20, repository.HashLengthBytes); // SHA-1 by default
 	}
@@ -345,8 +354,9 @@ public sealed class GitRepositoryInitTests : IDisposable
 		// Act
 		var repository = GitRepository.Init(repoPath, bare: true);
 
-		// Assert
-		Assert.Equal(Path.GetFullPath(repoPath), repository.RootPath);
+        // Assert
+        Assert.NotNull(repository);
+        Assert.Equal(Path.GetFullPath(repoPath), repository.RootPath);
 		Assert.Equal(Path.GetFullPath(repoPath), repository.GitDirectory);
 	}
 
@@ -376,9 +386,10 @@ public sealed class GitRepositoryInitTests : IDisposable
 		var repository = GitRepository.Init(repoPath);
 
 		// Assert - git fsck should pass
-		var output = RunGit(repoPath, "fsck");
-		// fsck on empty repo should not report errors
-		Assert.DoesNotContain("error:", output.ToLowerInvariant());
+		var output = GitTestHelper.RunGit(repoPath, "fsck");
+        Assert.NotNull(repository);
+        // fsck on empty repo should not report errors
+        Assert.DoesNotContain("error:", output.ToLowerInvariant());
 	}
 
 	[Fact]
@@ -390,10 +401,10 @@ public sealed class GitRepositoryInitTests : IDisposable
 
 		// Create initial commit with git CLI
 		File.WriteAllText(Path.Combine(repoPath, "README.md"), "# Test Repository");
-		RunGit(repoPath, "config user.name \"Test User\"");
-		RunGit(repoPath, "config user.email test@example.com");
-		RunGit(repoPath, "add README.md");
-		RunGit(repoPath, "commit -m \"Initial commit\"");
+		GitTestHelper.RunGit(repoPath, "config user.name \"Test User\"");
+		GitTestHelper.RunGit(repoPath, "config user.email test@example.com");
+		GitTestHelper.RunGit(repoPath, "add README.md");
+        GitTestHelper.RunGit(repoPath, "commit -m \"Initial commit\"");
 
 		// Act - Read the commit using the library
 		var commit = await repository.GetCommitAsync();
@@ -424,31 +435,6 @@ public sealed class GitRepositoryInitTests : IDisposable
 		{
 			Environment.CurrentDirectory = currentDir;
 		}
-	}
-
-	private string RunGit(string workingDirectory, string arguments)
-	{
-		var startInfo = new ProcessStartInfo("git", arguments)
-		{
-			WorkingDirectory = workingDirectory,
-			RedirectStandardOutput = true,
-			RedirectStandardError = true,
-			UseShellExecute = false,
-			CreateNoWindow = true
-		};
-
-		using var process = Process.Start(startInfo) ?? throw new InvalidOperationException("Unable to start git process");
-		var output = process.StandardOutput.ReadToEnd();
-		var error = process.StandardError.ReadToEnd();
-		process.WaitForExit();
-
-		if (process.ExitCode != 0)
-		{
-			throw new InvalidOperationException(
-				$"git {arguments} failed with exit code {process.ExitCode}:{Environment.NewLine}{error}{Environment.NewLine}{output}");
-		}
-
-		return string.IsNullOrEmpty(output) ? error : output;
 	}
 
 	public void Dispose()

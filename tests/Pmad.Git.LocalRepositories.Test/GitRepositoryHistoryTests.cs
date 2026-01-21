@@ -1,13 +1,4 @@
-using System;
-using System.Collections.Generic;
-using System.IO;
-using System.Linq;
-using System.Text;
-using System.Threading;
-using System.Threading.Tasks;
-using Pmad.Git.LocalRepositories;
 using Pmad.Git.LocalRepositories.Test.Infrastructure;
-using Xunit;
 
 namespace Pmad.Git.LocalRepositories.Test;
 
@@ -44,7 +35,7 @@ public sealed class GitRepositoryHistoryTests
 	public async Task EnumerateCommitsAsync_WithMergeCommit_WalksAllParents()
 	{
 		using var repo = GitTestRepository.Create();
-		var defaultBranch = GetDefaultBranch(repo);
+		var defaultBranch = GitTestHelper.GetDefaultBranch(repo);
 		repo.Commit("Base", ("base.txt", "base"));
 		
 		repo.RunGit("checkout -b feature");
@@ -327,20 +318,6 @@ public sealed class GitRepositoryHistoryTests
 
 		Assert.Contains(items, i => i.Entry.Kind == GitTreeEntryKind.Tree);
 		Assert.Contains(items, i => i.Entry.Kind == GitTreeEntryKind.Blob);
-	}
-
-	#endregion
-
-	#region Helper Methods
-
-	private static string GetDefaultBranch(GitTestRepository repo)
-	{
-		var headContent = File.ReadAllText(Path.Combine(repo.GitDirectory, "HEAD")).Trim();
-		if (headContent.StartsWith("ref: refs/heads/"))
-		{
-			return headContent.Substring("ref: refs/heads/".Length);
-		}
-		return "main";
 	}
 
 	#endregion

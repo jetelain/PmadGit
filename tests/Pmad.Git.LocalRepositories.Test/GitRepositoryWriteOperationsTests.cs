@@ -1,11 +1,5 @@
-using System;
-using System.Collections.Generic;
-using System.IO;
 using System.Text;
-using System.Threading.Tasks;
-using Pmad.Git.LocalRepositories;
 using Pmad.Git.LocalRepositories.Test.Infrastructure;
-using Xunit;
 
 namespace Pmad.Git.LocalRepositories.Test;
 
@@ -21,7 +15,7 @@ public sealed class GitRepositoryWriteOperationsTests
 	{
 		using var repo = GitTestRepository.Create();
 		var gitRepository = GitRepository.Open(repo.WorkingDirectory);
-		var headRef = GetHeadReference(repo);
+		var headRef = GitTestHelper.GetHeadReference(repo);
 		var metadata = CreateMetadata("Add file through API");
 
 		var commitHash = await gitRepository.CreateCommitAsync(
@@ -46,7 +40,7 @@ public sealed class GitRepositoryWriteOperationsTests
 	{
 		using var repo = GitTestRepository.Create();
 		var gitRepository = GitRepository.Open(repo.WorkingDirectory);
-		var headRef = GetHeadReference(repo);
+		var headRef = GitTestHelper.GetHeadReference(repo);
 		var metadata = CreateMetadata("CLI verification");
 
 		await gitRepository.CreateCommitAsync(
@@ -74,7 +68,7 @@ public sealed class GitRepositoryWriteOperationsTests
 		using var repo = GitTestRepository.Create();
 		repo.Commit("Seed files", ("src/app.txt", "v1"), ("docs/old.md", "legacy"));
 		var gitRepository = GitRepository.Open(repo.WorkingDirectory);
-		var headRef = GetHeadReference(repo);
+		var headRef = GitTestHelper.GetHeadReference(repo);
 		var metadata = CreateMetadata("Update and cleanup");
 
 		var commitHash = await gitRepository.CreateCommitAsync(
@@ -101,7 +95,7 @@ public sealed class GitRepositoryWriteOperationsTests
 	{
 		using var repo = GitTestRepository.Create();
 		var gitRepository = GitRepository.Open(repo.WorkingDirectory);
-		var headRef = GetHeadReference(repo);
+		var headRef = GitTestHelper.GetHeadReference(repo);
 
 		await Assert.ThrowsAsync<FileNotFoundException>(
 			() => gitRepository.CreateCommitAsync(
@@ -119,7 +113,7 @@ public sealed class GitRepositoryWriteOperationsTests
 		using var repo = GitTestRepository.Create();
 		repo.Commit("Seed", ("data.txt", "same"));
 		var gitRepository = GitRepository.Open(repo.WorkingDirectory);
-		var headRef = GetHeadReference(repo);
+		var headRef = GitTestHelper.GetHeadReference(repo);
 
 		await Assert.ThrowsAsync<InvalidOperationException>(
 			() => gitRepository.CreateCommitAsync(
@@ -141,7 +135,7 @@ public sealed class GitRepositoryWriteOperationsTests
 		using var repo = GitTestRepository.Create();
 		repo.Commit("Seed file", ("docs/readme.txt", "hello"));
 		var gitRepository = GitRepository.Open(repo.WorkingDirectory);
-		var headRef = GetHeadReference(repo);
+		var headRef = GitTestHelper.GetHeadReference(repo);
 		var metadata = CreateMetadata("Move file");
 
 		var commitHash = await gitRepository.CreateCommitAsync(
@@ -254,7 +248,7 @@ public sealed class GitRepositoryWriteOperationsTests
 	public async Task GetReferencesAsync_ReturnsAllBranches()
 	{
 		using var repo = GitTestRepository.Create();
-		var defaultBranch = GetDefaultBranch(repo);
+		var defaultBranch = GitTestHelper.GetDefaultBranch(repo);
 		repo.RunGit("branch feature1");
 		repo.RunGit("branch feature2");
 		var gitRepository = GitRepository.Open(repo.WorkingDirectory);
@@ -445,11 +439,11 @@ public sealed class GitRepositoryWriteOperationsTests
 		{
 			var repository = GitRepository.Init(repoPath);
 
-			RunGit(repoPath, "config user.name \"Test User\"");
-			RunGit(repoPath, "config user.email test@test.com");
+			GitTestHelper.RunGit(repoPath, "config user.name \"Test User\"");
+            GitTestHelper.RunGit(repoPath, "config user.email test@test.com");
 			File.WriteAllText(Path.Combine(repoPath, "README.md"), "# Test");
-			RunGit(repoPath, "add README.md");
-			RunGit(repoPath, "commit -m \"Initial commit\"");
+			GitTestHelper.RunGit(repoPath, "add README.md");
+            GitTestHelper.RunGit(repoPath, "commit -m \"Initial commit\"");
 
 			var metadata = new GitCommitMetadata(
 				"Add feature",
@@ -474,10 +468,10 @@ public sealed class GitRepositoryWriteOperationsTests
 			var apiContent = await repository.ReadFileAsync("docs/api.md");
 			Assert.Equal("# API Documentation", Encoding.UTF8.GetString(apiContent));
 
-			var gitLog = RunGit(repoPath, "log --oneline");
+			var gitLog = GitTestHelper.RunGit(repoPath, "log --oneline");
 			Assert.Contains("Add feature", gitLog);
 
-			var gitShow = RunGit(repoPath, "show HEAD:feature.txt");
+			var gitShow = GitTestHelper.RunGit(repoPath, "show HEAD:feature.txt");
 			Assert.Equal("feature content", gitShow.Trim());
 		}
 		finally
@@ -500,58 +494,12 @@ public sealed class GitRepositoryWriteOperationsTests
 
 	#region Helper Methods
 
-	private static string GetHeadReference(GitTestRepository repo)
-	{
-		var headPath = Path.Combine(repo.GitDirectory, "HEAD");
-		var content = File.ReadAllText(headPath).Trim();
-		if (!content.StartsWith("ref: ", StringComparison.Ordinal))
-		{
-			throw new InvalidOperationException("HEAD is not pointing to a symbolic reference");
-		}
-		return content[5..].Trim();
-	}
-
-	private static string GetDefaultBranch(GitTestRepository repo)
-	{
-		var headContent = File.ReadAllText(Path.Combine(repo.GitDirectory, "HEAD")).Trim();
-		if (headContent.StartsWith("ref: refs/heads/"))
-		{
-			return headContent.Substring("ref: refs/heads/".Length);
-		}
-		return "main";
-	}
-
 	private static GitCommitMetadata CreateMetadata(string message)
 		=> new(
 			message,
 			new GitCommitSignature("Api User",
 			"api@example.com",
 			new DateTimeOffset(2024, 1, 1, 12, 0, 0, TimeSpan.Zero)));
-
-	private static string RunGit(string workingDirectory, string arguments)
-	{
-		var startInfo = new System.Diagnostics.ProcessStartInfo("git", arguments)
-		{
-			WorkingDirectory = workingDirectory,
-			RedirectStandardOutput = true,
-			RedirectStandardError = true,
-			UseShellExecute = false,
-			CreateNoWindow = true
-		};
-
-		using var process = System.Diagnostics.Process.Start(startInfo) ?? throw new InvalidOperationException("Unable to start git process");
-		var output = process.StandardOutput.ReadToEnd();
-		var error = process.StandardError.ReadToEnd();
-		process.WaitForExit();
-
-		if (process.ExitCode != 0)
-		{
-			throw new InvalidOperationException(
-				$"git {arguments} failed with exit code {process.ExitCode}:{Environment.NewLine}{error}{Environment.NewLine}{output}");
-		}
-
-		return string.IsNullOrEmpty(output) ? error : output;
-	}
 
 	#endregion
 }

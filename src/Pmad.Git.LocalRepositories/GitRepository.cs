@@ -76,7 +76,9 @@ public sealed class GitRepository
             rootPath = fullPath;
         }
 
-        if (Directory.Exists(gitDirectory) && (Directory.GetFiles(gitDirectory).Length > 0 || Directory.GetDirectories(gitDirectory).Length > 0))
+        Directory.CreateDirectory(gitDirectory);
+
+        if (Directory.GetFiles(gitDirectory).Length > 0 || Directory.GetDirectories(gitDirectory).Length > 0)
         {
             throw new InvalidOperationException($"Directory '{gitDirectory}' already exists and is not empty");
         }

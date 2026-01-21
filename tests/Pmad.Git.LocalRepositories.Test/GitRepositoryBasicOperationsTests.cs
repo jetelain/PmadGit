@@ -1,13 +1,6 @@
-using System;
 using System.Diagnostics;
-using System.IO;
-using System.Linq;
 using System.Text;
-using System.Threading;
-using System.Threading.Tasks;
-using Pmad.Git.LocalRepositories;
 using Pmad.Git.LocalRepositories.Test.Infrastructure;
-using Xunit;
 
 namespace Pmad.Git.LocalRepositories.Test;
 
@@ -36,7 +29,7 @@ public sealed class GitRepositoryBasicOperationsTests
 		try
 		{
 			Directory.CreateDirectory(bareRepoPath);
-			RunGit(bareRepoPath, "init --bare");
+            GitTestHelper.RunGit(bareRepoPath, "init --bare");
 
 			var gitRepository = GitRepository.Open(bareRepoPath);
 
@@ -96,7 +89,7 @@ public sealed class GitRepositoryBasicOperationsTests
 	{
 		using var repo = GitTestRepository.Create();
 		var gitRepository = GitRepository.Open(repo.WorkingDirectory);
-		var branchName = GetDefaultBranch(repo);
+		var branchName = GitTestHelper.GetDefaultBranch(repo);
 
 		var commit = await gitRepository.GetCommitAsync($"refs/heads/{branchName}");
 
@@ -252,7 +245,7 @@ public sealed class GitRepositoryBasicOperationsTests
 	{
 		using var repo = GitTestRepository.Create();
 		var gitRepository = GitRepository.Open(repo.WorkingDirectory);
-		var headRef = GetHeadReference(repo);
+		var headRef = GitTestHelper.GetHeadReference(repo);
 
 		var initialCommit = await gitRepository.GetCommitAsync(headRef);
 		var updatedCommit = repo.Commit("Update after caching", ("cache.txt", Guid.NewGuid().ToString("N")));
@@ -330,56 +323,6 @@ public sealed class GitRepositoryBasicOperationsTests
 
 		await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
 			gitRepository.GetCommitAsync(cancellationToken: cts.Token));
-	}
-
-	#endregion
-
-	#region Helper Methods
-
-	private static string GetHeadReference(GitTestRepository repo)
-	{
-		var headPath = Path.Combine(repo.GitDirectory, "HEAD");
-		var content = File.ReadAllText(headPath).Trim();
-		if (!content.StartsWith("ref: ", StringComparison.Ordinal))
-		{
-			throw new InvalidOperationException("HEAD is not pointing to a symbolic reference");
-		}
-		return content[5..].Trim();
-	}
-
-	private static string GetDefaultBranch(GitTestRepository repo)
-	{
-		var headContent = File.ReadAllText(Path.Combine(repo.GitDirectory, "HEAD")).Trim();
-		if (headContent.StartsWith("ref: refs/heads/"))
-		{
-			return headContent.Substring("ref: refs/heads/".Length);
-		}
-		return "main";
-	}
-
-	private static string RunGit(string workingDirectory, string arguments)
-	{
-		var startInfo = new ProcessStartInfo("git", arguments)
-		{
-			WorkingDirectory = workingDirectory,
-			RedirectStandardOutput = true,
-			RedirectStandardError = true,
-			UseShellExecute = false,
-			CreateNoWindow = true
-		};
-
-		using var process = Process.Start(startInfo) ?? throw new InvalidOperationException("Unable to start git process");
-		var output = process.StandardOutput.ReadToEnd();
-		var error = process.StandardError.ReadToEnd();
-		process.WaitForExit();
-
-		if (process.ExitCode != 0)
-		{
-			throw new InvalidOperationException(
-				$"git {arguments} failed with exit code {process.ExitCode}:{Environment.NewLine}{error}{Environment.NewLine}{output}");
-		}
-
-		return string.IsNullOrEmpty(output) ? error : output;
 	}
 
 	#endregion
