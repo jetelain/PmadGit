@@ -38,8 +38,8 @@ public sealed class GitTestRepository : IDisposable
 	private void Initialize()
     {
 		var initArgs = _format == GitObjectFormat.Sha256
-			? "init --quiet --object-format=sha256"
-			: "init --quiet";
+			? "init --quiet --object-format=sha256 --initial-branch=master"
+            : "init --quiet --initial-branch=master";
 		RunGit(initArgs);
         RunGit("config user.name \"Test User\"");
         RunGit("config user.email test@example.com");

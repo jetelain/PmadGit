@@ -43,6 +43,84 @@ public sealed class GitRepository
     public int HashLengthBytes => _objectStore.HashLengthBytes;
 
     /// <summary>
+    /// Creates a new empty git repository at the specified path.
+    /// </summary>
+    /// <param name="path">Path where the repository should be created.</param>
+    /// <param name="bare">Whether to create a bare repository (no working directory).</param>
+    /// <param name="initialBranch">Name of the initial branch; defaults to "main".</param>
+    /// <returns>An initialized <see cref="GitRepository"/>.</returns>
+    public static GitRepository Init(string path, bool bare = false, string initialBranch = "main")
+    {
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            throw new ArgumentException("Path cannot be empty", nameof(path));
+        }
+
+        if (string.IsNullOrWhiteSpace(initialBranch))
+        {
+            throw new ArgumentException("Initial branch name cannot be empty", nameof(initialBranch));
+        }
+
+        var fullPath = Path.GetFullPath(path);
+        string gitDirectory;
+        string rootPath;
+
+        if (bare)
+        {
+            gitDirectory = fullPath;
+            rootPath = fullPath;
+        }
+        else
+        {
+            gitDirectory = Path.Combine(fullPath, ".git");
+            rootPath = fullPath;
+        }
+
+        Directory.CreateDirectory(gitDirectory);
+
+        if (Directory.GetFiles(gitDirectory).Length > 0 || Directory.GetDirectories(gitDirectory).Length > 0)
+        {
+            throw new InvalidOperationException($"Directory '{gitDirectory}' already exists and is not empty");
+        }
+
+        Directory.CreateDirectory(gitDirectory);
+        Directory.CreateDirectory(Path.Combine(gitDirectory, "objects"));
+        Directory.CreateDirectory(Path.Combine(gitDirectory, "objects", "info"));
+        Directory.CreateDirectory(Path.Combine(gitDirectory, "objects", "pack"));
+        Directory.CreateDirectory(Path.Combine(gitDirectory, "refs"));
+        Directory.CreateDirectory(Path.Combine(gitDirectory, "refs", "heads"));
+        Directory.CreateDirectory(Path.Combine(gitDirectory, "refs", "tags"));
+
+        var headRef = $"ref: refs/heads/{initialBranch}";
+        File.WriteAllText(Path.Combine(gitDirectory, "HEAD"), headRef + "\n");
+
+        var configBuilder = new StringBuilder();
+        configBuilder.AppendLine("[core]");
+        configBuilder.AppendLine("\trepositoryformatversion = 0");
+        configBuilder.AppendLine("\tfilemode = false");
+        if (bare)
+        {
+            configBuilder.AppendLine("\tbare = true");
+        }
+        else
+        {
+            configBuilder.AppendLine("\tbare = false");
+        }
+        File.WriteAllText(Path.Combine(gitDirectory, "config"), configBuilder.ToString());
+
+        File.WriteAllText(Path.Combine(gitDirectory, "description"), "Unnamed repository; edit this file 'description' to name the repository.\n");
+
+        var hooksDir = Path.Combine(gitDirectory, "hooks");
+        Directory.CreateDirectory(hooksDir);
+
+        var infoDir = Path.Combine(gitDirectory, "info");
+        Directory.CreateDirectory(infoDir);
+        File.WriteAllText(Path.Combine(infoDir, "exclude"), "# git ls-files --others --exclude-from=.git/info/exclude\n# Lines that start with '#' are comments.\n");
+
+        return new GitRepository(rootPath, gitDirectory);
+    }
+
+    /// <summary>
     /// Opens a git repository located at <paramref name="path"/> or its parent folders.
     /// </summary>
     /// <param name="path">Path pointing to a working tree or .git directory.</param>
@@ -235,19 +313,55 @@ public sealed class GitRepository
         }
 
         GitHash? lastBlob = null;
+        GitCommit? lastCommitWithFile = null;
+        var hasSeenFile = false;
+        
         await foreach (var commit in EnumerateCommitsAsync(reference, cancellationToken).ConfigureAwait(false))
         {
             var blobHash = await GetBlobHashAsync(commit.Tree, normalizedPath, cancellationToken).ConfigureAwait(false);
+            
             if (blobHash is null)
             {
+                // File doesn't exist in this commit - if we were tracking it, yield the last commit where it existed
+                if (hasSeenFile && lastCommitWithFile != null)
+                {
+                    yield return lastCommitWithFile;
+                    lastCommitWithFile = null;
+                    hasSeenFile = false;
+                }
+                lastBlob = null;
                 continue;
             }
 
-            if (!lastBlob.HasValue || !lastBlob.Value.Equals(blobHash.Value))
+            // File exists in this commit
+            if (!hasSeenFile)
             {
+                // First time seeing this file in history (going backwards)
+                hasSeenFile = true;
+                lastCommitWithFile = commit;
                 lastBlob = blobHash;
-                yield return commit;
             }
+            else if (!lastBlob!.Value.Equals(blobHash.Value))
+            {
+                // Content changed - yield the previous commit and track this new version
+                if (lastCommitWithFile != null)
+                {
+                    yield return lastCommitWithFile;
+                }
+                lastCommitWithFile = commit;
+                lastBlob = blobHash;
+            }
+            // else: same content as previous commit, just update lastCommitWithFile to track further back
+            else
+            {
+                lastCommitWithFile = commit;
+            }
+        }
+        
+        // Yield the final commit where the file was created/last changed
+        if (lastCommitWithFile != null)
+        {
+            yield return lastCommitWithFile;
         }
     }
 
