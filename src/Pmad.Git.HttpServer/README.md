@@ -28,7 +28,6 @@ With the sample above, git clients can clone/fetch repositories stored under `/s
 `GitSmartHttpOptions` controls behavior:
 
 - `RepositoryRoot`: Absolute path containing repositories. Mandatory.
-- `RoutePrefix`: Route segment (defaults to `git`).
 - `EnableUploadPack`: Allows `git-upload-pack` (fetch/clone). Enabled by default.
 - `EnableReceivePack`: Allows `git-receive-pack` (push). Enabled by default.
 - `Agent`: String advertised to clients (shown by `git clone --verbose`).
