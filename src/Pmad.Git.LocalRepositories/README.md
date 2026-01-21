@@ -12,6 +12,10 @@ Add a project reference to `Pmad.Git.LocalRepositories` or publish it as a packa
 using System.Text;
 using Pmad.Git.LocalRepositories;
 
+// Create a new repository
+var repository = GitRepository.Init("/path/to/new-repo");
+
+// Or open an existing repository
 var repository = GitRepository.Open("/path/to/repo");
 
 var head = await repository.GetCommitAsync();
@@ -48,6 +52,11 @@ var commitId = await repository.CreateCommitAsync(
 Console.WriteLine($"Created commit {commitId.Value}");
 ```
 
+### Creating a new repository
+- `GitRepository.Init(path, bare, initialBranch)` creates a new empty git repository at the specified location.
+- Set `bare` to `true` to create a bare repository (no working directory).
+- The `initialBranch` parameter defaults to "main" but can be customized.
+
 ### Opening a repository
 - `GitRepository.Open(path)` accepts either the working directory or the `.git` directory path.
 - The repository must be local and fully cloned (no sparse checkout support yet).
@@ -79,7 +88,6 @@ dotnet test
 Ensure the `git` executable is available on the PATH when running tests.
 
 ## Limitations & roadmap
-- Currently read-only (no staging/committing APIs).
 - Pack files are supported for reading; writing is not implemented.
 - SHA-256 repositories are supported for reading, but mixed-hash scenarios are not tested.
 
