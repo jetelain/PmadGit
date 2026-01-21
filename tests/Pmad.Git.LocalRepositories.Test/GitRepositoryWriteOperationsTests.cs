@@ -328,7 +328,7 @@ public sealed class GitRepositoryWriteOperationsTests
 	public async Task WriteReferenceAsync_UpdatesExistingBranch()
 	{
 		using var repo = GitTestRepository.Create();
-		var commit1 = repo.Commit("Commit 1", ("file1.txt", "content1"));
+		repo.Commit("Commit 1", ("file1.txt", "content1"));
 		var commit2 = repo.Commit("Commit 2", ("file2.txt", "content2"));
 		repo.RunGit("checkout -b test-branch HEAD~1");
 		var gitRepository = GitRepository.Open(repo.WorkingDirectory);
@@ -356,7 +356,7 @@ public sealed class GitRepositoryWriteOperationsTests
 	public async Task WriteReferenceAsync_OverwritesExistingReference()
 	{
 		using var repo = GitTestRepository.Create();
-		var commit1 = repo.Commit("Commit 1", ("file1.txt", "content1"));
+		repo.Commit("Commit 1", ("file1.txt", "content1"));
 		var commit2 = repo.Commit("Commit 2", ("file2.txt", "content2"));
 		repo.RunGit("tag v1.0 HEAD~1");
 		var gitRepository = GitRepository.Open(repo.WorkingDirectory);

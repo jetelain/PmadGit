@@ -62,7 +62,7 @@ public sealed class GitRepositoryHistoryTests
 	public async Task EnumerateCommitsAsync_WithTag_StartsFromTaggedCommit()
 	{
 		using var repo = GitTestRepository.Create();
-		var tagged = repo.Commit("Tagged version", ("file.txt", "v1"));
+		repo.Commit("Tagged version", ("file.txt", "v1"));
 		repo.RunGit("tag v1.0");
 		repo.Commit("After tag", ("file.txt", "v2"));
 		var gitRepository = GitRepository.Open(repo.WorkingDirectory);
@@ -111,7 +111,7 @@ public sealed class GitRepositoryHistoryTests
 		var count = 0;
 		await Assert.ThrowsAnyAsync<OperationCanceledException>(async () =>
 		{
-			await foreach (var commit in gitRepository.EnumerateCommitsAsync(cancellationToken: cts.Token))
+			await foreach (var _ in gitRepository.EnumerateCommitsAsync(cancellationToken: cts.Token))
 			{
 				count++;
 				if (count == 2)
@@ -150,7 +150,7 @@ public sealed class GitRepositoryHistoryTests
 	public async Task GetFileHistoryAsync_FileNeverChanged_ReturnsSingleCommit()
 	{
 		using var repo = GitTestRepository.Create();
-		var addCommit = repo.Commit("Add file", ("static.txt", "unchanged"));
+		repo.Commit("Add file", ("static.txt", "unchanged"));
 		repo.Commit("Other change", ("other.txt", "content"));
 		repo.Commit("Another change", ("another.txt", "data"));
 		var gitRepository = GitRepository.Open(repo.WorkingDirectory);
@@ -169,10 +169,10 @@ public sealed class GitRepositoryHistoryTests
 	public async Task GetFileHistoryAsync_FileDeletedAndRecreated_ReturnsAllVersions()
 	{
 		using var repo = GitTestRepository.Create();
-		var c1 = repo.Commit("Add file", ("file.txt", "v1"));
+		repo.Commit("Add file", ("file.txt", "v1"));
 		repo.RunGit("rm file.txt");
 		repo.RunGit("commit -m \"Remove file\"");
-		var c3 = repo.Commit("Re-add file", ("file.txt", "v2"));
+		repo.Commit("Re-add file", ("file.txt", "v2"));
 		var gitRepository = GitRepository.Open(repo.WorkingDirectory);
 
 		var history = new List<GitCommit>();
@@ -257,7 +257,7 @@ public sealed class GitRepositoryHistoryTests
 	{
 		using var repo = GitTestRepository.Create();
 		var commit1 = repo.Commit("Commit 1", ("file1.txt", "v1"));
-		var commit2 = repo.Commit("Commit 2", ("file2.txt", "v2"));
+		repo.Commit("Commit 2", ("file2.txt", "v2"));
 		var gitRepository = GitRepository.Open(repo.WorkingDirectory);
 
 		var items = new List<GitTreeItem>();
@@ -297,7 +297,7 @@ public sealed class GitRepositoryHistoryTests
 
 		await Assert.ThrowsAsync<DirectoryNotFoundException>(async () =>
 		{
-			await foreach (var item in gitRepository.EnumerateCommitTreeAsync(path: "non/existent"))
+			await foreach (var _ in gitRepository.EnumerateCommitTreeAsync(path: "non/existent"))
 			{
 			}
 		});
