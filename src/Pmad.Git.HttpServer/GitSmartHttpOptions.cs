@@ -1,6 +1,3 @@
-using System;
-using System.Threading;
-using System.Threading.Tasks;
 using Microsoft.AspNetCore.Http;
 
 namespace Pmad.Git.HttpServer;
@@ -13,19 +10,14 @@ public sealed class GitSmartHttpOptions
     public string RepositoryRoot { get; set; } = string.Empty;
 
     /// <summary>
-    /// Gets or sets an optional route prefix (for example "git") used by the endpoint mapping helper.
-    /// </summary>
-    public string RoutePrefix { get; set; } = "git";
-
-    /// <summary>
     /// Allows disabling fetch/clone operations.
     /// </summary>
     public bool EnableUploadPack { get; set; } = true;
 
     /// <summary>
-    /// Allows disabling push operations.
+    /// Allows enabling push operations. Disabled by default for security.
     /// </summary>
-    public bool EnableReceivePack { get; set; } = true;
+    public bool EnableReceivePack { get; set; } = false;
 
     /// <summary>
     /// Gets or sets the agent string advertised to git clients.
@@ -44,4 +36,11 @@ public sealed class GitSmartHttpOptions
     /// </summary>
     public Func<string, string>? RepositoryNameNormalizer { get; set; }
         = static name => name;
+
+    /// <summary>
+    /// Callback used to resolve the repository name from the HTTP context.
+    /// By default, extracts the "repository" route parameter.
+    /// </summary>
+    public Func<HttpContext, string?>? RepositoryResolver { get; set; }
+        = static context => context.Request.RouteValues.TryGetValue("repository", out var value) ? value?.ToString() : null;
 }

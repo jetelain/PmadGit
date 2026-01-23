@@ -16,7 +16,7 @@ namespace Pmad.Git.HttpServer.Demo
             {
                 options.RepositoryRoot = Path.Combine(builder.Environment.ContentRootPath, "Repositories");
                 options.EnableUploadPack = true;
-                options.EnableReceivePack = true;
+                options.EnableReceivePack = true; // Enable push for demo purposes
                 options.Agent = "Pmad.Git.HttpServer.Demo/1.0";
             });
 

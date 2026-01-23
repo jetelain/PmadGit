@@ -64,30 +64,6 @@ public sealed class GitSmartHttpEndpointRouteBuilderExtensionsTest
     }
 
     [Fact]
-    public void MapGitSmartHttp_WithoutOptions_ShouldThrowInvalidOperationException()
-    {
-        // Arrange
-        var services = new ServiceCollection();
-        services.AddRouting();
-        // Add service and repository service but not options (unusual case)
-        services.AddSingleton<IGitRepositoryService, GitRepositoryService>();
-        services.AddSingleton(sp => new GitSmartHttpService(
-            new GitSmartHttpOptions { RepositoryRoot = CreateTemporaryDirectory() },
-            sp.GetRequiredService<IGitRepositoryService>()));
-        var provider = services.BuildServiceProvider();
-        
-        var endpoints = new TestEndpointRouteBuilder(provider);
-
-        // Act & Assert
-        var exception = Assert.Throws<InvalidOperationException>(() =>
-        {
-            endpoints.MapGitSmartHttp();
-        });
-        
-        Assert.Contains("GitSmartHttpOptions is not registered", exception.Message);
-    }
-
-    [Fact]
     public void MapGitSmartHttp_RegistersEndpoints()
     {
         // Arrange
@@ -121,14 +97,13 @@ public sealed class GitSmartHttpEndpointRouteBuilderExtensionsTest
         services.AddGitSmartHttp(options =>
         {
             options.RepositoryRoot = repositoryRoot;
-            options.RoutePrefix = "git";
         });
         var provider = services.BuildServiceProvider();
         
         var endpoints = new TestEndpointRouteBuilder(provider);
 
         // Act
-        endpoints.MapGitSmartHttp();
+        endpoints.MapGitSmartHttp("/custom/{repository}.git");
 
         // Assert - Should have registered at least one data source
         Assert.NotEmpty(endpoints.DataSources);

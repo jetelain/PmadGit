@@ -12,8 +12,7 @@ var builder = WebApplication.CreateBuilder(args);
 builder.Services.AddGitSmartHttp(new GitSmartHttpOptions
 {
     RepositoryRoot = "/srv/git",
-    EnableUploadPack = true,
-    EnableReceivePack = false
+    EnableUploadPack = true
 });
 
 var app = builder.Build();
@@ -28,12 +27,61 @@ With the sample above, git clients can clone/fetch repositories stored under `/s
 `GitSmartHttpOptions` controls behavior:
 
 - `RepositoryRoot`: Absolute path containing repositories. Mandatory.
-- `RoutePrefix`: Route segment (defaults to `git`).
 - `EnableUploadPack`: Allows `git-upload-pack` (fetch/clone). Enabled by default.
-- `EnableReceivePack`: Allows `git-receive-pack` (push). Enabled by default.
+- `EnableReceivePack`: Allows `git-receive-pack` (push). Disabled by default.
 - `Agent`: String advertised to clients (shown by `git clone --verbose`).
 - `AuthorizeAsync`: Optional callback to allow/deny access per request.
 - `RepositoryNameNormalizer`: Optional sanitizer for custom routing schemes.
+- `RepositoryResolver`: Callback to resolve the repository name from the HTTP context. By default, extracts the `repository` route parameter.
+
+## Custom Repository Resolution
+
+By default, `MapGitSmartHttp` expects a route with a `{repository}` parameter. You can customize this to use multiple parameters, no parameters (for single-repository hosting), or any custom logic:
+
+### Multiple Parameters
+```csharp
+builder.Services.AddGitSmartHttp(options =>
+{
+    options.RepositoryRoot = "/srv/git";
+    options.RepositoryResolver = context =>
+    {
+        var org = context.Request.RouteValues["organization"]?.ToString();
+        var repo = context.Request.RouteValues["repository"]?.ToString();
+        return string.IsNullOrEmpty(org) || string.IsNullOrEmpty(repo) 
+            ? null 
+            : $"{org}/{repo}";
+    };
+});
+
+app.MapGitSmartHttp("/git/{organization}/{repository}.git");
+```
+
+### Single Repository (No Parameters)
+```csharp
+builder.Services.AddGitSmartHttp(options =>
+{
+    options.RepositoryRoot = "/srv/git";
+    options.RepositoryResolver = context => "my-repo";
+});
+
+app.MapGitSmartHttp("/git");
+```
+
+### From Query String or Header
+```csharp
+builder.Services.AddGitSmartHttp(options =>
+{
+    options.RepositoryRoot = "/srv/git";
+    options.RepositoryResolver = context =>
+    {
+        // Try query string first, then header
+        return context.Request.Query["repo"].FirstOrDefault() 
+            ?? context.Request.Headers["X-Git-Repository"].FirstOrDefault();
+    };
+});
+
+app.MapGitSmartHttp("/git");
+```
 
 ## Features
 

@@ -15,8 +15,6 @@ namespace Pmad.Git.HttpServer;
 
 public sealed class GitSmartHttpService
 {
-    private const string RepositoryRouteKey = "repository";
-
     private readonly GitSmartHttpOptions _options;
     private readonly IGitRepositoryService _repositoryService;
     private readonly string _rootFullPath;
@@ -166,7 +164,13 @@ public sealed class GitSmartHttpService
 
     private async Task<(GitRepository Repository, string Name)?> TryOpenRepositoryAsync(HttpContext context, CancellationToken cancellationToken)
     {
-        if (!context.Request.RouteValues.TryGetValue(RepositoryRouteKey, out var rawValue) || string.IsNullOrWhiteSpace(rawValue?.ToString()))
+        string? rawValue = null;
+        if (_options.RepositoryResolver is not null)
+        {
+            rawValue = _options.RepositoryResolver(context);
+        }
+
+        if (string.IsNullOrWhiteSpace(rawValue))
         {
             await WritePlainErrorAsync(context, StatusCodes.Status404NotFound, "Repository not found", cancellationToken).ConfigureAwait(false);
             return null;
@@ -175,7 +179,7 @@ public sealed class GitSmartHttpService
         string repositoryName;
         try
         {
-            repositoryName = NormalizeRepositoryName(rawValue!.ToString()!);
+            repositoryName = NormalizeRepositoryName(rawValue!);
         }
         catch
         {
