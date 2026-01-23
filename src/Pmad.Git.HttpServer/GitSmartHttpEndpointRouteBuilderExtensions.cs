@@ -18,7 +18,7 @@ public static class GitSmartHttpEndpointRouteBuilderExtensions
     /// to register the service first.
     /// </summary>
     /// <param name="endpoints">The <see cref="IEndpointRouteBuilder"/> to add routes to.</param>
-    /// <param name="pattern">The route pattern.</param>
+    /// <param name="pattern">The route pattern. Can contain any number of parameters or none.</param>
     /// <returns>The <see cref="IEndpointRouteBuilder"/> so that additional calls can be chained.</returns>
     /// <exception cref="ArgumentNullException">Thrown when <paramref name="endpoints"/> is null.</exception>
     /// <exception cref="InvalidOperationException">Thrown when GitSmartHttpService is not registered in DI.</exception>
@@ -38,15 +38,6 @@ public static class GitSmartHttpEndpointRouteBuilderExtensions
         }
 
         var parsedPattern = RoutePatternFactory.Parse(pattern);
-
-        if(parsedPattern.Parameters.Count != 1 ||
-           parsedPattern.Parameters[0].Name != GitSmartHttpService.RepositoryRouteKey)
-        {
-            throw new ArgumentException(
-                "The route pattern must contain exactly one parameter named '"+ GitSmartHttpService.RepositoryRouteKey + "'.",
-                nameof(pattern));
-        }
-
         var group = endpoints.MapGroup(parsedPattern);
 
         group.MapGet("/info/refs", (HttpContext context, CancellationToken cancellationToken) =>

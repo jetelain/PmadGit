@@ -64,29 +64,6 @@ public sealed class GitSmartHttpEndpointRouteBuilderExtensionsTest
     }
 
     [Fact]
-    public void MapGitSmartHttp_WithoutInvalidRoute_ShouldThrowInvalidOperationException()
-    {
-        // Arrange
-        var services = new ServiceCollection();
-        services.AddRouting();
-        services.AddSingleton<IGitRepositoryService, GitRepositoryService>();
-        services.AddSingleton(sp => new GitSmartHttpService(
-            new GitSmartHttpOptions { RepositoryRoot = CreateTemporaryDirectory() },
-            sp.GetRequiredService<IGitRepositoryService>()));
-        var provider = services.BuildServiceProvider();
-        
-        var endpoints = new TestEndpointRouteBuilder(provider);
-
-        // Act & Assert
-        var exception = Assert.Throws<ArgumentException>(() =>
-        {
-            endpoints.MapGitSmartHttp("/badprefix.git");
-        });
-        
-        Assert.Contains("The route pattern must contain exactly", exception.Message);
-    }
-
-    [Fact]
     public void MapGitSmartHttp_RegistersEndpoints()
     {
         // Arrange

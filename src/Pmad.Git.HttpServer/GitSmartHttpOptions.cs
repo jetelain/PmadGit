@@ -36,4 +36,11 @@ public sealed class GitSmartHttpOptions
     /// </summary>
     public Func<string, string>? RepositoryNameNormalizer { get; set; }
         = static name => name;
+
+    /// <summary>
+    /// Callback used to resolve the repository name from the HTTP context.
+    /// By default, extracts the "repository" route parameter.
+    /// </summary>
+    public Func<HttpContext, string?>? RepositoryResolver { get; set; }
+        = static context => context.Request.RouteValues.TryGetValue("repository", out var value) ? value?.ToString() : null;
 }
