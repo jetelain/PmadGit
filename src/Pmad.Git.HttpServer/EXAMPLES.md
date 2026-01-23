@@ -12,6 +12,7 @@ var builder = WebApplication.CreateBuilder(args);
 builder.Services.AddGitSmartHttp(options =>
 {
     options.RepositoryRoot = "/srv/git";
+    options.EnableReceivePack = false; // Disable push support
 });
 
 var app = builder.Build();
@@ -36,6 +37,7 @@ var builder = WebApplication.CreateBuilder(args);
 builder.Services.AddGitSmartHttp(options =>
 {
     options.RepositoryRoot = "/srv/git";
+    options.EnableReceivePack = false; // Disable push support
     options.RepositoryResolver = context =>
     {
         var org = context.Request.RouteValues["organization"]?.ToString();
@@ -79,6 +81,7 @@ var builder = WebApplication.CreateBuilder(args);
 builder.Services.AddGitSmartHttp(options =>
 {
     options.RepositoryRoot = "/srv/git";
+    options.EnableReceivePack = false; // Disable push support
     options.RepositoryResolver = context =>
     {
         // The catch-all parameter captures everything
@@ -115,6 +118,7 @@ var builder = WebApplication.CreateBuilder(args);
 builder.Services.AddGitSmartHttp(options =>
 {
     options.RepositoryRoot = "/srv/git";
+    options.EnableReceivePack = false; // Disable push support
     options.RepositoryResolver = context => "website";
 });
 
@@ -144,6 +148,7 @@ var builder = WebApplication.CreateBuilder(args);
 builder.Services.AddGitSmartHttp(options =>
 {
     options.RepositoryRoot = "/srv/git";
+    options.EnableReceivePack = false; // Disable push support
     options.RepositoryResolver = context =>
     {
         return context.Request.Query["repo"].FirstOrDefault();
@@ -172,6 +177,7 @@ var builder = WebApplication.CreateBuilder(args);
 builder.Services.AddGitSmartHttp(options =>
 {
     options.RepositoryRoot = "/srv/git";
+    options.EnableReceivePack = false; // Disable push support
     options.RepositoryResolver = context =>
     {
         return context.Request.Headers["X-Git-Repository"].FirstOrDefault();
@@ -197,6 +203,7 @@ var builder = WebApplication.CreateBuilder(args);
 builder.Services.AddGitSmartHttp(options =>
 {
     options.RepositoryRoot = "/srv/git";
+    options.EnableReceivePack = false; // Disable push support
     options.RepositoryResolver = context =>
     {
         var host = context.Request.Host.Host;
@@ -284,6 +291,7 @@ var builder = WebApplication.CreateBuilder(args);
 builder.Services.AddGitSmartHttp(options =>
 {
     options.RepositoryRoot = "/srv/git";
+    options.EnableReceivePack = false; // Disable push support
     options.RepositoryResolver = context =>
     {
         return context.Request.RouteValues["repository"]?.ToString();
