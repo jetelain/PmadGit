@@ -15,9 +15,9 @@ public sealed class GitSmartHttpOptions
     public bool EnableUploadPack { get; set; } = true;
 
     /// <summary>
-    /// Allows disabling push operations.
+    /// Allows enabling push operations. Disabled by default for security.
     /// </summary>
-    public bool EnableReceivePack { get; set; } = true;
+    public bool EnableReceivePack { get; set; } = false;
 
     /// <summary>
     /// Gets or sets the agent string advertised to git clients.

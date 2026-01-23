@@ -12,8 +12,7 @@ var builder = WebApplication.CreateBuilder(args);
 builder.Services.AddGitSmartHttp(new GitSmartHttpOptions
 {
     RepositoryRoot = "/srv/git",
-    EnableUploadPack = true,
-    EnableReceivePack = false
+    EnableUploadPack = true
 });
 
 var app = builder.Build();
@@ -29,7 +28,7 @@ With the sample above, git clients can clone/fetch repositories stored under `/s
 
 - `RepositoryRoot`: Absolute path containing repositories. Mandatory.
 - `EnableUploadPack`: Allows `git-upload-pack` (fetch/clone). Enabled by default.
-- `EnableReceivePack`: Allows `git-receive-pack` (push). Enabled by default.
+- `EnableReceivePack`: Allows `git-receive-pack` (push). Disabled by default.
 - `Agent`: String advertised to clients (shown by `git clone --verbose`).
 - `AuthorizeAsync`: Optional callback to allow/deny access per request.
 - `RepositoryNameNormalizer`: Optional sanitizer for custom routing schemes.
