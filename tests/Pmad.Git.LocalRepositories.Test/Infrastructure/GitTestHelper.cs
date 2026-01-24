@@ -2,7 +2,7 @@
 
 namespace Pmad.Git.LocalRepositories.Test.Infrastructure
 {
-    public static class GitTestHelper
+    internal static class GitTestHelper
     {
         internal static string GetHeadReference(GitTestRepository repo)
         {
@@ -104,7 +104,7 @@ namespace Pmad.Git.LocalRepositories.Test.Infrastructure
                     }
                 }
             }
-            catch(Exception ex)
+            catch (Exception ex)
             {
                 Debug.WriteLine($"Failed to delete test directory '{path}': {ex}");
                 // Ignore cleanup failures in tests - directory will be cleaned up eventually by temp cleanup

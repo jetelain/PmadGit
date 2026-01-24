@@ -171,7 +171,7 @@ public sealed class GitRepositoryConcurrencyTests : IDisposable
         // Arrange
         using var repo = GitTestRepository.Create();
         var commit1 = repo.Commit("First", ("file1.txt", "content1"));
-        var commit2 = repo.Commit("Second", ("file2.txt", "content2"));
+        repo.Commit("Second", ("file2.txt", "content2"));
         var commit3 = repo.Commit("Third", ("file3.txt", "content3"));
         var gitRepository = GitRepository.Open(repo.WorkingDirectory);
 
@@ -262,7 +262,7 @@ public sealed class GitRepositoryConcurrencyTests : IDisposable
         // Arrange
         using var repo = GitTestRepository.Create();
         var commit1 = repo.Commit("First", ("file.txt", "content"));
-        var commit2 = repo.Commit("Second", ("file.txt", "updated"));
+        repo.Commit("Second", ("file.txt", "updated"));
         var gitRepository = GitRepository.Open(repo.WorkingDirectory);
         var headRef = GitTestHelper.GetHeadReference(repo);
 
@@ -662,7 +662,6 @@ public sealed class GitRepositoryConcurrencyTests : IDisposable
         using var repo = GitTestRepository.Create();
         var gitRepository = GitRepository.Open(repo.WorkingDirectory);
         var headRef = GitTestHelper.GetHeadReference(repo);
-        var lockObject = new object();
 
         // Act
         var task1 = Task.Run(async () =>

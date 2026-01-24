@@ -182,7 +182,7 @@ public sealed class GitRepositoryLockManagerTests
             {
                 using (await lockManager.AcquireReferenceLockAsync("refs/heads/main"))
                 {
-                    counter++;
+                    Interlocked.Increment(ref counter);
                 }
             }
         })).ToArray();
@@ -209,7 +209,7 @@ public sealed class GitRepositoryLockManagerTests
             {
                 using (await lockManager.AcquireReferenceLockAsync(refName))
                 {
-                    counters[branchIndex]++;
+                    Interlocked.Increment(ref counters[branchIndex]);
                 }
             }
         })).ToArray();

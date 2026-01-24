@@ -73,22 +73,13 @@ internal static class TestHelper
     {
         if (host != null)
         {
-            try
+            using (host)
             {
                 // Use Task.Run to avoid potential deadlocks on sync disposal
                 Task.Run(async () =>
                 {
                     await host.StopAsync(CancellationToken.None).ConfigureAwait(false);
                 }).GetAwaiter().GetResult();
-            }
-            catch
-            {
-                // Ignore errors during shutdown
-            }
-            finally
-            {
-                host.Dispose();
-                host = null;
             }
 
             // Give the server time to fully release resources
