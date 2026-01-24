@@ -303,7 +303,7 @@ public sealed class GitPackBuilderTest : IDisposable
         }
         finally
         {
-            try { Directory.Delete(targetDir, true); } catch { }
+            TestHelper.TryDeleteDirectory(targetDir);
         }
     }
 
@@ -463,7 +463,7 @@ public sealed class GitPackBuilderTest : IDisposable
         }
         finally
         {
-            try { Directory.Delete(targetDir, true); } catch { }
+            TestHelper.TryDeleteDirectory(targetDir);
         }
     }
 
@@ -510,13 +510,6 @@ public sealed class GitPackBuilderTest : IDisposable
 
     public void Dispose()
     {
-        try
-        {
-            Directory.Delete(_workingDirectory, recursive: true);
-        }
-        catch
-        {
-            // Ignore cleanup failures in tests
-        }
+        TestHelper.TryDeleteDirectory(_workingDirectory);
     }
 }

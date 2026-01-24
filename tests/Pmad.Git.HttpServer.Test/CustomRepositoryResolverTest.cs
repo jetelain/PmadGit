@@ -259,13 +259,6 @@ public sealed class CustomRepositoryResolverTest : IDisposable
 
     public void Dispose()
     {
-        try
-        {
-            Directory.Delete(_serverRepoRoot, recursive: true);
-        }
-        catch
-        {
-            // Ignore cleanup failures in tests
-        }
+        TestHelper.TryDeleteDirectory(_serverRepoRoot);
     }
 }

@@ -81,13 +81,6 @@ public class PackFormatTest : IDisposable
 
     public void Dispose()
     {
-        try
-        {
-            Directory.Delete(_workingDirectory, recursive: true);
-        }
-        catch
-        {
-            // Ignore cleanup failures
-        }
+        TestHelper.TryDeleteDirectory(_workingDirectory);
     }
 }

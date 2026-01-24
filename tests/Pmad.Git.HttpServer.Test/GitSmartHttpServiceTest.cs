@@ -581,14 +581,7 @@ public sealed class GitSmartHttpServiceTest : IDisposable
 
     public void Dispose()
     {
-        try
-        {
-            Directory.Delete(_serverRepoRoot, recursive: true);
-        }
-        catch
-        {
-            // Ignore cleanup failures in tests
-        }
+        TestHelper.TryDeleteDirectory(_serverRepoRoot);
     }
 
     #endregion

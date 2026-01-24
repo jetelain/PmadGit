@@ -355,7 +355,7 @@ public sealed class GitObjectWalkerTest : IDisposable
         }
         finally
         {
-            try { Directory.Delete(emptyRepoDir, true); } catch { }
+            TestHelper.TryDeleteDirectory(emptyRepoDir);
         }
     }
 
@@ -520,13 +520,6 @@ public sealed class GitObjectWalkerTest : IDisposable
 
     public void Dispose()
     {
-        try
-        {
-            Directory.Delete(_workingDirectory, recursive: true);
-        }
-        catch
-        {
-            // Ignore cleanup failures in tests
-        }
+        TestHelper.TryDeleteDirectory(_workingDirectory);
     }
 }

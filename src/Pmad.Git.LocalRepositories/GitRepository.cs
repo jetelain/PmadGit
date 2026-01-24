@@ -15,6 +15,7 @@ public sealed class GitRepository
     private readonly Dictionary<GitHash, GitTree> _treeCache = new();
     private readonly object _commitLock = new();
     private readonly object _treeLock = new();
+    private readonly GitRepositoryLockManager _lockManager = new();
     private Lazy<Task<Dictionary<string, GitHash>>> _references;
     private const int RegularFileMode = 33188; // 100644 in octal
     private const int DirectoryMode = 16384;   // 040000 in octal
@@ -367,6 +368,7 @@ public sealed class GitRepository
 
     /// <summary>
     /// Creates a new commit on the specified branch by applying the provided operations.
+    /// This method is thread-safe and prevents concurrent commits to the same branch.
     /// </summary>
     /// <param name="branchName">Branch to update (short name or fully qualified ref).</param>
     /// <param name="operations">Sequence of file-system operations to apply.</param>
@@ -395,65 +397,69 @@ public sealed class GitRepository
         }
 
         var referencePath = NormalizeReference(branchName);
-        var parentHash = await TryResolveReferencePathAsync(referencePath, cancellationToken).ConfigureAwait(false)
-            ?? throw new InvalidOperationException($"Branch '{branchName}' does not exist.");
-
-        var parentCommit = await GetCommitAsync(parentHash, cancellationToken).ConfigureAwait(false);
-        var entries = await LoadLeafEntriesAsync(parentCommit.Tree, cancellationToken).ConfigureAwait(false);
-        var changed = false;
-
-        foreach (var operation in operations)
+        
+        // Acquire lock for this branch to prevent concurrent commits
+        using (await _lockManager.AcquireReferenceLockAsync(referencePath, cancellationToken).ConfigureAwait(false))
         {
-            cancellationToken.ThrowIfCancellationRequested();
-            if (operation is null)
+            var parentHash = await TryResolveReferencePathAsync(referencePath, cancellationToken).ConfigureAwait(false)
+                ?? throw new InvalidOperationException($"Branch '{branchName}' does not exist.");
+
+            var parentCommit = await GetCommitAsync(parentHash, cancellationToken).ConfigureAwait(false);
+            var entries = await LoadLeafEntriesAsync(parentCommit.Tree, cancellationToken).ConfigureAwait(false);
+            var changed = false;
+
+            foreach (var operation in operations)
             {
-                throw new ArgumentException("Operations cannot contain null entries", nameof(operations));
+                cancellationToken.ThrowIfCancellationRequested();
+                if (operation is null)
+                {
+                    throw new ArgumentException("Operations cannot contain null entries", nameof(operations));
+                }
+
+                var normalizedPath = NormalizePath(operation.Path);
+                switch (operation)
+                {
+                    case AddFileOperation add:
+                        changed |= await ApplyAddFileAsync(entries, normalizedPath, add.Content, cancellationToken).ConfigureAwait(false);
+                        break;
+                    case UpdateFileOperation update:
+                        changed |= await ApplyUpdateFileAsync(entries, normalizedPath, update.Content, cancellationToken).ConfigureAwait(false);
+                        break;
+                    case RemoveFileOperation _:
+                        changed |= ApplyRemoveFile(entries, normalizedPath);
+                        break;
+                    case MoveFileOperation move:
+                        changed |= ApplyMoveFile(entries, normalizedPath, NormalizePath(move.DestinationPath));
+                        break;
+                    default:
+                        throw new NotSupportedException($"Unsupported operation type '{operation.GetType().Name}'.");
+                }
             }
 
-            var normalizedPath = NormalizePath(operation.Path);
-            switch (operation)
+            if (!changed)
             {
-                case AddFileOperation add:
-                    changed |= await ApplyAddFileAsync(entries, normalizedPath, add.Content, cancellationToken).ConfigureAwait(false);
-                    break;
-                case UpdateFileOperation update:
-                    changed |= await ApplyUpdateFileAsync(entries, normalizedPath, update.Content, cancellationToken).ConfigureAwait(false);
-                    break;
-                case RemoveFileOperation remove:
-                    changed |= ApplyRemoveFile(entries, normalizedPath);
-                    break;
-                case MoveFileOperation move:
-                    changed |= ApplyMoveFile(entries, normalizedPath, NormalizePath(move.DestinationPath));
-                    break;
-                default:
-                    throw new NotSupportedException($"Unsupported operation type '{operation.GetType().Name}'.");
+                throw new InvalidOperationException("The requested operations do not change the repository state.");
             }
+
+            var newTreeHash = await BuildTreeAsync(entries, cancellationToken).ConfigureAwait(false);
+            if (newTreeHash.Equals(parentCommit.Tree))
+            {
+                throw new InvalidOperationException("The resulting tree matches the parent commit.");
+            }
+
+            var commitPayload = BuildCommitPayload(newTreeHash, parentHash, metadata);
+            var commitHash = await WriteObjectAsync(GitObjectType.Commit, commitPayload, cancellationToken).ConfigureAwait(false);
+
+            var parsedCommit = GitCommit.Parse(commitHash, commitPayload);
+            lock (_commitLock)
+            {
+                _commitCache[commitHash] = parsedCommit;
+            }
+        
+            await WriteReferenceWithValidationInternalAsync(referencePath, parentHash, commitHash, cancellationToken).ConfigureAwait(false);
+
+            return commitHash;
         }
-
-        if (!changed)
-        {
-            throw new InvalidOperationException("The requested operations do not change the repository state.");
-        }
-
-        var newTreeHash = await BuildTreeAsync(entries, cancellationToken).ConfigureAwait(false);
-        if (newTreeHash.Equals(parentCommit.Tree))
-        {
-            throw new InvalidOperationException("The resulting tree matches the parent commit.");
-        }
-
-        var commitPayload = BuildCommitPayload(newTreeHash, parentHash, metadata);
-        var commitHash = await WriteObjectAsync(GitObjectType.Commit, commitPayload, cancellationToken).ConfigureAwait(false);
-
-        var parsedCommit = GitCommit.Parse(commitHash, commitPayload);
-        lock (_commitLock)
-        {
-            _commitCache[commitHash] = parsedCommit;
-        }
-
-        await UpdateReferenceAsync(referencePath, commitHash, cancellationToken).ConfigureAwait(false);
-        Interlocked.Exchange(ref _references, CreateReferenceCache());
-
-        return commitHash;
     }
 
     /// <summary>
@@ -512,24 +518,160 @@ public sealed class GitRepository
     }
 
     /// <summary>
-    /// Writes or overwrites the value of a reference file inside the repository.
+    /// Writes or overwrites the value of a reference file with validation.
+    /// This method validates that the expected old value matches the current value before updating.
     /// </summary>
     /// <param name="referencePath">Fully qualified reference path (for example refs/heads/main).</param>
-    /// <param name="commitHash">Hash to persist.</param>
+    /// <param name="expectedOldValue">Expected current hash of the reference, or null if reference should not exist.</param>
+    /// <param name="newValue">New hash to persist, or null to delete the reference.</param>
     /// <param name="cancellationToken">Token used to cancel the async operation.</param>
-    public Task WriteReferenceAsync(string referencePath, GitHash commitHash, CancellationToken cancellationToken = default)
-        => UpdateReferenceAsync(NormalizeAbsoluteReferencePath(referencePath), commitHash, cancellationToken);
+    /// <exception cref="InvalidOperationException">Thrown when the expected old value doesn't match the current value.</exception>
+    public async Task WriteReferenceWithValidationAsync(
+        string referencePath, 
+        GitHash? expectedOldValue, 
+        GitHash? newValue,
+        CancellationToken cancellationToken = default)
+    {
+        var normalized = NormalizeAbsoluteReferencePath(referencePath);
+        using (await _lockManager.AcquireReferenceLockAsync(normalized, cancellationToken).ConfigureAwait(false))
+        {
+            await WriteReferenceWithValidationInternalAsync(normalized, expectedOldValue, newValue, cancellationToken).ConfigureAwait(false);
+        }
+    }
 
     /// <summary>
-    /// Deletes the specified reference when it exists.
+    /// Internal method to write a reference with validation without acquiring locks.
+    /// Locks must be acquired by the caller.
     /// </summary>
-    /// <param name="referencePath">Fully qualified reference path (for example refs/tags/v1.0).</param>
+    /// <param name="normalized">The normalized form of the reference path used for resolution.</param>
+    /// <param name="expectedOldValue">Expected current hash of the reference, or null if reference should not exist.</param>
+    /// <param name="newValue">New hash to persist, or null to delete the reference.</param>
     /// <param name="cancellationToken">Token used to cancel the async operation.</param>
-    public Task DeleteReferenceAsync(string referencePath, CancellationToken cancellationToken = default)
+    /// <exception cref="InvalidOperationException">Thrown when the expected old value doesn't match the current value.</exception>
+    internal async Task WriteReferenceWithValidationInternalAsync(
+        string normalized,
+        GitHash? expectedOldValue,
+        GitHash? newValue,
+        CancellationToken cancellationToken)
+    {
+        await ValidateReferenceOldValue(normalized, expectedOldValue, cancellationToken).ConfigureAwait(false);
+
+        // Apply update
+        if (newValue.HasValue)
+        {
+            await UpdateReferenceAsync(normalized, newValue.Value, cancellationToken).ConfigureAwait(false);
+        }
+        else
+        {
+            await DeleteReferenceInternalAsync(normalized, cancellationToken).ConfigureAwait(false);
+        }
+
+        // Invalidate reference cache to ensure subsequent reads see the updated value
+        Interlocked.Exchange(ref _references, CreateReferenceCache());
+    }
+
+    /// <summary>
+    /// Validates that the reference at the specified path matches the expected old value or does not exist, depending
+    /// on the provided expectation.
+    /// </summary>
+    /// <param name="normalized">The normalized form of the reference path used for resolution.</param>
+    /// <param name="expectedOldValue">The expected value of the reference. If specified, the reference must exist and match this value; if null, the
+    /// reference must not exist.</param>
+    /// <param name="cancellationToken">A cancellation token that can be used to cancel the asynchronous operation.</param>
+    /// <returns>A task that represents the asynchronous validation operation.</returns>
+    /// <exception cref="InvalidOperationException">Thrown if the reference does not exist when an expected value is provided, if the reference exists but its value
+    /// does not match the expected value, or if the reference exists when no value is expected.</exception>
+    private async Task ValidateReferenceOldValue(string normalized, GitHash? expectedOldValue, CancellationToken cancellationToken)
+    {
+        var currentValue = await TryResolveReferencePathAsync(normalized, cancellationToken).ConfigureAwait(false);
+
+        // Validate expected state
+        if (expectedOldValue.HasValue)
+        {
+            if (!currentValue.HasValue)
+            {
+                throw new InvalidOperationException($"Reference '{normalized}' does not exist, but was expected to have value {expectedOldValue.Value.Value}");
+            }
+            if (!currentValue.Value.Equals(expectedOldValue.Value))
+            {
+                throw new InvalidOperationException($"Reference '{normalized}' has value {currentValue.Value.Value}, but was expected to have value {expectedOldValue.Value.Value}");
+            }
+        }
+        else
+        {
+            if (currentValue.HasValue)
+            {
+                throw new InvalidOperationException($"Reference '{normalized}' already exists with value {currentValue.Value.Value}");
+            }
+        }
+    }
+
+    /// <summary>
+    /// Acquires locks for multiple references in a consistent order to prevent deadlocks.
+    /// This is used for batch reference updates like git push.
+    /// </summary>
+    /// <param name="referencePaths">Fully qualified reference paths to lock.</param>
+    /// <param name="cancellationToken">Token used to cancel the async operation.</param>
+    /// <returns>A disposable lock that must be released after all operations complete.</returns>
+    public Task<IDisposable> AcquireMultipleReferenceLocksAsync(IEnumerable<string> referencePaths, CancellationToken cancellationToken = default)
+    {
+        if (referencePaths is null)
+        {
+            throw new ArgumentNullException(nameof(referencePaths));
+        }
+
+        // Normalize all reference paths to ensure consistency
+        var normalizedPaths = referencePaths.Select(NormalizeAbsoluteReferencePath).ToList();
+        
+        return _lockManager.AcquireMultipleReferenceLocksAsync(normalizedPaths, cancellationToken);
+    }
+
+    /// <summary>
+    /// Checks if a commit is reachable from another commit (for fast-forward validation).
+    /// </summary>
+    /// <param name="from">The commit to start from.</param>
+    /// <param name="to">The target commit to check reachability.</param>
+    /// <param name="cancellationToken">Token used to cancel the async operation.</param>
+    /// <returns>True if 'to' is reachable from 'from', false otherwise.</returns>
+    public async Task<bool> IsCommitReachableAsync(GitHash from, GitHash to, CancellationToken cancellationToken = default)
+    {
+        if (from.Equals(to))
+        {
+            return true;
+        }
+
+        var visited = new HashSet<string>(StringComparer.Ordinal);
+        var queue = new Queue<GitHash>();
+        queue.Enqueue(from);
+
+        while (queue.Count > 0)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var current = queue.Dequeue();
+            if (!visited.Add(current.Value))
+            {
+                continue;
+            }
+
+            if (current.Equals(to))
+            {
+                return true;
+            }
+
+            var commit = await GetCommitAsync(current, cancellationToken).ConfigureAwait(false);
+            foreach (var parent in commit.Parents)
+            {
+                queue.Enqueue(parent);
+            }
+        }
+
+        return false;
+    }
+
+    private Task DeleteReferenceInternalAsync(string normalizedReferencePath, CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        var normalized = NormalizeAbsoluteReferencePath(referencePath);
-        var refPath = Path.Combine(GitDirectory, normalized.Replace('/', Path.DirectorySeparatorChar));
+        var refPath = Path.Combine(GitDirectory, normalizedReferencePath.Replace('/', Path.DirectorySeparatorChar));
         if (File.Exists(refPath))
         {
             File.Delete(refPath);
@@ -705,6 +847,11 @@ public sealed class GitRepository
         if (string.IsNullOrEmpty(normalized))
         {
             throw new ArgumentException("Reference path cannot be empty", nameof(referencePath));
+        }
+
+        if (!normalized.StartsWith("refs/", StringComparison.Ordinal))
+        {
+            throw new ArgumentException($"Absolute reference path must start with 'refs/', got '{referencePath}'", nameof(referencePath));
         }
 
         return normalized;

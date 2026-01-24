@@ -439,16 +439,6 @@ public sealed class GitRepositoryInitTests : IDisposable
 
 	public void Dispose()
 	{
-		try
-		{
-			if (Directory.Exists(_testRoot))
-			{
-				Directory.Delete(_testRoot, recursive: true);
-			}
-		}
-		catch
-		{
-			// Ignore cleanup failures in tests
-		}
-	}
+        GitTestHelper.TryDeleteDirectory(_testRoot);
+    }
 }

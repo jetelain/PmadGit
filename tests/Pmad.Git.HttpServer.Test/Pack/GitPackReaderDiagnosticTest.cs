@@ -65,7 +65,7 @@ public class GitPackReaderDiagnosticTest : IDisposable
         }
         finally
         {
-            try { Directory.Delete(targetDir, true); } catch { }
+            TestHelper.TryDeleteDirectory(targetDir);
         }
     }
 
@@ -100,6 +100,6 @@ public class GitPackReaderDiagnosticTest : IDisposable
 
     public void Dispose()
     {
-        try { Directory.Delete(_workingDirectory, true); } catch { }
+        TestHelper.TryDeleteDirectory(_workingDirectory);
     }
 }
