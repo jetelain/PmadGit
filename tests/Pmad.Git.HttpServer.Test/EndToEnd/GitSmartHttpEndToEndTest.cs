@@ -482,9 +482,7 @@ public sealed class GitSmartHttpEndToEndTest : IDisposable
 
     public void Dispose()
     {
-        _host?.StopAsync().GetAwaiter().GetResult();
-        _host?.Dispose();
-        
+        TestHelper.SafeStop(_host);
         TestHelper.TryDeleteDirectory(_serverRepoRoot);
         TestHelper.TryDeleteDirectory(_clientWorkingDir);
     }

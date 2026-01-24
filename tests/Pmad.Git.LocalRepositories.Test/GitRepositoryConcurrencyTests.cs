@@ -705,16 +705,6 @@ public sealed class GitRepositoryConcurrencyTests : IDisposable
 
     public void Dispose()
     {
-        try
-        {
-            if (Directory.Exists(_tempDirectory))
-            {
-                Directory.Delete(_tempDirectory, recursive: true);
-            }
-        }
-        catch
-        {
-            // Ignore cleanup failures
-        }
+        GitTestHelper.TryDeleteDirectory(_tempDirectory);
     }
 }

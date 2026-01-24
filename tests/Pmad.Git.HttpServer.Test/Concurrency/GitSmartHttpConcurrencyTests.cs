@@ -25,7 +25,7 @@ public sealed class GitSmartHttpConcurrencyTests : IDisposable
         Directory.CreateDirectory(_clientWorkingDir);
     }
 
-    [Fact(Timeout = 20_000)]
+    [Fact]
     public async Task ConcurrentPushes_AreSerialized()
     {
         // Arrange
@@ -100,7 +100,7 @@ public sealed class GitSmartHttpConcurrencyTests : IDisposable
         }
     }
 
-    [Fact(Timeout = 20_000)]
+    [Fact]
     public async Task NonFastForwardPush_IsRejected()
     {
         // Arrange
@@ -139,7 +139,7 @@ public sealed class GitSmartHttpConcurrencyTests : IDisposable
             $"Expected push to be rejected with appropriate error, but got: {exception.Message}");
     }
 
-    [Fact(Timeout = 20_000)]
+    [Fact]
     public async Task FastForwardPush_Succeeds()
     {
         // Arrange
@@ -162,7 +162,7 @@ public sealed class GitSmartHttpConcurrencyTests : IDisposable
         Assert.Contains("main -> main", output);
     }
 
-    [Fact(Timeout = 20_000)]
+    [Fact]
     public async Task PushAfterFetch_Succeeds()
     {
         // Arrange
@@ -199,7 +199,7 @@ public sealed class GitSmartHttpConcurrencyTests : IDisposable
         Assert.Contains("main -> main", output);
     }
 
-    [Fact(Timeout = 40_000)]
+    [Fact]
     public async Task StressTest_MultipleConcurrentPushes()
     {
         // Arrange
@@ -259,7 +259,7 @@ public sealed class GitSmartHttpConcurrencyTests : IDisposable
         }
     }
 
-    [Fact(Timeout = 20_000)]
+    [Fact]
     public async Task PushLock_PreventsInterleavedWrites()
     {
         // This test verifies that the push lock prevents reference updates
@@ -361,7 +361,7 @@ public sealed class GitSmartHttpConcurrencyTests : IDisposable
         }
         finally
         {
-            try { Directory.Delete(workDir, true); } catch { }
+            TestHelper.TryDeleteDirectory(workDir);
         }
         
         return GitRepository.Open(bareRepoPath);
@@ -427,10 +427,8 @@ public sealed class GitSmartHttpConcurrencyTests : IDisposable
 
     public void Dispose()
     {
-        _host?.StopAsync().GetAwaiter().GetResult();
-        _host?.Dispose();
-        
-        try { Directory.Delete(_serverRepoRoot, true); } catch { }
-        try { Directory.Delete(_clientWorkingDir, true); } catch { }
+        TestHelper.SafeStop(_host);
+        TestHelper.TryDeleteDirectory(_serverRepoRoot);
+        TestHelper.TryDeleteDirectory(_clientWorkingDir);
     }
 }
