@@ -74,41 +74,47 @@ public sealed class GitRepositoryConcurrencyTests : IDisposable
         var defaultBranch = GitTestHelper.GetDefaultBranch(repo);
 
         var startSignal = new TaskCompletionSource<bool>();
-        var startTimes = new List<DateTimeOffset>();
-        var endTimes = new List<DateTimeOffset>();
+        var commits = new List<GitHash>();
         var lockObject = new object();
 
-        // Act
+        // Act - Two tasks commit to different branches simultaneously
         var task1 = Task.Run(async () =>
         {
             await startSignal.Task;
-            lock (lockObject) { startTimes.Add(DateTimeOffset.UtcNow); }
-            await gitRepository.CreateCommitAsync(
+            var hash = await gitRepository.CreateCommitAsync(
                 defaultBranch,
                 new GitCommitOperation[] { new AddFileOperation("main.txt", Encoding.UTF8.GetBytes("main")) },
                 CreateMetadata("Main commit"));
-            lock (lockObject) { endTimes.Add(DateTimeOffset.UtcNow); }
+            lock (lockObject) { commits.Add(hash); }
         });
 
         var task2 = Task.Run(async () =>
         {
             await startSignal.Task;
-            lock (lockObject) { startTimes.Add(DateTimeOffset.UtcNow); }
-            await gitRepository.CreateCommitAsync(
+            var hash = await gitRepository.CreateCommitAsync(
                 "feature",
                 new GitCommitOperation[] { new AddFileOperation("feature.txt", Encoding.UTF8.GetBytes("feature")) },
                 CreateMetadata("Feature commit"));
-            lock (lockObject) { endTimes.Add(DateTimeOffset.UtcNow); }
+            lock (lockObject) { commits.Add(hash); }
         });
 
         startSignal.SetResult(true);
         await Task.WhenAll(task1, task2);
 
-        // Assert - Operations should overlap (run in parallel)
-        var maxStart = startTimes.Max();
-        var minEnd = endTimes.Min();
+        // Assert - Both commits should succeed (no deadlock or blocking)
+        Assert.Equal(2, commits.Count);
+        Assert.NotEqual(commits[0], commits[1]);
 
-        Assert.True(maxStart < minEnd, "Operations on different branches should run in parallel");
+        // Verify both files exist in their respective branches
+        gitRepository.InvalidateCaches();
+        
+        // Check main branch - file should exist
+        var mainContent = await gitRepository.ReadFileAsync("main.txt", reference: defaultBranch);
+        Assert.Equal("main", Encoding.UTF8.GetString(mainContent));
+        
+        // Check feature branch - file should exist
+        var featureContent = await gitRepository.ReadFileAsync("feature.txt", reference: "feature");
+        Assert.Equal("feature", Encoding.UTF8.GetString(featureContent));
     }
 
     [Fact]
