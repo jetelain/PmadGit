@@ -378,6 +378,19 @@ public sealed class GitRepositoryWriteOperationsTests
 			gitRepository.WriteReferenceAsync("", headCommit.Id));
 	}
 
+	[Fact]
+	public async Task WriteReferenceAsync_WithNonAbsolutePath_ThrowsArgumentException()
+	{
+		using var repo = GitTestRepository.Create();
+		var gitRepository = GitRepository.Open(repo.WorkingDirectory);
+		var headCommit = await gitRepository.GetCommitAsync();
+
+		var exception = await Assert.ThrowsAsync<ArgumentException>(() =>
+			gitRepository.WriteReferenceAsync("main", headCommit.Id));
+		
+		Assert.Contains("must start with 'refs/'", exception.Message);
+	}
+
 	#endregion
 
 	#region DeleteReferenceAsync
@@ -425,6 +438,18 @@ public sealed class GitRepositoryWriteOperationsTests
 
 		await Assert.ThrowsAsync<ArgumentException>(() =>
 			gitRepository.DeleteReferenceAsync(""));
+	}
+
+	[Fact]
+	public async Task DeleteReferenceAsync_WithNonAbsolutePath_ThrowsArgumentException()
+	{
+		using var repo = GitTestRepository.Create();
+		var gitRepository = GitRepository.Open(repo.WorkingDirectory);
+
+		var exception = await Assert.ThrowsAsync<ArgumentException>(() =>
+			gitRepository.DeleteReferenceAsync("main"));
+		
+		Assert.Contains("must start with 'refs/'", exception.Message);
 	}
 
 	#endregion

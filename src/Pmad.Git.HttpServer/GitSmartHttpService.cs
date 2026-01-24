@@ -151,15 +151,21 @@ public sealed class GitSmartHttpService
             unpackStatus = "unpack ok";
         }
 
-        var refSnapshot = new Dictionary<string, GitHash>(await repository.GetReferencesAsync(cancellationToken).ConfigureAwait(false), StringComparer.Ordinal);
-        var refStatuses = new List<RefStatus>(updates.Count);
-        foreach (var update in updates)
+        // Acquire locks for all affected references to prevent concurrent modifications
+        // Locks are acquired in sorted order to prevent deadlocks
+        var referencePaths = updates.Select(u => NormalizeReferencePath(u.Name)).ToList();
+        using (await repository.AcquireMultipleReferenceLocksAsync(referencePaths, cancellationToken).ConfigureAwait(false))
         {
-            var status = await ApplyReferenceUpdateAsync(repository, refSnapshot, update, cancellationToken).ConfigureAwait(false);
-            refStatuses.Add(status);
-        }
+            var refSnapshot = new Dictionary<string, GitHash>(await repository.GetReferencesAsync(cancellationToken).ConfigureAwait(false), StringComparer.Ordinal);
+            var refStatuses = new List<RefStatus>(updates.Count);
+            foreach (var update in updates)
+            {
+                var status = await ApplyReferenceUpdateInternalAsync(repository, refSnapshot, update, cancellationToken).ConfigureAwait(false);
+                refStatuses.Add(status);
+            }
 
-        await WriteReceivePackStatusAsync(context, unpackStatus, refStatuses, capabilities.Contains("report-status"), cancellationToken).ConfigureAwait(false);
+            await WriteReceivePackStatusAsync(context, unpackStatus, refStatuses, capabilities.Contains("report-status"), cancellationToken).ConfigureAwait(false);
+        }
     }
 
     private async Task<(GitRepository Repository, string Name)?> TryOpenRepositoryAsync(HttpContext context, CancellationToken cancellationToken)
@@ -546,7 +552,7 @@ public sealed class GitSmartHttpService
         return true;
     }
 
-    private async Task<RefStatus> ApplyReferenceUpdateAsync(
+    private async Task<RefStatus> ApplyReferenceUpdateInternalAsync(
         GitRepository repository,
         IDictionary<string, GitHash> snapshot,
         RefUpdate update,
@@ -569,14 +575,19 @@ public sealed class GitSmartHttpService
 
         try
         {
+            // Use internal method that doesn't acquire locks (locks are already held by caller)
+            await repository.WriteReferenceWithValidationInternalAsync(
+                normalized,
+                update.OldValue,
+                update.NewValue,
+                cancellationToken).ConfigureAwait(false);
+            
             if (update.NewValue.HasValue)
             {
-                await repository.WriteReferenceAsync(normalized, update.NewValue.Value, cancellationToken).ConfigureAwait(false);
                 snapshot[normalized] = update.NewValue.Value;
             }
             else
             {
-                await repository.DeleteReferenceAsync(normalized, cancellationToken).ConfigureAwait(false);
                 snapshot.Remove(normalized);
             }
         }
