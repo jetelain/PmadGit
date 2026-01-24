@@ -401,11 +401,18 @@ public sealed class GitRepository
         // Acquire lock for this branch to prevent concurrent commits
         using (await _lockManager.AcquireReferenceLockAsync(referencePath, cancellationToken).ConfigureAwait(false))
         {
-            var parentHash = await TryResolveReferencePathAsync(referencePath, cancellationToken).ConfigureAwait(false)
-                ?? throw new InvalidOperationException($"Branch '{branchName}' does not exist.");
+            var parentHash = await TryResolveReferencePathAsync(referencePath, cancellationToken).ConfigureAwait(false);
 
-            var parentCommit = await GetCommitAsync(parentHash, cancellationToken).ConfigureAwait(false);
-            var entries = await LoadLeafEntriesAsync(parentCommit.Tree, cancellationToken).ConfigureAwait(false);
+            Dictionary<string, TreeLeaf> entries;
+            if (parentHash.HasValue)
+            {
+                var parentCommit = await GetCommitAsync(parentHash.Value, cancellationToken).ConfigureAwait(false);
+                entries = await LoadLeafEntriesAsync(parentCommit.Tree, cancellationToken).ConfigureAwait(false);
+            }
+            else
+            {
+                entries = new Dictionary<string, TreeLeaf>(StringComparer.Ordinal);
+            }
             var changed = false;
 
             foreach (var operation in operations)
@@ -442,9 +449,13 @@ public sealed class GitRepository
             }
 
             var newTreeHash = await BuildTreeAsync(entries, cancellationToken).ConfigureAwait(false);
-            if (newTreeHash.Equals(parentCommit.Tree))
+            if (parentHash.HasValue)
             {
-                throw new InvalidOperationException("The resulting tree matches the parent commit.");
+                var parentCommit = await GetCommitAsync(parentHash.Value, cancellationToken).ConfigureAwait(false);
+                if (newTreeHash.Equals(parentCommit.Tree))
+                {
+                    throw new InvalidOperationException("The resulting tree matches the parent commit.");
+                }
             }
 
             var commitPayload = BuildCommitPayload(newTreeHash, parentHash, metadata);
@@ -997,11 +1008,14 @@ public sealed class GitRepository
         return await WriteObjectAsync(GitObjectType.Tree, buffer.ToArray(), cancellationToken).ConfigureAwait(false);
     }
 
-    private static byte[] BuildCommitPayload(GitHash treeHash, GitHash parentHash, GitCommitMetadata metadata)
+    private static byte[] BuildCommitPayload(GitHash treeHash, GitHash? parentHash, GitCommitMetadata metadata)
     {
         var builder = new StringBuilder();
         builder.Append("tree ").Append(treeHash.Value).Append('\n');
-        builder.Append("parent ").Append(parentHash.Value).Append('\n');
+        if (parentHash.HasValue)
+        {
+            builder.Append("parent ").Append(parentHash.Value.Value).Append('\n');
+        }
         builder.Append("author ")
             .Append(metadata.Author.ToHeaderValue())
             .Append('\n');

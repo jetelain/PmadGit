@@ -8,6 +8,218 @@ namespace Pmad.Git.LocalRepositories.Test;
 /// </summary>
 public sealed class GitRepositoryWriteOperationsTests
 {
+	#region CreateCommitAsync - Initial Commit
+
+	[Fact]
+	public async Task CreateCommitAsync_CanCreateInitialCommit()
+	{
+		var repoPath = Path.Combine(Path.GetTempPath(), $"initial-commit-test-{Guid.NewGuid():N}");
+		try
+		{
+			var repository = GitRepository.Init(repoPath);
+			var metadata = CreateMetadata("Initial commit");
+
+			var commitHash = await repository.CreateCommitAsync(
+				"main",
+				new GitCommitOperation[]
+				{
+					new AddFileOperation("README.md", Encoding.UTF8.GetBytes("# My Project")),
+					new AddFileOperation("src/app.txt", Encoding.UTF8.GetBytes("app content"))
+				},
+				metadata);
+
+			var commit = await repository.GetCommitAsync(commitHash.Value);
+			Assert.Equal("Initial commit", commit.Message.Trim());
+			Assert.Empty(commit.Parents);
+
+			var readmeContent = await repository.ReadFileAsync("README.md", commitHash.Value);
+			Assert.Equal("# My Project", Encoding.UTF8.GetString(readmeContent));
+
+			var appContent = await repository.ReadFileAsync("src/app.txt", commitHash.Value);
+			Assert.Equal("app content", Encoding.UTF8.GetString(appContent));
+
+			var refs = await repository.GetReferencesAsync();
+			Assert.Contains(refs, r => r.Key == "refs/heads/main");
+			Assert.Equal(commitHash, refs["refs/heads/main"]);
+		}
+		finally
+		{
+			GitTestHelper.TryDeleteDirectory(repoPath);
+		}
+	}
+
+	[Fact]
+	public async Task CreateCommitAsync_InitialCommitVisibleToGitCli()
+	{
+		var repoPath = Path.Combine(Path.GetTempPath(), $"initial-cli-test-{Guid.NewGuid():N}");
+		try
+		{
+			var repository = GitRepository.Init(repoPath);
+			var metadata = CreateMetadata("First commit");
+
+			var commitHash = await repository.CreateCommitAsync(
+				"main",
+				new GitCommitOperation[]
+				{
+					new AddFileOperation("file.txt", Encoding.UTF8.GetBytes("content"))
+				},
+				metadata);
+
+			var gitLog = GitTestHelper.RunGit(repoPath, "log --oneline");
+			Assert.Contains("First commit", gitLog);
+
+			var gitShow = GitTestHelper.RunGit(repoPath, "show HEAD:file.txt");
+			Assert.Equal("content", gitShow.Trim());
+
+			var gitRevParse = GitTestHelper.RunGit(repoPath, "rev-parse HEAD").Trim();
+			Assert.Equal(commitHash.Value, gitRevParse);
+
+			var gitParents = GitTestHelper.RunGit(repoPath, "rev-list --parents -1 HEAD").Trim();
+			var parts = gitParents.Split(' ');
+			Assert.Single(parts);
+			Assert.Equal(commitHash.Value, parts[0]);
+		}
+		finally
+		{
+			GitTestHelper.TryDeleteDirectory(repoPath);
+		}
+	}
+
+	[Fact]
+	public async Task CreateCommitAsync_InitialCommitOnCustomBranch()
+	{
+		var repoPath = Path.Combine(Path.GetTempPath(), $"initial-custom-branch-{Guid.NewGuid():N}");
+		try
+		{
+			var repository = GitRepository.Init(repoPath, initialBranch: "develop");
+			var metadata = CreateMetadata("Initial on develop");
+
+			var commitHash = await repository.CreateCommitAsync(
+				"develop",
+				new GitCommitOperation[]
+				{
+					new AddFileOperation("dev.txt", Encoding.UTF8.GetBytes("development"))
+				},
+				metadata);
+
+			var refs = await repository.GetReferencesAsync();
+			Assert.Contains(refs, r => r.Key == "refs/heads/develop");
+			Assert.Equal(commitHash, refs["refs/heads/develop"]);
+
+			var commit = await repository.GetCommitAsync("develop");
+			Assert.Empty(commit.Parents);
+			Assert.Equal("Initial on develop", commit.Message.Trim());
+		}
+		finally
+		{
+			GitTestHelper.TryDeleteDirectory(repoPath);
+		}
+	}
+
+	[Fact]
+	public async Task CreateCommitAsync_InitialCommitThenSecondCommit()
+	{
+		var repoPath = Path.Combine(Path.GetTempPath(), $"initial-then-second-{Guid.NewGuid():N}");
+		try
+		{
+			var repository = GitRepository.Init(repoPath);
+
+			var firstCommit = await repository.CreateCommitAsync(
+				"main",
+				new GitCommitOperation[] { new AddFileOperation("file1.txt", Encoding.UTF8.GetBytes("first")) },
+				CreateMetadata("First commit"));
+
+			repository.InvalidateCaches();
+
+			var secondCommit = await repository.CreateCommitAsync(
+				"main",
+				new GitCommitOperation[] { new AddFileOperation("file2.txt", Encoding.UTF8.GetBytes("second")) },
+				CreateMetadata("Second commit"));
+
+			var commit2 = await repository.GetCommitAsync(secondCommit.Value);
+			Assert.Single(commit2.Parents);
+			Assert.Equal(firstCommit, commit2.Parents[0]);
+
+			var commit1 = await repository.GetCommitAsync(firstCommit.Value);
+			Assert.Empty(commit1.Parents);
+
+			var file1Content = await repository.ReadFileAsync("file1.txt", secondCommit.Value);
+			Assert.Equal("first", Encoding.UTF8.GetString(file1Content));
+
+			var file2Content = await repository.ReadFileAsync("file2.txt", secondCommit.Value);
+			Assert.Equal("second", Encoding.UTF8.GetString(file2Content));
+		}
+		finally
+		{
+			GitTestHelper.TryDeleteDirectory(repoPath);
+		}
+	}
+
+	[Fact]
+	public async Task CreateCommitAsync_InitialCommitWithEmptyOperationsThrows()
+	{
+		var repoPath = Path.Combine(Path.GetTempPath(), $"initial-empty-{Guid.NewGuid():N}");
+		try
+		{
+			var repository = GitRepository.Init(repoPath);
+
+			await Assert.ThrowsAsync<InvalidOperationException>(
+				() => repository.CreateCommitAsync(
+					"main",
+					Array.Empty<GitCommitOperation>(),
+					CreateMetadata("Empty commit")));
+		}
+		finally
+		{
+			GitTestHelper.TryDeleteDirectory(repoPath);
+		}
+	}
+
+	[Fact]
+	public async Task CreateCommitAsync_InitialCommitWithMultipleFiles()
+	{
+		var repoPath = Path.Combine(Path.GetTempPath(), $"initial-multi-{Guid.NewGuid():N}");
+		try
+		{
+			var repository = GitRepository.Init(repoPath);
+			var metadata = CreateMetadata("Setup project");
+
+			var commitHash = await repository.CreateCommitAsync(
+				"main",
+				new GitCommitOperation[]
+				{
+					new AddFileOperation("README.md", Encoding.UTF8.GetBytes("# Project")),
+					new AddFileOperation("src/main.cs", Encoding.UTF8.GetBytes("// Main")),
+					new AddFileOperation("src/utils.cs", Encoding.UTF8.GetBytes("// Utils")),
+					new AddFileOperation("docs/guide.md", Encoding.UTF8.GetBytes("# Guide")),
+					new AddFileOperation(".gitignore", Encoding.UTF8.GetBytes("*.log"))
+				},
+				metadata);
+
+			var commit = await repository.GetCommitAsync(commitHash.Value);
+			Assert.Empty(commit.Parents);
+
+			var items = new List<GitTreeItem>();
+			await foreach (var item in repository.EnumerateCommitTreeAsync(commitHash.Value))
+			{
+				items.Add(item);
+			}
+
+			Assert.Equal(5, items.Count(i => i.Entry.Kind == GitTreeEntryKind.Blob));
+			Assert.Contains(items, i => i.Path == "README.md");
+			Assert.Contains(items, i => i.Path == "src/main.cs");
+			Assert.Contains(items, i => i.Path == "src/utils.cs");
+			Assert.Contains(items, i => i.Path == "docs/guide.md");
+			Assert.Contains(items, i => i.Path == ".gitignore");
+		}
+		finally
+		{
+			GitTestHelper.TryDeleteDirectory(repoPath);
+		}
+	}
+
+	#endregion
+
 	#region CreateCommitAsync - Add Operations
 
 	[Fact]
