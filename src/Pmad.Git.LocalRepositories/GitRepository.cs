@@ -402,11 +402,12 @@ public sealed class GitRepository
         using (await _lockManager.AcquireReferenceLockAsync(referencePath, cancellationToken).ConfigureAwait(false))
         {
             var parentHash = await TryResolveReferencePathAsync(referencePath, cancellationToken).ConfigureAwait(false);
+            GitCommit? parentCommit = null;
 
             Dictionary<string, TreeLeaf> entries;
             if (parentHash.HasValue)
             {
-                var parentCommit = await GetCommitAsync(parentHash.Value, cancellationToken).ConfigureAwait(false);
+                parentCommit = await GetCommitAsync(parentHash.Value, cancellationToken).ConfigureAwait(false);
                 entries = await LoadLeafEntriesAsync(parentCommit.Tree, cancellationToken).ConfigureAwait(false);
             }
             else
@@ -449,13 +450,9 @@ public sealed class GitRepository
             }
 
             var newTreeHash = await BuildTreeAsync(entries, cancellationToken).ConfigureAwait(false);
-            if (parentHash.HasValue)
+            if (parentCommit != null && newTreeHash.Equals(parentCommit.Tree))
             {
-                var parentCommit = await GetCommitAsync(parentHash.Value, cancellationToken).ConfigureAwait(false);
-                if (newTreeHash.Equals(parentCommit.Tree))
-                {
-                    throw new InvalidOperationException("The resulting tree matches the parent commit.");
-                }
+                throw new InvalidOperationException("The resulting tree matches the parent commit.");
             }
 
             var commitPayload = BuildCommitPayload(newTreeHash, parentHash, metadata);
