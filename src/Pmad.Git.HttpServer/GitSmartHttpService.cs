@@ -136,7 +136,8 @@ public sealed class GitSmartHttpService
                 await _packReader.ReadAsync(repository, context.Request.Body, cancellationToken).ConfigureAwait(false);
                 unpackStatus = "unpack ok";
                 
-                // Invalidate caches after receiving new objects
+                // Invalidate object caches after receiving new objects
+                // Reference cache will be invalidated after all reference updates
                 repository.InvalidateCaches();
             }
             catch (Exception ex)
@@ -166,6 +167,9 @@ public sealed class GitSmartHttpService
 
             await WriteReceivePackStatusAsync(context, unpackStatus, refStatuses, capabilities.Contains("report-status"), cancellationToken).ConfigureAwait(false);
         }
+        
+        // Note: Cache invalidation for reference updates is handled by WriteReferenceWithValidationInternalAsync
+        // which is called within ApplyReferenceUpdateInternalAsync for each update
     }
 
     private async Task<(GitRepository Repository, string Name)?> TryOpenRepositoryAsync(HttpContext context, CancellationToken cancellationToken)

@@ -105,7 +105,6 @@ public sealed class GitRepositoryConcurrencyTests : IDisposable
         await Task.WhenAll(task1, task2);
 
         // Assert - Operations should overlap (run in parallel)
-        var minStart = startTimes.Min();
         var maxStart = startTimes.Max();
         var minEnd = endTimes.Min();
 
@@ -284,8 +283,8 @@ public sealed class GitRepositoryConcurrencyTests : IDisposable
         // Assert
         gitRepository.InvalidateCaches();
         var refs = await gitRepository.GetReferencesAsync();
-        Assert.True(refs.ContainsKey(newRefPath));
-        Assert.Equal(commit, refs[newRefPath]);
+        Assert.True(refs.TryGetValue(newRefPath, out var actualCommit));
+        Assert.Equal(commit, actualCommit);
     }
 
     [Fact]
@@ -293,7 +292,7 @@ public sealed class GitRepositoryConcurrencyTests : IDisposable
     {
         // Arrange
         using var repo = GitTestRepository.Create();
-        var commit = repo.Commit("Commit", ("file.txt", "content"));
+        repo.Commit("Commit", ("file.txt", "content"));
         repo.RunGit("branch deleteme");
         var gitRepository = GitRepository.Open(repo.WorkingDirectory);
         gitRepository.InvalidateCaches();
@@ -313,78 +312,6 @@ public sealed class GitRepositoryConcurrencyTests : IDisposable
 
     #endregion
 
-    #region Reference Lock Tests
-
-    [Fact]
-    public async Task WriteReferenceAsync_ConcurrentWrites_Serialized()
-    {
-        // Arrange
-        using var repo = GitTestRepository.Create();
-        var commit1 = repo.Commit("First", ("file.txt", "v1"));
-        var commit2 = repo.Commit("Second", ("file.txt", "v2"));
-        var gitRepository = GitRepository.Open(repo.WorkingDirectory);
-        var refPath = "refs/heads/testbranch";
-
-        await gitRepository.WriteReferenceAsync(refPath, commit1);
-
-        var startSignal = new TaskCompletionSource<bool>();
-        var writeOrder = new List<int>();
-        var lockObject = new object();
-
-        // Act - Two threads try to write at the same time
-        var task1 = Task.Run(async () =>
-        {
-            await startSignal.Task;
-            await gitRepository.WriteReferenceAsync(refPath, commit2);
-            lock (lockObject) { writeOrder.Add(1); }
-        });
-
-        var task2 = Task.Run(async () =>
-        {
-            await startSignal.Task;
-            await Task.Delay(10);
-            await gitRepository.WriteReferenceAsync(refPath, commit1);
-            lock (lockObject) { writeOrder.Add(2); }
-        });
-
-        startSignal.SetResult(true);
-        await Task.WhenAll(task1, task2);
-
-        // Assert - Both writes should succeed
-        Assert.Equal(2, writeOrder.Count);
-    }
-
-    [Fact]
-    public async Task DeleteReferenceAsync_ConcurrentDeletes_Safe()
-    {
-        // Arrange
-        using var repo = GitTestRepository.Create();
-        repo.Commit("Commit", ("file.txt", "content"));
-        repo.RunGit("branch delete1");
-        repo.RunGit("branch delete2");
-        var gitRepository = GitRepository.Open(repo.WorkingDirectory);
-        gitRepository.InvalidateCaches();
-
-        var startSignal = new TaskCompletionSource<bool>();
-
-        // Act - Try to delete same branch from multiple threads
-        var tasks = Enumerable.Range(0, 5).Select(_ => Task.Run(async () =>
-        {
-            await startSignal.Task;
-            await gitRepository.DeleteReferenceAsync("refs/heads/delete1");
-        })).ToArray();
-
-        startSignal.SetResult(true);
-        await Task.WhenAll(tasks);
-
-        // Assert - No exception means operation is safe
-        gitRepository.InvalidateCaches();
-        var refs = await gitRepository.GetReferencesAsync();
-        Assert.False(refs.ContainsKey("refs/heads/delete1"));
-    }
-
-    #endregion
-
     #region Multiple Reference Locks Tests
 
     [Fact]
@@ -398,7 +325,7 @@ public sealed class GitRepositoryConcurrencyTests : IDisposable
         var gitRepository = GitRepository.Open(repo.WorkingDirectory);
         var refs = new[] { "refs/heads/main", "refs/heads/feature1", "refs/heads/feature2" };
 
-        // Act & Assert - Should acquire all locks successfully
+        // Act & Assert - Should acquire all locks successfully 
         using (await gitRepository.AcquireMultipleReferenceLocksAsync(refs))
         {
             // Locks acquired, can perform batch operations
@@ -460,7 +387,7 @@ public sealed class GitRepositoryConcurrencyTests : IDisposable
     {
         // Arrange
         using var repo = GitTestRepository.Create();
-        var commit = repo.Commit("Initial", ("file.txt", "content"));
+        repo.Commit("Initial", ("file.txt", "content"));
         repo.RunGit("branch branch-a");
         repo.RunGit("branch branch-b");
         var gitRepository = GitRepository.Open(repo.WorkingDirectory);
@@ -610,7 +537,7 @@ public sealed class GitRepositoryConcurrencyTests : IDisposable
         var gitRepository = GitRepository.Open(repo.WorkingDirectory);
         
         var refs = new[] { "refs/heads/branch-a", "refs/heads/branch-b" };
-        var cts = new CancellationTokenSource();
+        using var cts = new CancellationTokenSource();
         cts.Cancel(); // Pre-cancel
 
         // Act & Assert - Should throw OperationCanceledException immediately
@@ -729,27 +656,24 @@ public sealed class GitRepositoryConcurrencyTests : IDisposable
         using var repo = GitTestRepository.Create();
         var gitRepository = GitRepository.Open(repo.WorkingDirectory);
         var headRef = GitTestHelper.GetHeadReference(repo);
-        var results = new List<GitHash>();
         var lockObject = new object();
 
         // Act
         var task1 = Task.Run(async () =>
         {
-            var hash = await gitRepository.CreateCommitAsync(
+            await gitRepository.CreateCommitAsync(
                 headRef,
                 new GitCommitOperation[] { new AddFileOperation("task1.txt", Encoding.UTF8.GetBytes("task1")) },
                 CreateMetadata("Task 1"));
-            lock (lockObject) { results.Add(hash); }
         });
 
         var task2 = Task.Run(async () =>
         {
             await Task.Delay(20); // Slight delay
-            var hash = await gitRepository.CreateCommitAsync(
+            await gitRepository.CreateCommitAsync(
                 headRef,
                 new GitCommitOperation[] { new AddFileOperation("task2.txt", Encoding.UTF8.GetBytes("task2")) },
                 CreateMetadata("Task 2"));
-            lock (lockObject) { results.Add(hash); }
         });
 
         await Task.WhenAll(task1, task2);

@@ -25,11 +25,11 @@ public sealed class GitSmartHttpConcurrencyTests : IDisposable
         Directory.CreateDirectory(_clientWorkingDir);
     }
 
-    [Fact]
+    [Fact(Timeout = 20_000)]
     public async Task ConcurrentPushes_AreSerialized()
     {
         // Arrange
-        var sourceRepo = CreateSourceRepository("concurrent-test", new[] { ("initial.txt", "initial") });
+        CreateSourceRepository("concurrent-test", new[] { ("initial.txt", "initial") });
         await StartServerAsync(enableReceivePack: true);
 
         // Create two separate clones
@@ -100,11 +100,11 @@ public sealed class GitSmartHttpConcurrencyTests : IDisposable
         }
     }
 
-    [Fact]
+    [Fact(Timeout = 20_000)]
     public async Task NonFastForwardPush_IsRejected()
     {
         // Arrange
-        var sourceRepo = CreateSourceRepository("ff-test", new[] { ("initial.txt", "initial") });
+        CreateSourceRepository("ff-test", new[] { ("initial.txt", "initial") });
         await StartServerAsync(enableReceivePack: true);
 
         var clone1Dir = Path.Combine(_clientWorkingDir, "clone1");
@@ -139,11 +139,11 @@ public sealed class GitSmartHttpConcurrencyTests : IDisposable
             $"Expected push to be rejected with appropriate error, but got: {exception.Message}");
     }
 
-    [Fact]
+    [Fact(Timeout = 20_000)]
     public async Task FastForwardPush_Succeeds()
     {
         // Arrange
-        var sourceRepo = CreateSourceRepository("ff-ok-test", new[] { ("initial.txt", "initial") });
+        CreateSourceRepository("ff-ok-test", new[] { ("initial.txt", "initial") });
         await StartServerAsync(enableReceivePack: true);
 
         var cloneDir = Path.Combine(_clientWorkingDir, "clone");
@@ -162,11 +162,11 @@ public sealed class GitSmartHttpConcurrencyTests : IDisposable
         Assert.Contains("main -> main", output);
     }
 
-    [Fact]
+    [Fact(Timeout = 20_000)]
     public async Task PushAfterFetch_Succeeds()
     {
         // Arrange
-        var sourceRepo = CreateSourceRepository("fetch-test", new[] { ("initial.txt", "initial") });
+        CreateSourceRepository("fetch-test", new[] { ("initial.txt", "initial") });
         await StartServerAsync(enableReceivePack: true);
 
         var clone1Dir = Path.Combine(_clientWorkingDir, "clone1");
@@ -199,11 +199,11 @@ public sealed class GitSmartHttpConcurrencyTests : IDisposable
         Assert.Contains("main -> main", output);
     }
 
-    [Fact]
+    [Fact(Timeout = 40_000)]
     public async Task StressTest_MultipleConcurrentPushes()
     {
         // Arrange
-        var sourceRepo = CreateSourceRepository("stress-test", new[] { ("initial.txt", "initial") });
+        CreateSourceRepository("stress-test", new[] { ("initial.txt", "initial") });
         await StartServerAsync(enableReceivePack: true);
 
         var cloneCount = 5;
@@ -259,14 +259,14 @@ public sealed class GitSmartHttpConcurrencyTests : IDisposable
         }
     }
 
-    [Fact]
+    [Fact(Timeout = 20_000)]
     public async Task PushLock_PreventsInterleavedWrites()
     {
         // This test verifies that the push lock prevents reference updates
         // from being interleaved in a way that could cause inconsistency
 
         // Arrange
-        var sourceRepo = CreateSourceRepository("lock-test", new[] { ("initial.txt", "initial") });
+        CreateSourceRepository("lock-test", new[] { ("initial.txt", "initial") });
         await StartServerAsync(enableReceivePack: true);
 
         var clone1Dir = Path.Combine(_clientWorkingDir, "clone1");

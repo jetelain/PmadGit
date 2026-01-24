@@ -449,7 +449,7 @@ public sealed class GitRepositoryLockManagerTests
         // Hold one of the locks to force blocking
         using var blockingLock = await lockManager.AcquireReferenceLockAsync("refs/heads/ref2");
         
-        var cts = new CancellationTokenSource();
+        using var cts = new CancellationTokenSource();
         cts.CancelAfter(100); // Cancel after 100ms
         
         // Act - Try to acquire all locks, should eventually be cancelled

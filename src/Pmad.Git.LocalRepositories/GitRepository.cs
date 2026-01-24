@@ -457,7 +457,6 @@ public sealed class GitRepository
             }
         
             await WriteReferenceWithValidationInternalAsync(referencePath, parentHash, commitHash, cancellationToken).ConfigureAwait(false);
-            Interlocked.Exchange(ref _references, CreateReferenceCache());
 
             return commitHash;
         }
@@ -519,22 +518,6 @@ public sealed class GitRepository
     }
 
     /// <summary>
-    /// Writes or overwrites the value of a reference file inside the repository.
-    /// This method acquires a lock to prevent concurrent modifications to the same reference.
-    /// </summary>
-    /// <param name="referencePath">Fully qualified reference path (for example refs/heads/main).</param>
-    /// <param name="commitHash">Hash to persist.</param>
-    /// <param name="cancellationToken">Token used to cancel the async operation.</param>
-    public async Task WriteReferenceAsync(string referencePath, GitHash commitHash, CancellationToken cancellationToken = default)
-    {
-        var normalized = NormalizeAbsoluteReferencePath(referencePath);
-        using (await _lockManager.AcquireReferenceLockAsync(normalized, cancellationToken).ConfigureAwait(false))
-        {
-            await UpdateReferenceAsync(normalized, commitHash, cancellationToken).ConfigureAwait(false);
-        }
-    }
-
-    /// <summary>
     /// Writes or overwrites the value of a reference file with validation.
     /// This method validates that the expected old value matches the current value before updating.
     /// </summary>
@@ -582,6 +565,9 @@ public sealed class GitRepository
         {
             await DeleteReferenceInternalAsync(normalized, cancellationToken).ConfigureAwait(false);
         }
+
+        // Invalidate reference cache to ensure subsequent reads see the updated value
+        Interlocked.Exchange(ref _references, CreateReferenceCache());
     }
 
     /// <summary>
@@ -680,22 +666,6 @@ public sealed class GitRepository
         }
 
         return false;
-    }
-
-    /// <summary>
-    /// Deletes the specified reference when it exists.
-    /// This method acquires a lock to prevent concurrent modifications.
-    /// </summary>
-    /// <param name="referencePath">Fully qualified reference path (for example refs/tags/v1.0).</param>
-    /// <param name="cancellationToken">Token used to cancel the async operation.</param>
-    public async Task DeleteReferenceAsync(string referencePath, CancellationToken cancellationToken = default)
-    {
-        cancellationToken.ThrowIfCancellationRequested();
-        var normalized = NormalizeAbsoluteReferencePath(referencePath);
-        using (await _lockManager.AcquireReferenceLockAsync(normalized, cancellationToken).ConfigureAwait(false))
-        {
-            await DeleteReferenceInternalAsync(normalized, cancellationToken).ConfigureAwait(false);
-        }
     }
 
     private Task DeleteReferenceInternalAsync(string normalizedReferencePath, CancellationToken cancellationToken)

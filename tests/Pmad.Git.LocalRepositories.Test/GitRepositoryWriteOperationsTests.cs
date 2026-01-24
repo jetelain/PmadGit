@@ -309,151 +309,6 @@ public sealed class GitRepositoryWriteOperationsTests
 
 	#endregion
 
-	#region WriteReferenceAsync
-
-	[Fact]
-	public async Task WriteReferenceAsync_CreatesNewBranch()
-	{
-		using var repo = GitTestRepository.Create();
-		var gitRepository = GitRepository.Open(repo.WorkingDirectory);
-		var headCommit = await gitRepository.GetCommitAsync();
-
-		await gitRepository.WriteReferenceAsync("refs/heads/feature", headCommit.Id);
-
-		var output = repo.RunGit("branch --list");
-		Assert.Contains("feature", output);
-	}
-
-	[Fact]
-	public async Task WriteReferenceAsync_UpdatesExistingBranch()
-	{
-		using var repo = GitTestRepository.Create();
-		repo.Commit("Commit 1", ("file1.txt", "content1"));
-		var commit2 = repo.Commit("Commit 2", ("file2.txt", "content2"));
-		repo.RunGit("checkout -b test-branch HEAD~1");
-		var gitRepository = GitRepository.Open(repo.WorkingDirectory);
-
-		await gitRepository.WriteReferenceAsync("refs/heads/test-branch", commit2);
-
-		var branchCommit = repo.RunGit("rev-parse test-branch").Trim();
-		Assert.Equal(commit2.Value, branchCommit);
-	}
-
-	[Fact]
-	public async Task WriteReferenceAsync_CreatesTag()
-	{
-		using var repo = GitTestRepository.Create();
-		var gitRepository = GitRepository.Open(repo.WorkingDirectory);
-		var headCommit = await gitRepository.GetCommitAsync();
-
-		await gitRepository.WriteReferenceAsync("refs/tags/v1.0", headCommit.Id);
-
-		var output = repo.RunGit("tag --list");
-		Assert.Contains("v1.0", output);
-	}
-
-	[Fact]
-	public async Task WriteReferenceAsync_OverwritesExistingReference()
-	{
-		using var repo = GitTestRepository.Create();
-		repo.Commit("Commit 1", ("file1.txt", "content1"));
-		var commit2 = repo.Commit("Commit 2", ("file2.txt", "content2"));
-		repo.RunGit("tag v1.0 HEAD~1");
-		var gitRepository = GitRepository.Open(repo.WorkingDirectory);
-
-		await gitRepository.WriteReferenceAsync("refs/tags/v1.0", commit2);
-
-		var tagCommit = repo.RunGit("rev-parse v1.0").Trim();
-		Assert.Equal(commit2.Value, tagCommit);
-	}
-
-	[Fact]
-	public async Task WriteReferenceAsync_WithInvalidPath_ThrowsArgumentException()
-	{
-		using var repo = GitTestRepository.Create();
-		var gitRepository = GitRepository.Open(repo.WorkingDirectory);
-		var headCommit = await gitRepository.GetCommitAsync();
-
-		await Assert.ThrowsAsync<ArgumentException>(() =>
-			gitRepository.WriteReferenceAsync("", headCommit.Id));
-	}
-
-	[Fact]
-	public async Task WriteReferenceAsync_WithNonAbsolutePath_ThrowsArgumentException()
-	{
-		using var repo = GitTestRepository.Create();
-		var gitRepository = GitRepository.Open(repo.WorkingDirectory);
-		var headCommit = await gitRepository.GetCommitAsync();
-
-		var exception = await Assert.ThrowsAsync<ArgumentException>(() =>
-			gitRepository.WriteReferenceAsync("main", headCommit.Id));
-		
-		Assert.Contains("must start with 'refs/'", exception.Message);
-	}
-
-	#endregion
-
-	#region DeleteReferenceAsync
-
-	[Fact]
-	public async Task DeleteReferenceAsync_RemovesBranch()
-	{
-		using var repo = GitTestRepository.Create();
-		repo.RunGit("branch to-delete");
-		var gitRepository = GitRepository.Open(repo.WorkingDirectory);
-
-		await gitRepository.DeleteReferenceAsync("refs/heads/to-delete");
-
-		var output = repo.RunGit("branch --list");
-		Assert.DoesNotContain("to-delete", output);
-	}
-
-	[Fact]
-	public async Task DeleteReferenceAsync_RemovesTag()
-	{
-		using var repo = GitTestRepository.Create();
-		repo.RunGit("tag v1.0");
-		var gitRepository = GitRepository.Open(repo.WorkingDirectory);
-
-		await gitRepository.DeleteReferenceAsync("refs/tags/v1.0");
-
-		var output = repo.RunGit("tag --list");
-		Assert.DoesNotContain("v1.0", output);
-	}
-
-	[Fact]
-	public async Task DeleteReferenceAsync_NonExistentReference_DoesNotThrow()
-	{
-		using var repo = GitTestRepository.Create();
-		var gitRepository = GitRepository.Open(repo.WorkingDirectory);
-
-		await gitRepository.DeleteReferenceAsync("refs/heads/non-existent");
-	}
-
-	[Fact]
-	public async Task DeleteReferenceAsync_WithInvalidPath_ThrowsArgumentException()
-	{
-		using var repo = GitTestRepository.Create();
-		var gitRepository = GitRepository.Open(repo.WorkingDirectory);
-
-		await Assert.ThrowsAsync<ArgumentException>(() =>
-			gitRepository.DeleteReferenceAsync(""));
-	}
-
-	[Fact]
-	public async Task DeleteReferenceAsync_WithNonAbsolutePath_ThrowsArgumentException()
-	{
-		using var repo = GitTestRepository.Create();
-		var gitRepository = GitRepository.Open(repo.WorkingDirectory);
-
-		var exception = await Assert.ThrowsAsync<ArgumentException>(() =>
-			gitRepository.DeleteReferenceAsync("main"));
-		
-		Assert.Contains("must start with 'refs/'", exception.Message);
-	}
-
-	#endregion
-
 	#region Integration Test
 
 	[Fact]
@@ -499,21 +354,11 @@ public sealed class GitRepositoryWriteOperationsTests
 			var gitShow = GitTestHelper.RunGit(repoPath, "show HEAD:feature.txt");
 			Assert.Equal("feature content", gitShow.Trim());
 		}
-		finally
-		{
-			try
-			{
-				if (Directory.Exists(repoPath))
-				{
-					Directory.Delete(repoPath, recursive: true);
-				}
-			}
-			catch
-			{
-				// Ignore cleanup failures
-			}
-		}
-	}
+        finally
+        {
+            GitTestHelper.TryDeleteDirectory(repoPath);
+        }
+    }
 
 	#endregion
 

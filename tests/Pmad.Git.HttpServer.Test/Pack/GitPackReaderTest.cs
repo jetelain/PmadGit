@@ -97,7 +97,7 @@ public sealed class GitPackReaderTest : IDisposable
         }
         finally
         {
-            try { Directory.Delete(targetDir, true); } catch { }
+            TestHelper.TryDeleteDirectory(targetDir);
         }
 
         Assert.NotEmpty(treeObjects);
@@ -191,7 +191,7 @@ public sealed class GitPackReaderTest : IDisposable
         }
         finally
         {
-            try { Directory.Delete(targetDir, true); } catch { }
+            TestHelper.TryDeleteDirectory(targetDir);
         }
     }
 
@@ -252,7 +252,7 @@ public sealed class GitPackReaderTest : IDisposable
         }
         finally
         {
-            try { Directory.Delete(targetDir, true); } catch { }
+            TestHelper.TryDeleteDirectory(targetDir);
         }
     }
 
@@ -327,7 +327,7 @@ public sealed class GitPackReaderTest : IDisposable
         }
         finally
         {
-            try { Directory.Delete(targetDir, true); } catch { }
+            TestHelper.TryDeleteDirectory(targetDir);
         }
     }
 
@@ -358,7 +358,7 @@ public sealed class GitPackReaderTest : IDisposable
         }
         finally
         {
-            try { Directory.Delete(targetDir, true); } catch { }
+            TestHelper.TryDeleteDirectory(targetDir);
         }
     }
 
@@ -400,14 +400,7 @@ public sealed class GitPackReaderTest : IDisposable
         }
         finally
         {
-            try
-            {
-                Directory.Delete(targetDir, true);
-            }
-            catch
-            {
-                // Ignore cleanup failures
-            }
+            TestHelper.TryDeleteDirectory(targetDir);
         }
     }
 
@@ -505,13 +498,6 @@ public sealed class GitPackReaderTest : IDisposable
 
     public void Dispose()
     {
-        try
-        {
-            Directory.Delete(_workingDirectory, recursive: true);
-        }
-        catch
-        {
-            // Ignore cleanup failures in tests
-        }
+        TestHelper.TryDeleteDirectory(_workingDirectory);
     }
 }

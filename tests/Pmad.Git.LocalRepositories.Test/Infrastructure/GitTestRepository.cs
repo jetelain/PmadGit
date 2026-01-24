@@ -93,13 +93,6 @@ public sealed class GitTestRepository : IDisposable
 
     public void Dispose()
     {
-        try
-        {   
-            Directory.Delete(WorkingDirectory, recursive: true);
-        }
-        catch
-        {
-            // Ignore cleanup failures in tests.
-        }
+        GitTestHelper.TryDeleteDirectory(WorkingDirectory);
     }
 }

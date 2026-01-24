@@ -105,6 +105,6 @@ public class PackFileDebugTest : IDisposable
 
     public void Dispose()
     {
-        try { Directory.Delete(_workingDirectory, true); } catch { }
+        TestHelper.TryDeleteDirectory(_workingDirectory);
     }
 }

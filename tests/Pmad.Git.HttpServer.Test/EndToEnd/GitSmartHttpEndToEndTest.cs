@@ -82,7 +82,7 @@ public sealed class GitSmartHttpEndToEndTest : IDisposable
         }
         finally
         {
-            try { Directory.Delete(tempWorkDir, true); } catch { }
+            TestHelper.TryDeleteDirectory(tempWorkDir);
         }
 
         await StartServerAsync();
@@ -129,7 +129,7 @@ public sealed class GitSmartHttpEndToEndTest : IDisposable
         }
         finally
         {
-            try { Directory.Delete(tempWorkDir, true); } catch { }
+            TestHelper.TryDeleteDirectory(tempWorkDir);
         }
 
         // Act: Fetch
@@ -167,7 +167,7 @@ public sealed class GitSmartHttpEndToEndTest : IDisposable
         }
         finally
         {
-            try { Directory.Delete(tempWorkDir, true); } catch { }
+            TestHelper.TryDeleteDirectory(tempWorkDir);
         }
 
         // Act: Pull
@@ -292,7 +292,7 @@ public sealed class GitSmartHttpEndToEndTest : IDisposable
         }
         finally
         {
-            try { Directory.Delete(tempWorkDir, true); } catch { }
+            TestHelper.TryDeleteDirectory(tempWorkDir);
         }
 
         await StartServerAsync();
@@ -341,7 +341,7 @@ public sealed class GitSmartHttpEndToEndTest : IDisposable
         }
         finally
         {
-            try { Directory.Delete(tempWorkDir, true); } catch { }
+            TestHelper.TryDeleteDirectory(tempWorkDir);
         }
 
         await StartServerAsync();
@@ -421,7 +421,7 @@ public sealed class GitSmartHttpEndToEndTest : IDisposable
         }
         finally
         {
-            try { Directory.Delete(workDir, true); } catch { }
+            TestHelper.TryDeleteDirectory(workDir);
         }
         
         return GitRepository.Open(bareRepoPath);
@@ -485,7 +485,7 @@ public sealed class GitSmartHttpEndToEndTest : IDisposable
         _host?.StopAsync().GetAwaiter().GetResult();
         _host?.Dispose();
         
-        try { Directory.Delete(_serverRepoRoot, true); } catch { }
-        try { Directory.Delete(_clientWorkingDir, true); } catch { }
+        TestHelper.TryDeleteDirectory(_serverRepoRoot);
+        TestHelper.TryDeleteDirectory(_clientWorkingDir);
     }
 }

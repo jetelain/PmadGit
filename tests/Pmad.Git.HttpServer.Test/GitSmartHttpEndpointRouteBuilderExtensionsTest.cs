@@ -147,17 +147,7 @@ public sealed class GitSmartHttpEndpointRouteBuilderExtensionsTest
 
     private void CleanupDirectory(string path)
     {
-        try
-        {
-            if (Directory.Exists(path))
-            {
-                Directory.Delete(path, recursive: true);
-            }
-        }
-        catch
-        {
-            // Ignore cleanup failures
-        }
+        TestHelper.TryDeleteDirectory(path);
     }
 
     /// <summary>
