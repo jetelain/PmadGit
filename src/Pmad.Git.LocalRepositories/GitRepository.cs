@@ -425,7 +425,7 @@ public sealed class GitRepository
                     case UpdateFileOperation update:
                         changed |= await ApplyUpdateFileAsync(entries, normalizedPath, update.Content, cancellationToken).ConfigureAwait(false);
                         break;
-                    case RemoveFileOperation remove:
+                    case RemoveFileOperation _:
                         changed |= ApplyRemoveFile(entries, normalizedPath);
                         break;
                     case MoveFileOperation move:
