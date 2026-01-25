@@ -29,7 +29,7 @@ public sealed class GitSmartHttpService
             throw new ArgumentNullException(nameof(options));
         }
         
-        _options = options.Value ?? throw new ArgumentNullException(nameof(options));
+        _options = options.Value ?? throw new InvalidOperationException("IOptions<GitSmartHttpOptions>.Value must not be null.");
         _repositoryService = repositoryService ?? throw new ArgumentNullException(nameof(repositoryService));
         
         if (string.IsNullOrWhiteSpace(_options.RepositoryRoot))
