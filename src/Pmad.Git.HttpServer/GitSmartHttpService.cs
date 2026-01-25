@@ -6,6 +6,7 @@ using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Http;
+using Microsoft.Extensions.Options;
 using Microsoft.Extensions.Primitives;
 using Pmad.Git.HttpServer.Pack;
 using Pmad.Git.HttpServer.Protocol;
@@ -21,9 +22,14 @@ public sealed class GitSmartHttpService
     private readonly GitPackBuilder _packBuilder = new();
     private readonly GitPackReader _packReader = new();
 
-    public GitSmartHttpService(GitSmartHttpOptions options, IGitRepositoryService repositoryService)
+    public GitSmartHttpService(IOptions<GitSmartHttpOptions> options, IGitRepositoryService repositoryService)
     {
-        _options = options ?? throw new ArgumentNullException(nameof(options));
+        if (options is null)
+        {
+            throw new ArgumentNullException(nameof(options));
+        }
+        
+        _options = options.Value ?? throw new ArgumentNullException(nameof(options));
         _repositoryService = repositoryService ?? throw new ArgumentNullException(nameof(repositoryService));
         
         if (string.IsNullOrWhiteSpace(_options.RepositoryRoot))

@@ -1,4 +1,5 @@
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Options;
 using Pmad.Git.HttpServer;
 
 namespace Pmad.Git.HttpServer.Test;
@@ -20,9 +21,10 @@ public sealed class GitSmartHttpServiceCollectionExtensionsTest
         var provider = services.BuildServiceProvider();
 
         // Assert
-        var registeredOptions = provider.GetService<GitSmartHttpOptions>();
-        Assert.NotNull(registeredOptions);
-        Assert.Same(options, registeredOptions);
+        var optionsSnapshot = provider.GetService<IOptions<GitSmartHttpOptions>>();
+        Assert.NotNull(optionsSnapshot);
+        Assert.NotNull(optionsSnapshot.Value);
+        Assert.Equal(options.RepositoryRoot, optionsSnapshot.Value.RepositoryRoot);
 
         var repositoryService = provider.GetService<IGitRepositoryService>();
         Assert.NotNull(repositoryService);
@@ -48,7 +50,9 @@ public sealed class GitSmartHttpServiceCollectionExtensionsTest
         var provider = services.BuildServiceProvider();
 
         // Assert
-        var registeredOptions = provider.GetService<GitSmartHttpOptions>();
+        var optionsSnapshot = provider.GetService<IOptions<GitSmartHttpOptions>>();
+        Assert.NotNull(optionsSnapshot);
+        var registeredOptions = optionsSnapshot.Value;
         Assert.NotNull(registeredOptions);
         Assert.Equal(repositoryRoot, registeredOptions.RepositoryRoot);
         Assert.True(registeredOptions.EnableUploadPack);
@@ -94,18 +98,23 @@ public sealed class GitSmartHttpServiceCollectionExtensionsTest
     {
         // Arrange
         var services = new ServiceCollection();
-        var options1 = new GitSmartHttpOptions { RepositoryRoot = Path.GetTempPath() };
-        var options2 = new GitSmartHttpOptions { RepositoryRoot = Path.GetTempPath() };
+        var repositoryRoot1 = Path.Combine(Path.GetTempPath(), "repo1");
+        var repositoryRoot2 = Path.Combine(Path.GetTempPath(), "repo2");
+        var options1 = new GitSmartHttpOptions { RepositoryRoot = repositoryRoot1 };
+        var options2 = new GitSmartHttpOptions { RepositoryRoot = repositoryRoot2 };
 
         // Act
         services.AddGitSmartHttp(options1);
         services.AddGitSmartHttp(options2);
         var provider = services.BuildServiceProvider();
 
-        // Assert - Should use the first registered options (TryAdd behavior)
-        var registeredOptions = provider.GetService<GitSmartHttpOptions>();
+        // Assert - With options pattern, last configuration wins when using Configure
+        var optionsSnapshot = provider.GetService<IOptions<GitSmartHttpOptions>>();
+        Assert.NotNull(optionsSnapshot);
+        var registeredOptions = optionsSnapshot.Value;
         Assert.NotNull(registeredOptions);
-        Assert.Same(options1, registeredOptions);
+        // Last configure should win
+        Assert.Equal(repositoryRoot2, registeredOptions.RepositoryRoot);
     }
 
     [Fact]
