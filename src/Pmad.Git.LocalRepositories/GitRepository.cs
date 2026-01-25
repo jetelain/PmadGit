@@ -362,6 +362,18 @@ public sealed class GitRepository
     /// <returns>The blob payload as a byte array.</returns>
     public async Task<byte[]> ReadFileAsync(string filePath, string? reference = null, CancellationToken cancellationToken = default)
     {
+        return (await ReadFileAndHashAsync(filePath, reference, cancellationToken)).Content;
+    }
+
+    /// <summary>
+    /// Reads the blob content and hash at <paramref name="filePath"/> from the specified <paramref name="reference"/>.
+    /// </summary>
+    /// <param name="filePath">Repository-relative file path using / separators.</param>
+    /// <param name="reference">Commit hash or ref to read from; defaults to HEAD.</param>
+    /// <param name="cancellationToken">Token used to cancel the async operation.</param>
+    /// <returns>The blob payload as a byte array.</returns>
+    public async Task<GitFileContentAndHash> ReadFileAndHashAsync(string filePath, string? reference = null, CancellationToken cancellationToken = default)
+    {
         var commit = await GetCommitAsync(reference, cancellationToken).ConfigureAwait(false);
         var normalized = NormalizePath(filePath);
         if (string.IsNullOrEmpty(normalized))
@@ -378,7 +390,7 @@ public sealed class GitRepository
             throw new InvalidOperationException($"Object {blobHash} is not a blob");
         }
 
-        return blob.Content;
+        return new GitFileContentAndHash(blob.Content, blobHash);
     }
 
     /// <summary>
@@ -517,7 +529,7 @@ public sealed class GitRepository
                         changed |= await ApplyAddFileAsync(entries, normalizedPath, add.Content, cancellationToken).ConfigureAwait(false);
                         break;
                     case UpdateFileOperation update:
-                        changed |= await ApplyUpdateFileAsync(entries, normalizedPath, update.Content, cancellationToken).ConfigureAwait(false);
+                        changed |= await ApplyUpdateFileAsync(entries, normalizedPath, update.Content, update.ExpectedPreviousHash, cancellationToken).ConfigureAwait(false);
                         break;
                     case RemoveFileOperation _:
                         changed |= ApplyRemoveFile(entries, normalizedPath);
@@ -981,11 +993,16 @@ public sealed class GitRepository
         return true;
     }
 
-    private async Task<bool> ApplyUpdateFileAsync(Dictionary<string, TreeLeaf> entries, string path, byte[] content, CancellationToken cancellationToken)
+    private async Task<bool> ApplyUpdateFileAsync(Dictionary<string, TreeLeaf> entries, string path, byte[] content, GitHash? expectedPreviousHash, CancellationToken cancellationToken)
     {
         if (!entries.TryGetValue(path, out var existing))
         {
             throw new FileNotFoundException($"File '{path}' does not exist.");
+        }
+
+        if (expectedPreviousHash != null && !existing.Hash.Equals(expectedPreviousHash.Value))
+        {
+            throw new GitFileConflictException($"File '{path}' has hash {existing.Hash.Value}, but expected {expectedPreviousHash.Value.Value}.", path);
         }
 
         var blobHash = await WriteObjectAsync(GitObjectType.Blob, content, cancellationToken).ConfigureAwait(false);

@@ -198,6 +198,167 @@ public sealed class GitRepositoryBasicOperationsTests
 
 	#endregion
 
+	#region ReadFileAndHashAsync
+
+	[Fact]
+	public async Task ReadFileAndHashAsync_ReturnsContentAndHash()
+	{
+		using var repo = GitTestRepository.Create();
+		repo.Commit("Add file", ("test.txt", "test content"));
+		var gitRepository = GitRepository.Open(repo.WorkingDirectory);
+
+		var result = await gitRepository.ReadFileAndHashAsync("test.txt");
+
+		Assert.Equal("test content", Encoding.UTF8.GetString(result.Content));
+		Assert.NotEqual(default, result.Hash);
+		Assert.NotEmpty(result.Hash.Value);
+	}
+
+	[Fact]
+	public async Task ReadFileAndHashAsync_HashMatchesGitHashObject()
+	{
+		using var repo = GitTestRepository.Create();
+		repo.Commit("Add file", ("data.txt", "data content"));
+		var gitRepository = GitRepository.Open(repo.WorkingDirectory);
+
+		var result = await gitRepository.ReadFileAndHashAsync("data.txt");
+		var expectedHash = new GitHash(repo.RunGit("rev-parse HEAD:data.txt").Trim());
+
+		Assert.Equal(expectedHash, result.Hash);
+	}
+
+	[Fact]
+	public async Task ReadFileAndHashAsync_WithSpecificCommit_ReturnsCorrectHash()
+	{
+		using var repo = GitTestRepository.Create();
+		var commit1 = repo.Commit("Version 1", ("file.txt", "version 1"));
+		var commit2 = repo.Commit("Version 2", ("file.txt", "version 2"));
+		var gitRepository = GitRepository.Open(repo.WorkingDirectory);
+
+		var result1 = await gitRepository.ReadFileAndHashAsync("file.txt", commit1.Value);
+		var result2 = await gitRepository.ReadFileAndHashAsync("file.txt", commit2.Value);
+
+		Assert.Equal("version 1", Encoding.UTF8.GetString(result1.Content));
+		Assert.Equal("version 2", Encoding.UTF8.GetString(result2.Content));
+		Assert.NotEqual(result1.Hash, result2.Hash);
+	}
+
+	[Fact]
+	public async Task ReadFileAndHashAsync_SameContentInDifferentCommits_ReturnsSameHash()
+	{
+		using var repo = GitTestRepository.Create();
+		var commit1 = repo.Commit("First", ("file.txt", "same content"));
+		repo.Commit("Second", ("other.txt", "different"));
+		var gitRepository = GitRepository.Open(repo.WorkingDirectory);
+
+		var result1 = await gitRepository.ReadFileAndHashAsync("file.txt", commit1.Value);
+		var result2 = await gitRepository.ReadFileAndHashAsync("file.txt");
+
+		Assert.Equal(result1.Hash, result2.Hash);
+		Assert.Equal("same content", Encoding.UTF8.GetString(result1.Content));
+		Assert.Equal("same content", Encoding.UTF8.GetString(result2.Content));
+	}
+
+	[Fact]
+	public async Task ReadFileAndHashAsync_WithNestedPath_ReturnsCorrectHash()
+	{
+		using var repo = GitTestRepository.Create();
+		repo.Commit("Add nested file", ("src/lib/module/helper.cs", "helper code"));
+		var gitRepository = GitRepository.Open(repo.WorkingDirectory);
+
+		var result = await gitRepository.ReadFileAndHashAsync("src/lib/module/helper.cs");
+		var expectedHash = new GitHash(repo.RunGit("rev-parse HEAD:src/lib/module/helper.cs").Trim());
+
+		Assert.Equal("helper code", Encoding.UTF8.GetString(result.Content));
+		Assert.Equal(expectedHash, result.Hash);
+	}
+
+	[Fact]
+	public async Task ReadFileAndHashAsync_NonExistentFile_ThrowsFileNotFoundException()
+	{
+		using var repo = GitTestRepository.Create();
+		var gitRepository = GitRepository.Open(repo.WorkingDirectory);
+
+		await Assert.ThrowsAsync<FileNotFoundException>(() =>
+			gitRepository.ReadFileAndHashAsync("non-existent.txt"));
+	}
+
+	[Fact]
+	public async Task ReadFileAndHashAsync_DirectoryPath_ThrowsFileNotFoundException()
+	{
+		using var repo = GitTestRepository.Create();
+		repo.Commit("Add file", ("src/file.txt", "content"));
+		var gitRepository = GitRepository.Open(repo.WorkingDirectory);
+
+		await Assert.ThrowsAsync<FileNotFoundException>(() =>
+			gitRepository.ReadFileAndHashAsync("src"));
+	}
+
+	[Fact]
+	public async Task ReadFileAndHashAsync_EmptyPath_ThrowsArgumentException()
+	{
+		using var repo = GitTestRepository.Create();
+		var gitRepository = GitRepository.Open(repo.WorkingDirectory);
+
+		await Assert.ThrowsAsync<ArgumentException>(() =>
+			gitRepository.ReadFileAndHashAsync(""));
+	}
+
+	[Fact]
+	public async Task ReadFileAndHashAsync_WithBackslashPath_NormalizesAndReturnsHash()
+	{
+		using var repo = GitTestRepository.Create();
+		repo.Commit("Add file", ("path/to/file.txt", "content"));
+		var gitRepository = GitRepository.Open(repo.WorkingDirectory);
+
+		var result = await gitRepository.ReadFileAndHashAsync("path\\to\\file.txt");
+
+		Assert.Equal("content", Encoding.UTF8.GetString(result.Content));
+		Assert.NotEqual(default, result.Hash);
+	}
+
+	[Fact]
+	public async Task ReadFileAndHashAsync_Sha256Repository_ReturnsLongerHash()
+	{
+		using var repo = GitTestRepository.Create(GitObjectFormat.Sha256);
+		repo.Commit("Add file", ("sha256.txt", "sha256 content"));
+		var gitRepository = GitRepository.Open(repo.WorkingDirectory);
+
+		var result = await gitRepository.ReadFileAndHashAsync("sha256.txt");
+
+		Assert.Equal("sha256 content", Encoding.UTF8.GetString(result.Content));
+		Assert.Equal(GitHash.Sha256HexLength, result.Hash.Value.Length);
+		Assert.Equal(GitHash.Sha256ByteLength, result.Hash.ByteLength);
+	}
+
+	[Fact]
+	public async Task ReadFileAndHashAsync_ContentMatchesReadFileAsync()
+	{
+		using var repo = GitTestRepository.Create();
+		repo.Commit("Add file", ("consistency.txt", "consistency test"));
+		var gitRepository = GitRepository.Open(repo.WorkingDirectory);
+
+		var resultWithHash = await gitRepository.ReadFileAndHashAsync("consistency.txt");
+		var resultWithoutHash = await gitRepository.ReadFileAsync("consistency.txt");
+
+		Assert.Equal(resultWithoutHash, resultWithHash.Content);
+	}
+
+	[Fact]
+	public async Task ReadFileAndHashAsync_RespectsCancellationToken()
+	{
+		using var repo = GitTestRepository.Create();
+		repo.Commit("Add file", ("file.txt", "content"));
+		var gitRepository = GitRepository.Open(repo.WorkingDirectory);
+		var cts = new CancellationTokenSource();
+		cts.Cancel();
+
+		await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+			gitRepository.ReadFileAndHashAsync("file.txt", cancellationToken: cts.Token));
+	}
+
+	#endregion
+
 	#region Properties
 
 	[Fact]

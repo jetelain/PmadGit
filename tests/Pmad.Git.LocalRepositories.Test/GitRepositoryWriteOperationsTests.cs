@@ -339,6 +339,416 @@ public sealed class GitRepositoryWriteOperationsTests
 
 	#endregion
 
+	#region CreateCommitAsync - UpdateFileOperation with Hash Validation
+
+	[Fact]
+	public async Task UpdateFileOperation_WithCorrectExpectedHash_Succeeds()
+	{
+		using var repo = GitTestRepository.Create();
+		repo.Commit("Add file", ("config.txt", "version 1"));
+		var gitRepository = GitRepository.Open(repo.WorkingDirectory);
+		var headRef = GitTestHelper.GetHeadReference(repo);
+
+		var fileInfo = await gitRepository.ReadFileAndHashAsync("config.txt");
+		var expectedHash = fileInfo.Hash;
+
+		var commitHash = await gitRepository.CreateCommitAsync(
+			headRef,
+			new GitCommitOperation[]
+			{
+				new UpdateFileOperation("config.txt", Encoding.UTF8.GetBytes("version 2"), expectedHash)
+			},
+			CreateMetadata("Update with hash validation"));
+
+		var updatedContent = await gitRepository.ReadFileAsync("config.txt", commitHash.Value);
+		Assert.Equal("version 2", Encoding.UTF8.GetString(updatedContent));
+	}
+
+	[Fact]
+	public async Task UpdateFileOperation_WithIncorrectExpectedHash_ThrowsGitFileConflictException()
+	{
+		using var repo = GitTestRepository.Create();
+		repo.Commit("Add file", ("config.txt", "version 1"));
+		var gitRepository = GitRepository.Open(repo.WorkingDirectory);
+		var headRef = GitTestHelper.GetHeadReference(repo);
+
+		var wrongHash = new GitHash("0000000000000000000000000000000000000000");
+
+		var exception = await Assert.ThrowsAsync<GitFileConflictException>(
+			() => gitRepository.CreateCommitAsync(
+				headRef,
+				new GitCommitOperation[]
+				{
+					new UpdateFileOperation("config.txt", Encoding.UTF8.GetBytes("version 2"), wrongHash)
+				},
+				CreateMetadata("Update with wrong hash")));
+
+		Assert.Contains("config.txt", exception.Message);
+		Assert.Contains("has hash", exception.Message);
+		Assert.Contains("expected", exception.Message);
+		Assert.Equal("config.txt", exception.FilePath);
+	}
+
+	[Fact]
+	public async Task UpdateFileOperation_WithExpectedHashAfterFileChanged_ThrowsGitFileConflictException()
+	{
+		using var repo = GitTestRepository.Create();
+		repo.Commit("Add file", ("shared.txt", "version 1"));
+		var gitRepository = GitRepository.Open(repo.WorkingDirectory);
+		var headRef = GitTestHelper.GetHeadReference(repo);
+
+		var fileInfo = await gitRepository.ReadFileAndHashAsync("shared.txt");
+		var oldHash = fileInfo.Hash;
+
+		repo.Commit("Update file externally", ("shared.txt", "version 2"));
+		gitRepository.InvalidateCaches();
+
+		var exception = await Assert.ThrowsAsync<GitFileConflictException>(
+			() => gitRepository.CreateCommitAsync(
+				headRef,
+				new GitCommitOperation[]
+				{
+					new UpdateFileOperation("shared.txt", Encoding.UTF8.GetBytes("my version"), oldHash)
+				},
+				CreateMetadata("Update with stale hash")));
+
+		Assert.Contains("shared.txt", exception.Message);
+		Assert.Equal("shared.txt", exception.FilePath);
+	}
+
+	[Fact]
+	public async Task UpdateFileOperation_ConflictException_ContainsBothHashes()
+	{
+		using var repo = GitTestRepository.Create();
+		repo.Commit("Add file", ("file.txt", "original"));
+		var gitRepository = GitRepository.Open(repo.WorkingDirectory);
+		var headRef = GitTestHelper.GetHeadReference(repo);
+
+		var expectedHash = new GitHash("1111111111111111111111111111111111111111");
+		var actualInfo = await gitRepository.ReadFileAndHashAsync("file.txt");
+
+		var exception = await Assert.ThrowsAsync<GitFileConflictException>(
+			() => gitRepository.CreateCommitAsync(
+				headRef,
+				new GitCommitOperation[]
+				{
+					new UpdateFileOperation("file.txt", Encoding.UTF8.GetBytes("new content"), expectedHash)
+				},
+				CreateMetadata("Update with validation")));
+
+		Assert.Contains(actualInfo.Hash.Value, exception.Message);
+		Assert.Contains(expectedHash.Value, exception.Message);
+	}
+
+	[Fact]
+	public async Task UpdateFileOperation_MultipleUpdatesWithCorrectHashes_Succeeds()
+	{
+		using var repo = GitTestRepository.Create();
+		repo.Commit("Add files", ("file1.txt", "content1"), ("file2.txt", "content2"));
+		var gitRepository = GitRepository.Open(repo.WorkingDirectory);
+		var headRef = GitTestHelper.GetHeadReference(repo);
+
+		var file1Info = await gitRepository.ReadFileAndHashAsync("file1.txt");
+		var file2Info = await gitRepository.ReadFileAndHashAsync("file2.txt");
+
+		var commitHash = await gitRepository.CreateCommitAsync(
+			headRef,
+			new GitCommitOperation[]
+			{
+				new UpdateFileOperation("file1.txt", Encoding.UTF8.GetBytes("updated1"), file1Info.Hash),
+				new UpdateFileOperation("file2.txt", Encoding.UTF8.GetBytes("updated2"), file2Info.Hash)
+			},
+			CreateMetadata("Update multiple files with validation"));
+
+		var content1 = await gitRepository.ReadFileAsync("file1.txt", commitHash.Value);
+		var content2 = await gitRepository.ReadFileAsync("file2.txt", commitHash.Value);
+		Assert.Equal("updated1", Encoding.UTF8.GetString(content1));
+		Assert.Equal("updated2", Encoding.UTF8.GetString(content2));
+	}
+
+	[Fact]
+	public async Task UpdateFileOperation_SequentialUpdatesWithHashValidation_TracksChanges()
+	{
+		using var repo = GitTestRepository.Create();
+		repo.Commit("Initial", ("counter.txt", "0"));
+		var gitRepository = GitRepository.Open(repo.WorkingDirectory);
+		var headRef = GitTestHelper.GetHeadReference(repo);
+
+		var version0 = await gitRepository.ReadFileAndHashAsync("counter.txt");
+
+		var commit1 = await gitRepository.CreateCommitAsync(
+			headRef,
+			new GitCommitOperation[]
+			{
+				new UpdateFileOperation("counter.txt", Encoding.UTF8.GetBytes("1"), version0.Hash)
+			},
+			CreateMetadata("Update to 1"));
+
+		gitRepository.InvalidateCaches();
+		var version1 = await gitRepository.ReadFileAndHashAsync("counter.txt");
+
+		var commit2 = await gitRepository.CreateCommitAsync(
+			headRef,
+			new GitCommitOperation[]
+			{
+				new UpdateFileOperation("counter.txt", Encoding.UTF8.GetBytes("2"), version1.Hash)
+			},
+			CreateMetadata("Update to 2"));
+
+		gitRepository.InvalidateCaches();
+		var version2 = await gitRepository.ReadFileAndHashAsync("counter.txt");
+
+		Assert.NotEqual(version0.Hash, version1.Hash);
+		Assert.NotEqual(version1.Hash, version2.Hash);
+		Assert.NotEqual(version0.Hash, version2.Hash);
+
+		Assert.Equal("0", Encoding.UTF8.GetString(version0.Content));
+		Assert.Equal("1", Encoding.UTF8.GetString(version1.Content));
+		Assert.Equal("2", Encoding.UTF8.GetString(version2.Content));
+	}
+
+	[Fact]
+	public async Task UpdateFileOperation_SequentialUpdate_UsingOldHash_ThrowsConflict()
+	{
+		using var repo = GitTestRepository.Create();
+		repo.Commit("Initial", ("data.txt", "v1"));
+		var gitRepository = GitRepository.Open(repo.WorkingDirectory);
+		var headRef = GitTestHelper.GetHeadReference(repo);
+
+		var v1Info = await gitRepository.ReadFileAndHashAsync("data.txt");
+
+		await gitRepository.CreateCommitAsync(
+			headRef,
+			new GitCommitOperation[]
+			{
+				new UpdateFileOperation("data.txt", Encoding.UTF8.GetBytes("v2"))
+			},
+			CreateMetadata("Update to v2"));
+
+		gitRepository.InvalidateCaches();
+
+		var exception = await Assert.ThrowsAsync<GitFileConflictException>(
+			() => gitRepository.CreateCommitAsync(
+				headRef,
+				new GitCommitOperation[]
+				{
+					new UpdateFileOperation("data.txt", Encoding.UTF8.GetBytes("v3"), v1Info.Hash)
+				},
+				CreateMetadata("Update with old hash")));
+
+		Assert.Equal("data.txt", exception.FilePath);
+	}
+
+	[Fact]
+	public async Task UpdateFileOperation_OptimisticLockingWorkflow_DetectsConflicts()
+	{
+		using var repo = GitTestRepository.Create();
+		repo.Commit("Initial", ("doc.md", "# Document"));
+		var gitRepository = GitRepository.Open(repo.WorkingDirectory);
+		var headRef = GitTestHelper.GetHeadReference(repo);
+
+		var initialState = await gitRepository.ReadFileAndHashAsync("doc.md");
+
+		var editor1Commit = await gitRepository.CreateCommitAsync(
+			headRef,
+			new GitCommitOperation[]
+			{
+				new UpdateFileOperation("doc.md", Encoding.UTF8.GetBytes("# Document\n\nEditor 1 changes"), initialState.Hash)
+			},
+			CreateMetadata("Editor 1 saves"));
+
+		gitRepository.InvalidateCaches();
+
+		var exception = await Assert.ThrowsAsync<GitFileConflictException>(
+			() => gitRepository.CreateCommitAsync(
+				headRef,
+				new GitCommitOperation[]
+				{
+					new UpdateFileOperation("doc.md", Encoding.UTF8.GetBytes("# Document\n\nEditor 2 changes"), initialState.Hash)
+				},
+				CreateMetadata("Editor 2 saves")));
+
+		Assert.Equal("doc.md", exception.FilePath);
+
+		var currentContent = await gitRepository.ReadFileAsync("doc.md");
+		Assert.Equal("# Document\n\nEditor 1 changes", Encoding.UTF8.GetString(currentContent));
+	}
+
+	[Fact]
+	public async Task UpdateFileOperation_ConcurrentEditSimulation_SecondEditorCanRetry()
+	{
+		using var repo = GitTestRepository.Create();
+		repo.Commit("Initial", ("doc.md", "# Document"));
+		var gitRepository = GitRepository.Open(repo.WorkingDirectory);
+		var headRef = GitTestHelper.GetHeadReference(repo);
+
+		var initialState = await gitRepository.ReadFileAndHashAsync("doc.md");
+
+		await gitRepository.CreateCommitAsync(
+			headRef,
+			new GitCommitOperation[]
+			{
+				new UpdateFileOperation("doc.md", Encoding.UTF8.GetBytes("# Document\n\nEditor 1 changes"), initialState.Hash)
+			},
+			CreateMetadata("Editor 1 saves"));
+
+		gitRepository.InvalidateCaches();
+
+		await Assert.ThrowsAsync<GitFileConflictException>(
+			() => gitRepository.CreateCommitAsync(
+				headRef,
+				new GitCommitOperation[]
+				{
+					new UpdateFileOperation("doc.md", Encoding.UTF8.GetBytes("# Document\n\nEditor 2 changes"), initialState.Hash)
+				},
+				CreateMetadata("Editor 2 first attempt")));
+
+		var refreshedState = await gitRepository.ReadFileAndHashAsync("doc.md");
+
+		var retryCommit = await gitRepository.CreateCommitAsync(
+			headRef,
+			new GitCommitOperation[]
+			{
+				new UpdateFileOperation("doc.md", Encoding.UTF8.GetBytes("# Document\n\nEditor 1 changes\n\nEditor 2 merged changes"), refreshedState.Hash)
+			},
+			CreateMetadata("Editor 2 retry after refresh"));
+
+		var finalContent = await gitRepository.ReadFileAsync("doc.md", retryCommit.Value);
+		Assert.Equal("# Document\n\nEditor 1 changes\n\nEditor 2 merged changes", Encoding.UTF8.GetString(finalContent));
+	}
+
+	[Fact]
+	public async Task UpdateFileOperation_MixedOperationsWithHashValidation_Succeeds()
+	{
+		using var repo = GitTestRepository.Create();
+		repo.Commit("Setup", ("update.txt", "v1"), ("keep.txt", "unchanged"), ("remove.txt", "old"));
+		var gitRepository = GitRepository.Open(repo.WorkingDirectory);
+		var headRef = GitTestHelper.GetHeadReference(repo);
+
+		var updateInfo = await gitRepository.ReadFileAndHashAsync("update.txt");
+
+		var commitHash = await gitRepository.CreateCommitAsync(
+			headRef,
+			new GitCommitOperation[]
+			{
+				new UpdateFileOperation("update.txt", Encoding.UTF8.GetBytes("v2"), updateInfo.Hash),
+				new AddFileOperation("new.txt", Encoding.UTF8.GetBytes("new")),
+				new RemoveFileOperation("remove.txt")
+			},
+			CreateMetadata("Mixed operations"));
+
+		var updatedContent = await gitRepository.ReadFileAsync("update.txt", commitHash.Value);
+		Assert.Equal("v2", Encoding.UTF8.GetString(updatedContent));
+
+		var newContent = await gitRepository.ReadFileAsync("new.txt", commitHash.Value);
+		Assert.Equal("new", Encoding.UTF8.GetString(newContent));
+
+		var keepContent = await gitRepository.ReadFileAsync("keep.txt", commitHash.Value);
+		Assert.Equal("unchanged", Encoding.UTF8.GetString(keepContent));
+
+		await Assert.ThrowsAsync<FileNotFoundException>(
+			() => gitRepository.ReadFileAsync("remove.txt", commitHash.Value));
+	}
+
+	[Fact]
+	public async Task UpdateFileOperation_MultipleUpdates_OneWithWrongHash_ThrowsAndRollsBack()
+	{
+		using var repo = GitTestRepository.Create();
+		repo.Commit("Setup", ("file1.txt", "content1"), ("file2.txt", "content2"));
+		var gitRepository = GitRepository.Open(repo.WorkingDirectory);
+		var headRef = GitTestHelper.GetHeadReference(repo);
+
+		var file1Info = await gitRepository.ReadFileAndHashAsync("file1.txt");
+		var wrongHash = new GitHash("0000000000000000000000000000000000000000");
+
+		await Assert.ThrowsAsync<GitFileConflictException>(
+			() => gitRepository.CreateCommitAsync(
+				headRef,
+				new GitCommitOperation[]
+				{
+					new UpdateFileOperation("file1.txt", Encoding.UTF8.GetBytes("new1"), file1Info.Hash),
+					new UpdateFileOperation("file2.txt", Encoding.UTF8.GetBytes("new2"), wrongHash)
+				},
+				CreateMetadata("Multiple updates with one wrong hash")));
+
+		gitRepository.InvalidateCaches();
+		var file1Content = await gitRepository.ReadFileAsync("file1.txt");
+		var file2Content = await gitRepository.ReadFileAsync("file2.txt");
+		Assert.Equal("content1", Encoding.UTF8.GetString(file1Content));
+		Assert.Equal("content2", Encoding.UTF8.GetString(file2Content));
+	}
+
+	[Fact]
+	public async Task UpdateFileOperation_NestedPath_WithCorrectHash_Succeeds()
+	{
+		using var repo = GitTestRepository.Create();
+		repo.Commit("Add nested file", ("src/lib/module/config.json", "{\"version\":1}"));
+		var gitRepository = GitRepository.Open(repo.WorkingDirectory);
+		var headRef = GitTestHelper.GetHeadReference(repo);
+
+		var fileInfo = await gitRepository.ReadFileAndHashAsync("src/lib/module/config.json");
+
+		var commitHash = await gitRepository.CreateCommitAsync(
+			headRef,
+			new GitCommitOperation[]
+			{
+				new UpdateFileOperation("src/lib/module/config.json",
+					Encoding.UTF8.GetBytes("{\"version\":2}"),
+					fileInfo.Hash)
+			},
+			CreateMetadata("Update nested file"));
+
+		var content = await gitRepository.ReadFileAsync("src/lib/module/config.json", commitHash.Value);
+		Assert.Equal("{\"version\":2}", Encoding.UTF8.GetString(content));
+	}
+
+	[Fact]
+	public async Task UpdateFileOperation_Sha256Repository_WithCorrectHash_Succeeds()
+	{
+		using var repo = GitTestRepository.Create(GitObjectFormat.Sha256);
+		repo.Commit("Add file", ("sha256.txt", "original"));
+		var gitRepository = GitRepository.Open(repo.WorkingDirectory);
+		var headRef = GitTestHelper.GetHeadReference(repo);
+
+		var fileInfo = await gitRepository.ReadFileAndHashAsync("sha256.txt");
+		Assert.Equal(GitHash.Sha256HexLength, fileInfo.Hash.Value.Length);
+
+		var commitHash = await gitRepository.CreateCommitAsync(
+			headRef,
+			new GitCommitOperation[]
+			{
+				new UpdateFileOperation("sha256.txt", Encoding.UTF8.GetBytes("updated"), fileInfo.Hash)
+			},
+			CreateMetadata("Update SHA-256 file"));
+
+		var content = await gitRepository.ReadFileAsync("sha256.txt", commitHash.Value);
+		Assert.Equal("updated", Encoding.UTF8.GetString(content));
+	}
+
+	[Fact]
+	public async Task UpdateFileOperation_Sha256Repository_WithWrongHash_ThrowsConflict()
+	{
+		using var repo = GitTestRepository.Create(GitObjectFormat.Sha256);
+		repo.Commit("Add file", ("sha256.txt", "content"));
+		var gitRepository = GitRepository.Open(repo.WorkingDirectory);
+		var headRef = GitTestHelper.GetHeadReference(repo);
+
+		var wrongHash = new GitHash(new string('0', GitHash.Sha256HexLength));
+
+		var exception = await Assert.ThrowsAsync<GitFileConflictException>(
+			() => gitRepository.CreateCommitAsync(
+				headRef,
+				new GitCommitOperation[]
+				{
+					new UpdateFileOperation("sha256.txt", Encoding.UTF8.GetBytes("new"), wrongHash)
+				},
+				CreateMetadata("Update with wrong SHA-256 hash")));
+
+		Assert.Equal("sha256.txt", exception.FilePath);
+	}
+
+	#endregion
+
 	#region CreateCommitAsync - Move Operations
 
 	[Fact]
