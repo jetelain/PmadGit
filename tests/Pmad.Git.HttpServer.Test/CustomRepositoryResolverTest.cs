@@ -1,4 +1,5 @@
 using Microsoft.AspNetCore.Http;
+using Microsoft.Extensions.Options;
 using Pmad.Git.HttpServer;
 using Pmad.Git.LocalRepositories;
 using System.Diagnostics;
@@ -25,7 +26,7 @@ public sealed class CustomRepositoryResolverTest : IDisposable
         var orgRepoPath = Path.Combine(_serverRepoRoot, "myorg", "myrepo.git");
         CreateBareRepository(orgRepoPath);
 
-        var options = new GitSmartHttpOptions
+        var options = Options.Create(new GitSmartHttpOptions
         {
             RepositoryRoot = _serverRepoRoot,
             RepositoryResolver = context =>
@@ -36,7 +37,7 @@ public sealed class CustomRepositoryResolverTest : IDisposable
                     ? null
                     : $"{org}/{repo}";
             }
-        };
+        });
         var repositoryService = new GitRepositoryService();
         var service = new GitSmartHttpService(options, repositoryService);
 
@@ -55,11 +56,11 @@ public sealed class CustomRepositoryResolverTest : IDisposable
     public async Task WithSingleRepository_ShouldUseFixedName()
     {
         // Arrange
-        var options = new GitSmartHttpOptions
+        var options = Options.Create(new GitSmartHttpOptions
         {
             RepositoryRoot = _serverRepoRoot,
             RepositoryResolver = context => "test-repo"
-        };
+        });
         var repositoryService = new GitRepositoryService();
         var service = new GitSmartHttpService(options, repositoryService);
 
@@ -76,14 +77,14 @@ public sealed class CustomRepositoryResolverTest : IDisposable
     public async Task WithQueryStringResolver_ShouldExtractFromQuery()
     {
         // Arrange
-        var options = new GitSmartHttpOptions
+        var options = Options.Create(new GitSmartHttpOptions
         {
             RepositoryRoot = _serverRepoRoot,
             RepositoryResolver = context =>
             {
                 return context.Request.Query["repo"].FirstOrDefault();
             }
-        };
+        });
         var repositoryService = new GitRepositoryService();
         var service = new GitSmartHttpService(options, repositoryService);
 
@@ -100,14 +101,14 @@ public sealed class CustomRepositoryResolverTest : IDisposable
     public async Task WithHeaderResolver_ShouldExtractFromHeader()
     {
         // Arrange
-        var options = new GitSmartHttpOptions
+        var options = Options.Create(new GitSmartHttpOptions
         {
             RepositoryRoot = _serverRepoRoot,
             RepositoryResolver = context =>
             {
                 return context.Request.Headers["X-Git-Repository"].FirstOrDefault();
             }
-        };
+        });
         var repositoryService = new GitRepositoryService();
         var service = new GitSmartHttpService(options, repositoryService);
 
@@ -125,11 +126,11 @@ public sealed class CustomRepositoryResolverTest : IDisposable
     public async Task WithCustomResolverReturningNull_ShouldReturn404()
     {
         // Arrange
-        var options = new GitSmartHttpOptions
+        var options = Options.Create(new GitSmartHttpOptions
         {
             RepositoryRoot = _serverRepoRoot,
             RepositoryResolver = context => null
-        };
+        });
         var repositoryService = new GitRepositoryService();
         var service = new GitSmartHttpService(options, repositoryService);
 
@@ -146,11 +147,11 @@ public sealed class CustomRepositoryResolverTest : IDisposable
     public async Task WithCustomResolverReturningEmpty_ShouldReturn404()
     {
         // Arrange
-        var options = new GitSmartHttpOptions
+        var options = Options.Create(new GitSmartHttpOptions
         {
             RepositoryRoot = _serverRepoRoot,
             RepositoryResolver = context => ""
-        };
+        });
         var repositoryService = new GitRepositoryService();
         var service = new GitSmartHttpService(options, repositoryService);
 
@@ -167,10 +168,10 @@ public sealed class CustomRepositoryResolverTest : IDisposable
     public async Task WithNoCustomResolver_ShouldUseDefaultBehavior()
     {
         // Arrange - Not setting RepositoryResolver, should use default
-        var options = new GitSmartHttpOptions
+        var options = Options.Create(new GitSmartHttpOptions
         {
             RepositoryRoot = _serverRepoRoot
-        };
+        });
         var repositoryService = new GitRepositoryService();
         var service = new GitSmartHttpService(options, repositoryService);
 
@@ -191,7 +192,7 @@ public sealed class CustomRepositoryResolverTest : IDisposable
         var nestedRepoPath = Path.Combine(_serverRepoRoot, "org", "team", "project.git");
         CreateBareRepository(nestedRepoPath);
 
-        var options = new GitSmartHttpOptions
+        var options = Options.Create(new GitSmartHttpOptions
         {
             RepositoryRoot = _serverRepoRoot,
             RepositoryResolver = context =>
@@ -199,7 +200,7 @@ public sealed class CustomRepositoryResolverTest : IDisposable
                 // Catch-all parameter captures the entire path
                 return context.Request.RouteValues["**path"]?.ToString();
             }
-        };
+        });
         var repositoryService = new GitRepositoryService();
         var service = new GitSmartHttpService(options, repositoryService);
 

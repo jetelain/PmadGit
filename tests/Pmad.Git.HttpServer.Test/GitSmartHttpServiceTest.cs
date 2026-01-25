@@ -1,5 +1,6 @@
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
+using Microsoft.Extensions.Options;
 using Pmad.Git.HttpServer;
 using Pmad.Git.LocalRepositories;
 using System.Diagnostics;
@@ -32,14 +33,14 @@ public sealed class GitSmartHttpServiceTest : IDisposable
     [Fact]
     public void Constructor_WithNullRepositoryService_ShouldThrowArgumentNullException()
     {
-        var options = new GitSmartHttpOptions { RepositoryRoot = _serverRepoRoot };
+        var options = Options.Create(new GitSmartHttpOptions { RepositoryRoot = _serverRepoRoot });
         Assert.Throws<ArgumentNullException>(() => new GitSmartHttpService(options, null!));
     }
 
     [Fact]
     public void Constructor_WithEmptyRepositoryRoot_ShouldThrowArgumentException()
     {
-        var options = new GitSmartHttpOptions { RepositoryRoot = "" };
+        var options = Options.Create(new GitSmartHttpOptions { RepositoryRoot = "" });
         var repositoryService = new GitRepositoryService();
         Assert.Throws<ArgumentException>(() => new GitSmartHttpService(options, repositoryService));
     }
@@ -47,7 +48,7 @@ public sealed class GitSmartHttpServiceTest : IDisposable
     [Fact]
     public void Constructor_WithWhitespaceRepositoryRoot_ShouldThrowArgumentException()
     {
-        var options = new GitSmartHttpOptions { RepositoryRoot = "   " };
+        var options = Options.Create(new GitSmartHttpOptions { RepositoryRoot = "   " });
         var repositoryService = new GitRepositoryService();
         Assert.Throws<ArgumentException>(() => new GitSmartHttpService(options, repositoryService));
     }
@@ -55,7 +56,7 @@ public sealed class GitSmartHttpServiceTest : IDisposable
     [Fact]
     public void Constructor_WithValidOptions_ShouldNotThrow()
     {
-        var options = new GitSmartHttpOptions { RepositoryRoot = _serverRepoRoot };
+        var options = Options.Create(new GitSmartHttpOptions { RepositoryRoot = _serverRepoRoot });
         var repositoryService = new GitRepositoryService();
         var service = new GitSmartHttpService(options, repositoryService);
         Assert.NotNull(service);
@@ -97,11 +98,11 @@ public sealed class GitSmartHttpServiceTest : IDisposable
     public async Task HandleInfoRefsAsync_WithDisabledUploadPack_ShouldReturn403()
     {
         // Arrange
-        var options = new GitSmartHttpOptions 
+        var options = Options.Create(new GitSmartHttpOptions 
         { 
             RepositoryRoot = _serverRepoRoot,
             EnableUploadPack = false
-        };
+        });
         var repositoryService = new GitRepositoryService();
         var service = new GitSmartHttpService(options, repositoryService);
         var context = CreateHttpContext("/test-repo.git/info/refs?service=git-upload-pack", repository: "test-repo");
@@ -117,11 +118,11 @@ public sealed class GitSmartHttpServiceTest : IDisposable
     public async Task HandleInfoRefsAsync_WithDisabledReceivePack_ShouldReturn403()
     {
         // Arrange
-        var options = new GitSmartHttpOptions 
+        var options = Options.Create(new GitSmartHttpOptions 
         { 
             RepositoryRoot = _serverRepoRoot,
             EnableReceivePack = false
-        };
+        });
         var repositoryService = new GitRepositoryService();
         var service = new GitSmartHttpService(options, repositoryService);
         var context = CreateHttpContext("/test-repo.git/info/refs?service=git-receive-pack", repository: "test-repo");
@@ -180,11 +181,11 @@ public sealed class GitSmartHttpServiceTest : IDisposable
     public async Task HandleInfoRefsAsync_WithAuthorizationDenied_ShouldReturn403()
     {
         // Arrange
-        var options = new GitSmartHttpOptions 
+        var options = Options.Create(new GitSmartHttpOptions 
         { 
             RepositoryRoot = _serverRepoRoot,
             AuthorizeAsync = (ctx, repo, token) => ValueTask.FromResult(false)
-        };
+        });
         var repositoryService = new GitRepositoryService();
         var service = new GitSmartHttpService(options, repositoryService);
         var context = CreateHttpContext("/test-repo.git/info/refs?service=git-upload-pack", repository: "test-repo");
@@ -218,11 +219,11 @@ public sealed class GitSmartHttpServiceTest : IDisposable
     public async Task HandleUploadPackAsync_WithDisabledService_ShouldReturn403()
     {
         // Arrange
-        var options = new GitSmartHttpOptions 
+        var options = Options.Create(new GitSmartHttpOptions 
         { 
             RepositoryRoot = _serverRepoRoot,
             EnableUploadPack = false
-        };
+        });
         var repositoryService = new GitRepositoryService();
         var service = new GitSmartHttpService(options, repositoryService);
         var context = CreateHttpContext("/test-repo.git/git-upload-pack", repository: "test-repo");
@@ -271,11 +272,11 @@ public sealed class GitSmartHttpServiceTest : IDisposable
     public async Task HandleReceivePackAsync_WithDisabledService_ShouldReturn403()
     {
         // Arrange
-        var options = new GitSmartHttpOptions 
+        var options = Options.Create(new GitSmartHttpOptions 
         { 
             RepositoryRoot = _serverRepoRoot,
             EnableReceivePack = false
-        };
+        });
         var repositoryService = new GitRepositoryService();
         var service = new GitSmartHttpService(options, repositoryService);
         var context = CreateHttpContext("/test-repo.git/git-receive-pack", repository: "test-repo");
@@ -376,11 +377,11 @@ public sealed class GitSmartHttpServiceTest : IDisposable
         var actualRepoPath = Path.Combine(_serverRepoRoot, normalizedName + ".git");
         CreateBareRepository(actualRepoPath);
         
-        var options = new GitSmartHttpOptions 
+        var options = Options.Create(new GitSmartHttpOptions 
         { 
             RepositoryRoot = _serverRepoRoot,
             RepositoryNameNormalizer = name => normalizedName
-        };
+        });
         var repositoryService = new GitRepositoryService();
         var service = new GitSmartHttpService(options, repositoryService);
         var context = CreateHttpContext("/any-name.git/info/refs?service=git-upload-pack", repository: "any-name");
@@ -401,7 +402,7 @@ public sealed class GitSmartHttpServiceTest : IDisposable
     {
         // Arrange
         var authCalled = false;
-        var options = new GitSmartHttpOptions 
+        var options = Options.Create(new GitSmartHttpOptions 
         { 
             RepositoryRoot = _serverRepoRoot,
             AuthorizeAsync = async (ctx, repo, token) =>
@@ -410,7 +411,7 @@ public sealed class GitSmartHttpServiceTest : IDisposable
                 authCalled = true;
                 return true;
             }
-        };
+        });
         var repositoryService = new GitRepositoryService();
         var service = new GitSmartHttpService(options, repositoryService);
         var context = CreateHttpContext("/test-repo.git/info/refs?service=git-upload-pack", repository: "test-repo");
@@ -427,11 +428,11 @@ public sealed class GitSmartHttpServiceTest : IDisposable
     public async Task HandleInfoRefsAsync_WithAuthorizationException_ShouldReturn403()
     {
         // Arrange
-        var options = new GitSmartHttpOptions 
+        var options = Options.Create(new GitSmartHttpOptions 
         { 
             RepositoryRoot = _serverRepoRoot,
             AuthorizeAsync = (ctx, repo, token) => throw new UnauthorizedAccessException()
-        };
+        });
         var repositoryService = new GitRepositoryService();
         var service = new GitSmartHttpService(options, repositoryService);
         var context = CreateHttpContext("/test-repo.git/info/refs?service=git-upload-pack", repository: "test-repo");
@@ -525,12 +526,12 @@ public sealed class GitSmartHttpServiceTest : IDisposable
 
     private GitSmartHttpService CreateService()
     {
-        var options = new GitSmartHttpOptions
+        var options = Options.Create(new GitSmartHttpOptions
         {
             RepositoryRoot = _serverRepoRoot,
             EnableUploadPack = true,
             EnableReceivePack = true
-        };
+        });
         var repositoryService = new GitRepositoryService();
         return new GitSmartHttpService(options, repositoryService);
     }

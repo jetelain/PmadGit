@@ -46,11 +46,16 @@ public static class GitSmartHttpServiceCollectionExtensions
             throw new ArgumentNullException(nameof(options));
         }
 
-        services.TryAddSingleton(options);
-        services.TryAddSingleton<IGitRepositoryService, GitRepositoryService>();
-        services.TryAddSingleton<GitSmartHttpService>();
-
-        return services;
+        return AddGitSmartHttp(services, opts =>
+        {
+            opts.RepositoryRoot = options.RepositoryRoot;
+            opts.EnableUploadPack = options.EnableUploadPack;
+            opts.EnableReceivePack = options.EnableReceivePack;
+            opts.Agent = options.Agent;
+            opts.AuthorizeAsync = options.AuthorizeAsync;
+            opts.RepositoryNameNormalizer = options.RepositoryNameNormalizer;
+            opts.RepositoryResolver = options.RepositoryResolver;
+        });
     }
 
     /// <summary>
@@ -73,9 +78,12 @@ public static class GitSmartHttpServiceCollectionExtensions
             throw new ArgumentNullException(nameof(configureOptions));
         }
 
-        var options = new GitSmartHttpOptions();
-        configureOptions(options);
+        services.AddOptions<GitSmartHttpOptions>()
+            .Configure(configureOptions);
+        
+        services.TryAddSingleton<IGitRepositoryService, GitRepositoryService>();
+        services.TryAddSingleton<GitSmartHttpService>();
 
-        return services.AddGitSmartHttp(options);
+        return services;
     }
 }
