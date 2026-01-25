@@ -276,13 +276,14 @@ public sealed class GitRepository
     /// <returns>The type of the path if it exists, or null if it does not exist.</returns>
     public async Task<GitTreeEntryKind?> GetPathTypeAsync(string path, string? reference = null, CancellationToken cancellationToken = default)
     {
-        if (string.IsNullOrEmpty(path))
+        var normalized = NormalizePathAllowEmpty(path);
+
+        if (string.IsNullOrEmpty(normalized))
         {
             return GitTreeEntryKind.Tree;
         }
 
         var commit = await GetCommitAsync(reference, cancellationToken).ConfigureAwait(false);
-        var normalized = NormalizePath(path);
 
         var segments = normalized.Split('/', StringSplitOptions.RemoveEmptyEntries);
         var currentTreeHash = commit.Tree;
@@ -987,8 +988,6 @@ public sealed class GitRepository
             throw new FileNotFoundException($"File '{path}' does not exist.");
         }
 
-        ValidatePathDoesNotConflictWithDirectories(entries, path);
-
         var blobHash = await WriteObjectAsync(GitObjectType.Blob, content, cancellationToken).ConfigureAwait(false);
         if (existing.Hash.Equals(blobHash))
         {
@@ -1263,11 +1262,18 @@ public sealed class GitRepository
 
     private static string NormalizePath(string path)
     {
-        if (string.IsNullOrWhiteSpace(path))
+        var normalized = NormalizePathAllowEmpty(path);
+
+        if (string.IsNullOrWhiteSpace(normalized))
         {
             throw new ArgumentException("Path cannot be empty", nameof(path));
         }
 
+        return normalized;
+    }
+
+    private static string NormalizePathAllowEmpty(string path)
+    {
         var normalized = path.Replace('\\', '/');
         normalized = normalized.Trim();
         normalized = normalized.Trim('/');

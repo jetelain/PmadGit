@@ -141,11 +141,11 @@ public sealed class GitRepositoryPathConflictTests
 		Assert.Equal("v2", Encoding.UTF8.GetString(content));
 	}
 
-	#endregion
+    #endregion
 
-	#region Move Operation - Path Conflicts
+    #region Move Operation - Path Conflicts
 
-	[Fact]
+    [Fact]
 	public async Task CreateCommitAsync_MoveFile_WhenDestinationParentIsFile_Throws()
 	{
 		using var repo = GitTestRepository.Create();

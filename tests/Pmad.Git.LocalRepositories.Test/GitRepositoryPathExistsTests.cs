@@ -330,10 +330,10 @@ public sealed class GitRepositoryPathExistsTests
 	public async Task DirectoryExistsAsync_WithBackslashPath_NormalizesCorrectly()
 	{
 		using var repo = GitTestRepository.Create();
-		repo.Commit("Add directory", ("dir/file.txt", "content"));
+		repo.Commit("Add directory", ("dir/sub/file.txt", "content"));
 		var gitRepository = GitRepository.Open(repo.WorkingDirectory);
 
-		var exists = await gitRepository.DirectoryExistsAsync("dir");
+		var exists = await gitRepository.DirectoryExistsAsync("dir\\sub");
 
 		Assert.True(exists);
 	}
@@ -360,7 +360,7 @@ public sealed class GitRepositoryPathExistsTests
 		using var repo = GitTestRepository.Create();
 		repo.Commit("Add file", ("file.txt", "content"));
 		var gitRepository = GitRepository.Open(repo.WorkingDirectory);
-		var cts = new CancellationTokenSource();
+		using var cts = new CancellationTokenSource();
 		cts.Cancel();
 
 		await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
@@ -373,7 +373,7 @@ public sealed class GitRepositoryPathExistsTests
 		using var repo = GitTestRepository.Create();
 		repo.Commit("Add file", ("file.txt", "content"));
 		var gitRepository = GitRepository.Open(repo.WorkingDirectory);
-		var cts = new CancellationTokenSource();
+        using var cts = new CancellationTokenSource();
 		cts.Cancel();
 
 		await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
@@ -386,7 +386,7 @@ public sealed class GitRepositoryPathExistsTests
 		using var repo = GitTestRepository.Create();
 		repo.Commit("Add file", ("file.txt", "content"));
 		var gitRepository = GitRepository.Open(repo.WorkingDirectory);
-		var cts = new CancellationTokenSource();
+        using var cts = new CancellationTokenSource();
 		cts.Cancel();
 
 		await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
@@ -399,7 +399,7 @@ public sealed class GitRepositoryPathExistsTests
 		using var repo = GitTestRepository.Create();
 		repo.Commit("Add directory", ("dir/file.txt", "content"));
 		var gitRepository = GitRepository.Open(repo.WorkingDirectory);
-		var cts = new CancellationTokenSource();
+        using var cts = new CancellationTokenSource();
 		cts.Cancel();
 
 		await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
