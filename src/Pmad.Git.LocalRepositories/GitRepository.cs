@@ -1061,7 +1061,7 @@ public sealed class GitRepository
         {
             if (existingPath.StartsWith(pathPrefix, StringComparison.Ordinal))
             {
-                throw new InvalidOperationException($"Cannot create file at '{path}' because '{existingPath}' exists under it as a file.");
+                throw new InvalidOperationException($"Cannot create file at '{path}' because a file exists under it at '{existingPath}'.");
             }
         }
     }
