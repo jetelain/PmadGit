@@ -1,4 +1,3 @@
-using System;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 
@@ -9,6 +8,24 @@ namespace Pmad.Git.HttpServer;
 /// </summary>
 public static class GitSmartHttpServiceCollectionExtensions
 {
+    /// <summary>
+    /// Adds the default implementation of IGitRepositoryService to the service collection as a singleton.
+    /// </summary>
+    /// <remarks>If an IGitRepositoryService is already registered, this method does not overwrite the
+    /// existing registration.</remarks>
+    /// <param name="services">The IServiceCollection to which the IGitRepositoryService will be added. Cannot be null.</param>
+    /// <returns>The IServiceCollection instance with the IGitRepositoryService registered.</returns>
+    /// <exception cref="ArgumentNullException">Thrown if services is null.</exception>
+    public static IServiceCollection AddGitRepositoryService(this IServiceCollection services)
+    {
+        if (services is null)
+        {
+            throw new ArgumentNullException(nameof(services));
+        }
+        services.TryAddSingleton<IGitRepositoryService, GitRepositoryService>();
+        return services;
+    }
+
     /// <summary>
     /// Adds Git Smart HTTP services to the specified <see cref="IServiceCollection"/>.
     /// The service is registered as a singleton.
