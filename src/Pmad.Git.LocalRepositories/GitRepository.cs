@@ -268,6 +268,91 @@ public sealed class GitRepository
     }
 
     /// <summary>
+    /// Checks if a path exists in the specified commit and returns its type.
+    /// </summary>
+    /// <param name="path">Repository-relative path using / separators.</param>
+    /// <param name="reference">Commit hash or ref to check; defaults to HEAD.</param>
+    /// <param name="cancellationToken">Token used to cancel the async operation.</param>
+    /// <returns>The type of the path if it exists, or null if it does not exist.</returns>
+    public async Task<GitTreeEntryKind?> GetPathTypeAsync(string path, string? reference = null, CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrEmpty(path))
+        {
+            return GitTreeEntryKind.Tree;
+        }
+
+        var commit = await GetCommitAsync(reference, cancellationToken).ConfigureAwait(false);
+        var normalized = NormalizePath(path);
+
+        var segments = normalized.Split('/', StringSplitOptions.RemoveEmptyEntries);
+        var currentTreeHash = commit.Tree;
+
+        for (var i = 0; i < segments.Length; i++)
+        {
+            var currentTree = await GetTreeAsync(currentTreeHash, cancellationToken).ConfigureAwait(false);
+            var entry = currentTree.Entries.FirstOrDefault(e => e.Name.Equals(segments[i], StringComparison.Ordinal));
+            if (entry is null)
+            {
+                return null;
+            }
+
+            var isLast = i == segments.Length - 1;
+            if (isLast)
+            {
+                return entry.Kind;
+            }
+
+            if (entry.Kind != GitTreeEntryKind.Tree)
+            {
+                return null;
+            }
+
+            currentTreeHash = entry.Hash;
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// Checks if a path exists in the specified commit.
+    /// </summary>
+    /// <param name="path">Repository-relative path using / separators.</param>
+    /// <param name="reference">Commit hash or ref to check; defaults to HEAD.</param>
+    /// <param name="cancellationToken">Token used to cancel the async operation.</param>
+    /// <returns>True if the path exists, false otherwise.</returns>
+    public async Task<bool> PathExistsAsync(string path, string? reference = null, CancellationToken cancellationToken = default)
+    {
+        var type = await GetPathTypeAsync(path, reference, cancellationToken).ConfigureAwait(false);
+        return type.HasValue;
+    }
+
+    /// <summary>
+    /// Checks if a file exists at the specified path in the specified commit.
+    /// </summary>
+    /// <param name="filePath">Repository-relative file path using / separators.</param>
+    /// <param name="reference">Commit hash or ref to check; defaults to HEAD.</param>
+    /// <param name="cancellationToken">Token used to cancel the async operation.</param>
+    /// <returns>True if a file (blob) exists at the path, false otherwise.</returns>
+    public async Task<bool> FileExistsAsync(string filePath, string? reference = null, CancellationToken cancellationToken = default)
+    {
+        var type = await GetPathTypeAsync(filePath, reference, cancellationToken).ConfigureAwait(false);
+        return type == GitTreeEntryKind.Blob;
+    }
+
+    /// <summary>
+    /// Checks if a directory exists at the specified path in the specified commit.
+    /// </summary>
+    /// <param name="directoryPath">Repository-relative directory path using / separators.</param>
+    /// <param name="reference">Commit hash or ref to check; defaults to HEAD.</param>
+    /// <param name="cancellationToken">Token used to cancel the async operation.</param>
+    /// <returns>True if a directory (tree) exists at the path, false otherwise.</returns>
+    public async Task<bool> DirectoryExistsAsync(string directoryPath, string? reference = null, CancellationToken cancellationToken = default)
+    {
+        var type = await GetPathTypeAsync(directoryPath, reference, cancellationToken).ConfigureAwait(false);
+        return type == GitTreeEntryKind.Tree;
+    }
+
+    /// <summary>
     /// Reads the blob content at <paramref name="filePath"/> from the specified <paramref name="reference"/>.
     /// </summary>
     /// <param name="filePath">Repository-relative file path using / separators.</param>
@@ -888,6 +973,8 @@ public sealed class GitRepository
             throw new InvalidOperationException($"File '{path}' already exists.");
         }
 
+        ValidatePathDoesNotConflictWithDirectories(entries, path);
+
         var blobHash = await WriteObjectAsync(GitObjectType.Blob, content, cancellationToken).ConfigureAwait(false);
         entries[path] = new TreeLeaf(RegularFileMode, blobHash);
         return true;
@@ -899,6 +986,8 @@ public sealed class GitRepository
         {
             throw new FileNotFoundException($"File '{path}' does not exist.");
         }
+
+        ValidatePathDoesNotConflictWithDirectories(entries, path);
 
         var blobHash = await WriteObjectAsync(GitObjectType.Blob, content, cancellationToken).ConfigureAwait(false);
         if (existing.Hash.Equals(blobHash))
@@ -937,9 +1026,45 @@ public sealed class GitRepository
             throw new InvalidOperationException($"File '{destinationPath}' already exists.");
         }
 
+        ValidatePathDoesNotConflictWithDirectories(entries, destinationPath);
+
         entries.Remove(sourcePath);
         entries[destinationPath] = leaf;
         return true;
+    }
+
+    private static void ValidatePathDoesNotConflictWithDirectories(Dictionary<string, TreeLeaf> entries, string path)
+    {
+        var segments = path.Split('/', StringSplitOptions.RemoveEmptyEntries);
+        if (segments.Length == 0)
+        {
+            return;
+        }
+
+        var pathBuilder = new StringBuilder();
+        for (var i = 0; i < segments.Length - 1; i++)
+        {
+            if (i > 0)
+            {
+                pathBuilder.Append('/');
+            }
+            pathBuilder.Append(segments[i]);
+            var parentPath = pathBuilder.ToString();
+            
+            if (entries.ContainsKey(parentPath))
+            {
+                throw new InvalidOperationException($"Cannot create file at '{path}' because '{parentPath}' is a file, not a directory.");
+            }
+        }
+
+        var pathPrefix = path + "/";
+        foreach (var existingPath in entries.Keys)
+        {
+            if (existingPath.StartsWith(pathPrefix, StringComparison.Ordinal))
+            {
+                throw new InvalidOperationException($"Cannot create file at '{path}' because '{existingPath}' exists under it as a file.");
+            }
+        }
     }
 
     private async Task<GitHash> BuildTreeAsync(IReadOnlyDictionary<string, TreeLeaf> leaves, CancellationToken cancellationToken)
