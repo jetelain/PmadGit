@@ -5,4 +5,4 @@
 /// </summary>
 /// <param name="Content">The raw byte array containing the file's content. Cannot be null.</param>
 /// <param name="Hash">The Git hash corresponding to the file's content.</param>
-public record struct GitFileContentAndHash(byte[] Content, GitHash Hash);
+public sealed record GitFileContentAndHash(byte[] Content, GitHash Hash);

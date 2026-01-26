@@ -12,8 +12,9 @@ public sealed class UpdateFileOperation : GitCommitOperation
     /// <param name="path">The relative path of the file to update within the repository. Cannot be null or empty.</param>
     /// <param name="content">The new content to write to the file. Cannot be null.</param>
     /// <param name="expectedPreviousHash">The expected previous hash of the file. If specified, the update will only proceed if the file's current hash
-    /// matches this value; otherwise, the update is aborted.</param>
+    /// matches this value; otherwise, a <see cref="GitFileConflictException"/> is thrown.</param>
     /// <exception cref="ArgumentNullException">Thrown if content is null.</exception>
+    /// <exception cref="GitFileConflictException">Thrown if the file's current hash does not match the expected previous hash.</exception>
     public UpdateFileOperation(string path, byte[] content, GitHash? expectedPreviousHash = null) : base(path)
     {
         Content = content ?? throw new ArgumentNullException(nameof(content));
@@ -27,7 +28,7 @@ public sealed class UpdateFileOperation : GitCommitOperation
 
     /// <summary>
     /// Gets the expected previous hash of the file. If specified, the update will only proceed if the file's current hash
-    /// matches this value; otherwise, the update is aborted.
+    /// matches this value; otherwise, a <see cref="GitFileConflictException"/> is thrown.
     /// </summary>
     public GitHash? ExpectedPreviousHash { get; }
 }
