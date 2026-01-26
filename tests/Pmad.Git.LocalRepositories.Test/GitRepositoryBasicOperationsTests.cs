@@ -350,7 +350,7 @@ public sealed class GitRepositoryBasicOperationsTests
 		using var repo = GitTestRepository.Create();
 		repo.Commit("Add file", ("file.txt", "content"));
 		var gitRepository = GitRepository.Open(repo.WorkingDirectory);
-		var cts = new CancellationTokenSource();
+		using var cts = new CancellationTokenSource();
 		cts.Cancel();
 
 		await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>

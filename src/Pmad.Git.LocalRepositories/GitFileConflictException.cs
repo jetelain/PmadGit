@@ -3,9 +3,12 @@
 /// <summary>
 /// The exception that is thrown when a file conflict occurs during a Git operation.
 /// </summary>
-/// <remarks>This exception indicates that a file could not be processed due to a conflict, such as when merging
-/// or rebasing branches in a Git repository. The file path associated with the conflict is available in the <see
-/// cref="FilePath"/> property.</remarks>
+/// <remarks>
+/// This exception indicates that a file could not be processed due to a conflict detected by the Git client,
+/// for example when using hash-based optimistic locking for concurrent file updates or during other operations
+/// that detect conflicting changes. The file path associated with the conflict is available in the
+/// <see cref="FilePath" /> property.
+/// </remarks>
 public sealed class GitFileConflictException : InvalidOperationException
 {
     /// <summary>
@@ -23,5 +26,5 @@ public sealed class GitFileConflictException : InvalidOperationException
     /// <summary>
     /// Gets the path to the file that is involved in the conflict.
     /// </summary>
-    public string FilePath { get; init; }
+    public string FilePath { get; }
 }

@@ -371,7 +371,7 @@ public sealed class GitRepository
     /// <param name="filePath">Repository-relative file path using / separators.</param>
     /// <param name="reference">Commit hash or ref to read from; defaults to HEAD.</param>
     /// <param name="cancellationToken">Token used to cancel the async operation.</param>
-    /// <returns>The blob payload as a byte array.</returns>
+    /// <returns>A <see cref="GitFileContentAndHash"/> containing the blob payload and its hash.</returns>
     public async Task<GitFileContentAndHash> ReadFileAndHashAsync(string filePath, string? reference = null, CancellationToken cancellationToken = default)
     {
         var commit = await GetCommitAsync(reference, cancellationToken).ConfigureAwait(false);
@@ -1002,7 +1002,7 @@ public sealed class GitRepository
 
         if (expectedPreviousHash != null && !existing.Hash.Equals(expectedPreviousHash.Value))
         {
-            throw new GitFileConflictException($"File '{path}' has hash {existing.Hash.Value}, but expected {expectedPreviousHash.Value.Value}.", path);
+            throw new GitFileConflictException($"File '{path}' has hash '{existing.Hash.Value}' but expected '{expectedPreviousHash.Value.Value}'.", path);
         }
 
         var blobHash = await WriteObjectAsync(GitObjectType.Blob, content, cancellationToken).ConfigureAwait(false);

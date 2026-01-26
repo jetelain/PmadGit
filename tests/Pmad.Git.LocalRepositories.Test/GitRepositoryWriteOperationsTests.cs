@@ -476,7 +476,7 @@ public sealed class GitRepositoryWriteOperationsTests
 
 		var version0 = await gitRepository.ReadFileAndHashAsync("counter.txt");
 
-		var commit1 = await gitRepository.CreateCommitAsync(
+		await gitRepository.CreateCommitAsync(
 			headRef,
 			new GitCommitOperation[]
 			{
@@ -487,7 +487,7 @@ public sealed class GitRepositoryWriteOperationsTests
 		gitRepository.InvalidateCaches();
 		var version1 = await gitRepository.ReadFileAndHashAsync("counter.txt");
 
-		var commit2 = await gitRepository.CreateCommitAsync(
+		await gitRepository.CreateCommitAsync(
 			headRef,
 			new GitCommitOperation[]
 			{
@@ -549,7 +549,7 @@ public sealed class GitRepositoryWriteOperationsTests
 
 		var initialState = await gitRepository.ReadFileAndHashAsync("doc.md");
 
-		var editor1Commit = await gitRepository.CreateCommitAsync(
+		await gitRepository.CreateCommitAsync(
 			headRef,
 			new GitCommitOperation[]
 			{
