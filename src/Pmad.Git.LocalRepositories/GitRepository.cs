@@ -414,11 +414,11 @@ public sealed class GitRepository
         GitHash? lastBlob = null;
         GitCommit? lastCommitWithFile = null;
         var hasSeenFile = false;
-        
+
         await foreach (var commit in EnumerateCommitsAsync(reference, cancellationToken).ConfigureAwait(false))
         {
             var blobHash = await GetBlobHashAsync(commit.Tree, normalizedPath, cancellationToken).ConfigureAwait(false);
-            
+
             if (blobHash is null)
             {
                 // File doesn't exist in this commit - if we were tracking it, yield the last commit where it existed
@@ -456,7 +456,7 @@ public sealed class GitRepository
                 lastCommitWithFile = commit;
             }
         }
-        
+
         // Yield the final commit where the file was created/last changed
         if (lastCommitWithFile != null)
         {
@@ -495,7 +495,7 @@ public sealed class GitRepository
         }
 
         var referencePath = NormalizeReference(branchName);
-        
+
         // Acquire lock for this branch to prevent concurrent commits
         using (await _lockManager.AcquireReferenceLockAsync(referencePath, cancellationToken).ConfigureAwait(false))
         {
@@ -561,7 +561,7 @@ public sealed class GitRepository
             {
                 _commitCache[commitHash] = parsedCommit;
             }
-        
+
             await WriteReferenceWithValidationInternalAsync(referencePath, parentHash, commitHash, cancellationToken).ConfigureAwait(false);
 
             return commitHash;
@@ -633,8 +633,8 @@ public sealed class GitRepository
     /// <param name="cancellationToken">Token used to cancel the async operation.</param>
     /// <exception cref="InvalidOperationException">Thrown when the expected old value doesn't match the current value.</exception>
     public async Task WriteReferenceWithValidationAsync(
-        string referencePath, 
-        GitHash? expectedOldValue, 
+        string referencePath,
+        GitHash? expectedOldValue,
         GitHash? newValue,
         CancellationToken cancellationToken = default)
     {
@@ -719,7 +719,7 @@ public sealed class GitRepository
     /// <param name="referencePaths">Fully qualified reference paths to lock.</param>
     /// <param name="cancellationToken">Token used to cancel the async operation.</param>
     /// <returns>A disposable lock that must be released after all operations complete.</returns>
-    public Task<IDisposable> AcquireMultipleReferenceLocksAsync(IEnumerable<string> referencePaths, CancellationToken cancellationToken = default)
+    public async Task<IGitMultipleReferenceLocks> AcquireMultipleReferenceLocksAsync(IEnumerable<string> referencePaths, CancellationToken cancellationToken = default)
     {
         if (referencePaths is null)
         {
@@ -728,8 +728,10 @@ public sealed class GitRepository
 
         // Normalize all reference paths to ensure consistency
         var normalizedPaths = referencePaths.Select(NormalizeAbsoluteReferencePath).ToList();
-        
-        return _lockManager.AcquireMultipleReferenceLocksAsync(normalizedPaths, cancellationToken);
+
+        var lockDisposable = await _lockManager.AcquireMultipleReferenceLocksAsync(normalizedPaths, cancellationToken);
+
+        return new GitMultipleReferenceLocks(this, normalizedPaths, lockDisposable);
     }
 
     /// <summary>
@@ -942,7 +944,7 @@ public sealed class GitRepository
         return $"refs/heads/{trimmed}";
     }
 
-    private static string NormalizeAbsoluteReferencePath(string referencePath)
+    internal static string NormalizeAbsoluteReferencePath(string referencePath)
     {
         if (string.IsNullOrWhiteSpace(referencePath))
         {
@@ -1066,7 +1068,7 @@ public sealed class GitRepository
             }
             pathBuilder.Append(segments[i]);
             var parentPath = pathBuilder.ToString();
-            
+
             if (entries.ContainsKey(parentPath))
             {
                 throw new InvalidOperationException($"Cannot create file at '{path}' because '{parentPath}' is a file, not a directory.");
