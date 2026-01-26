@@ -359,7 +359,7 @@ public sealed class GitMultipleReferenceLocksTests : IDisposable
         var task1 = Task.Run(async () =>
         {
             await startSignal.Task;
-            using (var locks = await gitRepository.AcquireMultipleReferenceLocksAsync(group1Refs))
+            using (await gitRepository.AcquireMultipleReferenceLocksAsync(group1Refs))
             {
                 lock (lockObject) { results.Add("task1-start"); }
                 await Task.Delay(50);
@@ -370,7 +370,7 @@ public sealed class GitMultipleReferenceLocksTests : IDisposable
         var task2 = Task.Run(async () =>
         {
             await startSignal.Task;
-            using (var locks = await gitRepository.AcquireMultipleReferenceLocksAsync(group2Refs))
+            using (await gitRepository.AcquireMultipleReferenceLocksAsync(group2Refs))
             {
                 lock (lockObject) { results.Add("task2-start"); }
                 await Task.Delay(50);
@@ -408,7 +408,7 @@ public sealed class GitMultipleReferenceLocksTests : IDisposable
         var task1 = Task.Run(async () =>
         {
             await startSignal.Task;
-            using (var locks = await gitRepository.AcquireMultipleReferenceLocksAsync(batch1Refs))
+            using (await gitRepository.AcquireMultipleReferenceLocksAsync(batch1Refs))
             {
                 lock (lockObject) { operations.Add("batch1-start"); }
                 await Task.Delay(50);
@@ -420,7 +420,7 @@ public sealed class GitMultipleReferenceLocksTests : IDisposable
         {
             await startSignal.Task;
             await Task.Delay(10);
-            using (var locks = await gitRepository.AcquireMultipleReferenceLocksAsync(batch2Refs))
+            using (await gitRepository.AcquireMultipleReferenceLocksAsync(batch2Refs))
             {
                 lock (lockObject) { operations.Add("batch2-start"); }
                 await Task.Delay(50);
