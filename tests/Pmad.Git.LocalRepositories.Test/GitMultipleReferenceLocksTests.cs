@@ -91,7 +91,7 @@ public sealed class GitMultipleReferenceLocksTests : IDisposable
         // Arrange
         using var repo = GitTestRepository.Create();
         var commit1 = repo.Commit("First", ("file1.txt", "content1"));
-        var commit2 = repo.Commit("Second", ("file2.txt", "content2"));
+        repo.Commit("Second", ("file2.txt", "content2"));
         repo.RunGit("branch branch-a");
         repo.RunGit("branch branch-b");
 
@@ -339,7 +339,7 @@ public sealed class GitMultipleReferenceLocksTests : IDisposable
     {
         // Arrange
         using var repo = GitTestRepository.Create();
-        var commit = repo.Commit("Commit", ("file.txt", "content"));
+        repo.Commit("Commit", ("file.txt", "content"));
         repo.RunGit("branch group1-a");
         repo.RunGit("branch group1-b");
         repo.RunGit("branch group2-a");
@@ -448,7 +448,7 @@ public sealed class GitMultipleReferenceLocksTests : IDisposable
     {
         // Arrange
         using var repo = GitTestRepository.Create();
-        var commit = repo.Commit("Initial", ("file.txt", "content"));
+        repo.Commit("Initial", ("file.txt", "content"));
 
         // Create 10 branches
         for (int i = 0; i < 10; i++)
@@ -470,7 +470,7 @@ public sealed class GitMultipleReferenceLocksTests : IDisposable
                 // Each iteration locks a random subset of branches
                 var subset = allRefs.OrderBy(_ => Random.Shared.Next()).Take(3).ToArray();
 
-                using (var locks = await gitRepository.AcquireMultipleReferenceLocksAsync(subset))
+                using (await gitRepository.AcquireMultipleReferenceLocksAsync(subset))
                 {
                     // Simulate some work
                     await Task.Delay(1);
