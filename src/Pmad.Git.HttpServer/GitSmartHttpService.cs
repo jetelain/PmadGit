@@ -161,20 +161,20 @@ public sealed class GitSmartHttpService
         // Acquire locks for all affected references to prevent concurrent modifications
         // Locks are acquired in sorted order to prevent deadlocks
         var referencePaths = updates.Select(u => NormalizeReferencePath(u.Name)).ToList();
-        using (await repository.AcquireMultipleReferenceLocksAsync(referencePaths, cancellationToken).ConfigureAwait(false))
+        using (var locks = await repository.AcquireMultipleReferenceLocksAsync(referencePaths, cancellationToken).ConfigureAwait(false))
         {
             var refSnapshot = new Dictionary<string, GitHash>(await repository.GetReferencesAsync(cancellationToken).ConfigureAwait(false), StringComparer.Ordinal);
             var refStatuses = new List<RefStatus>(updates.Count);
             foreach (var update in updates)
             {
-                var status = await ApplyReferenceUpdateInternalAsync(repository, refSnapshot, update, cancellationToken).ConfigureAwait(false);
+                var status = await ApplyReferenceUpdateInternalAsync(locks, refSnapshot, update, cancellationToken).ConfigureAwait(false);
                 refStatuses.Add(status);
             }
 
             await WriteReceivePackStatusAsync(context, unpackStatus, refStatuses, capabilities.Contains("report-status"), cancellationToken).ConfigureAwait(false);
         }
         
-        // Note: Cache invalidation for reference updates is handled by WriteReferenceWithValidationInternalAsync
+        // Note: Cache invalidation for reference updates is handled by WriteReferenceWithValidationAsync
         // which is called within ApplyReferenceUpdateInternalAsync for each update
     }
 
@@ -563,7 +563,7 @@ public sealed class GitSmartHttpService
     }
 
     private async Task<RefStatus> ApplyReferenceUpdateInternalAsync(
-        GitRepository repository,
+        IGitMultipleReferenceLocks locks,
         IDictionary<string, GitHash> snapshot,
         RefUpdate update,
         CancellationToken cancellationToken)
@@ -585,8 +585,7 @@ public sealed class GitSmartHttpService
 
         try
         {
-            // Use internal method that doesn't acquire locks (locks are already held by caller)
-            await repository.WriteReferenceWithValidationInternalAsync(
+            await locks.WriteReferenceWithValidationAsync(
                 normalized,
                 update.OldValue,
                 update.NewValue,
