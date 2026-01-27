@@ -5,9 +5,24 @@ namespace Pmad.Git.LocalRepositories;
 /// </summary>
 public readonly record struct GitHash
 {
+    /// <summary>
+    /// The length of a SHA-1 hash in hexadecimal characters (40).
+    /// </summary>
     public const int Sha1HexLength = 40;
+
+    /// <summary>
+    /// The length of a SHA-256 hash in hexadecimal characters (64).
+    /// </summary>
     public const int Sha256HexLength = 64;
+
+    /// <summary>
+    /// The length of a SHA-1 hash in bytes (20).
+    /// </summary>
     public const int Sha1ByteLength = Sha1HexLength / 2;
+
+    /// <summary>
+    /// The length of a SHA-256 hash in bytes (32).
+    /// </summary>
     public const int Sha256ByteLength = Sha256HexLength / 2;
 
     /// <summary>

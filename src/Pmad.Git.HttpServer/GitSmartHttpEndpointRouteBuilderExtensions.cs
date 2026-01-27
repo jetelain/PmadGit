@@ -10,6 +10,9 @@ using Microsoft.Extensions.DependencyInjection;
 
 namespace Pmad.Git.HttpServer;
 
+/// <summary>
+/// Extension methods for <see cref="IEndpointRouteBuilder"/> to add Git Smart HTTP protocol endpoints.
+/// </summary>
 public static class GitSmartHttpEndpointRouteBuilderExtensions
 {
     /// <summary>

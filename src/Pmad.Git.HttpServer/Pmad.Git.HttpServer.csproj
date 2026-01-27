@@ -6,6 +6,7 @@
 		<Nullable>enable</Nullable>
 		<IsAotCompatible>true</IsAotCompatible>
 		<EnableRequestDelegateGenerator>true</EnableRequestDelegateGenerator>
+		<GenerateDocumentationFile>true</GenerateDocumentationFile>
 		
 		<GeneratePackageOnBuild>true</GeneratePackageOnBuild>
 		<PackageLicenseExpression>MIT</PackageLicenseExpression>

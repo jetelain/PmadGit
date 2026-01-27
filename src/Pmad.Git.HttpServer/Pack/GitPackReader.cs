@@ -176,7 +176,7 @@ internal sealed class GitPackReader
             }
         }
 
-        public async Task ReadExactlyAsync(Memory<byte> buffer, CancellationToken cancellationToken)
+        public new async Task ReadExactlyAsync(Memory<byte> buffer, CancellationToken cancellationToken)
         {
             await _inner.ReadExactlyAsync(buffer, cancellationToken).ConfigureAwait(false);
             if (!_hashCompleted)

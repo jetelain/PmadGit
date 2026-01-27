@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
+using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Pmad.Git.LocalRepositories;
@@ -387,6 +388,191 @@ public sealed class GitSmartHttpEndToEndTest : IDisposable
         Assert.True(File.Exists(Path.Combine(cloneDir, "file.txt")));
     }
 
+    [Fact]
+    public async Task GitPush_WithSuccessfulUpdates_ShouldInvokeCallback()
+    {
+        // Arrange: Setup callback tracking
+        var callbackInvoked = false;
+        string? capturedRepositoryName = null;
+        IReadOnlyList<string>? capturedUpdatedRefs = null;
+        var callbackCompletionSource = new TaskCompletionSource<bool>();
+
+        var sourceRepo = CreateSourceRepository("callback-test", new[] { ("initial.txt", "initial") });
+
+        // Start server with push enabled and callback
+        await StartServerAsync(enableReceivePack: true, onReceivePackCompleted: (ctx, repoName, updatedRefs) =>
+        {
+            callbackInvoked = true;
+            capturedRepositoryName = repoName;
+            capturedUpdatedRefs = updatedRefs;
+            callbackCompletionSource.SetResult(true);
+            return ValueTask.CompletedTask;
+        });
+
+        var cloneDir = Path.Combine(_clientWorkingDir, "callback-test-clone");
+        RunGit(_clientWorkingDir, $"clone {_serverUrl}/callback-test.git {cloneDir}");
+        RunGit(cloneDir, "config user.name \"Test\"");
+        RunGit(cloneDir, "config user.email test@test.com");
+
+        // Create new commit in clone
+        File.WriteAllText(Path.Combine(cloneDir, "pushed-file.txt"), "pushed content");
+        RunGit(cloneDir, "add pushed-file.txt");
+        RunGit(cloneDir, "commit -m \"Trigger callback\" --quiet");
+
+        // Act: Push
+        RunGit(cloneDir, "push origin main");
+
+        // Wait for callback to complete (with timeout)
+        var completed = await Task.WhenAny(callbackCompletionSource.Task, Task.Delay(5000));
+        Assert.Same(callbackCompletionSource.Task, completed);
+
+        // Assert: Verify callback was invoked with correct parameters
+        Assert.True(callbackInvoked);
+        Assert.Equal("callback-test", capturedRepositoryName);
+        Assert.NotNull(capturedUpdatedRefs);
+        Assert.Single(capturedUpdatedRefs);
+        Assert.Contains("refs/heads/main", capturedUpdatedRefs);
+    }
+
+    [Fact]
+    public async Task GitPush_WithCallbackException_ShouldNotFailPush()
+    {
+        // Arrange: Setup callback that throws
+        var callbackInvoked = false;
+        var callbackCompletionSource = new TaskCompletionSource<bool>();
+
+        var sourceRepo = CreateSourceRepository("exception-test", new[] { ("initial.txt", "initial") });
+
+        // Start server with push enabled and throwing callback
+        await StartServerAsync(enableReceivePack: true, onReceivePackCompleted: (ctx, repoName, updatedRefs) =>
+        {
+            callbackInvoked = true;
+            callbackCompletionSource.SetResult(true);
+            throw new InvalidOperationException("Callback failed!");
+        });
+
+        var cloneDir = Path.Combine(_clientWorkingDir, "exception-test-clone");
+        RunGit(_clientWorkingDir, $"clone {_serverUrl}/exception-test.git {cloneDir}");
+        RunGit(cloneDir, "config user.name \"Test\"");
+        RunGit(cloneDir, "config user.email test@test.com");
+
+        // Create new commit
+        File.WriteAllText(Path.Combine(cloneDir, "file.txt"), "content");
+        RunGit(cloneDir, "add file.txt");
+        RunGit(cloneDir, "commit -m \"Test commit\" --quiet");
+
+        // Act: Push (should succeed despite callback exception)
+        var pushOutput = RunGit(cloneDir, "push origin main");
+
+        // Wait for callback to be invoked
+        var completed = await Task.WhenAny(callbackCompletionSource.Task, Task.Delay(5000));
+        Assert.Same(callbackCompletionSource.Task, completed);
+
+        // Assert: Push succeeded and callback was invoked
+        Assert.Contains("main -> main", pushOutput);
+        Assert.True(callbackInvoked);
+    }
+
+    [Fact]
+    public async Task GitPush_WithSlowCallback_ShouldNotBlockResponse()
+    {
+        // Arrange: Setup slow callback
+        var callbackStarted = new TaskCompletionSource<bool>();
+        var callbackCanFinish = new TaskCompletionSource<bool>();
+        var callbackFinished = new TaskCompletionSource<bool>();
+
+        var sourceRepo = CreateSourceRepository("slow-callback-test", new[] { ("initial.txt", "initial") });
+
+        // Start server with push enabled and slow callback
+        await StartServerAsync(enableReceivePack: true, onReceivePackCompleted: async (ctx, repoName, updatedRefs) =>
+        {
+            callbackStarted.SetResult(true);
+            await callbackCanFinish.Task;
+            callbackFinished.SetResult(true);
+        });
+
+        var cloneDir = Path.Combine(_clientWorkingDir, "slow-callback-clone");
+        RunGit(_clientWorkingDir, $"clone {_serverUrl}/slow-callback-test.git {cloneDir}");
+        RunGit(cloneDir, "config user.name \"Test\"");
+        RunGit(cloneDir, "config user.email test@test.com");
+
+        // Create new commit
+        File.WriteAllText(Path.Combine(cloneDir, "file.txt"), "content");
+        RunGit(cloneDir, "add file.txt");
+        RunGit(cloneDir, "commit -m \"Test commit\" --quiet");
+
+        // Act: Push (should complete while callback is still running)
+        var pushTask = Task.Run(() => RunGit(cloneDir, "push origin main"));
+
+        // Wait for callback to start
+        var callbackStartedCompleted = await Task.WhenAny(callbackStarted.Task, Task.Delay(5000));
+        Assert.Same(callbackStarted.Task, callbackStartedCompleted);
+
+        // Push should complete even though callback is blocked
+        var pushOutput = await pushTask;
+        Assert.Contains("main -> main", pushOutput);
+
+        // Verify callback hasn't finished yet (proving it didn't block the push)
+        Assert.False(callbackFinished.Task.IsCompleted);
+
+        // Clean up - allow callback to complete
+        callbackCanFinish.SetResult(true);
+
+        // Verify callback eventually completes
+        var callbackFinishedCompleted = await Task.WhenAny(callbackFinished.Task, Task.Delay(5000));
+        Assert.Same(callbackFinished.Task, callbackFinishedCompleted);
+    }
+
+    [Fact]
+    public async Task GitPush_WithMultipleBranches_ShouldInvokeCallbackWithAllRefs()
+    {
+        // Arrange: Setup callback tracking
+        var callbackInvoked = false;
+        IReadOnlyList<string>? capturedUpdatedRefs = null;
+        var callbackCompletionSource = new TaskCompletionSource<bool>();
+
+        var sourceRepo = CreateSourceRepository("multi-branch-test", new[] { ("initial.txt", "initial") });
+
+        // Start server with callback
+        await StartServerAsync(enableReceivePack: true, onReceivePackCompleted: (ctx, repoName, updatedRefs) =>
+        {
+            callbackInvoked = true;
+            capturedUpdatedRefs = updatedRefs;
+            callbackCompletionSource.SetResult(true);
+            return ValueTask.CompletedTask;
+        });
+
+        var cloneDir = Path.Combine(_clientWorkingDir, "multi-branch-clone");
+        RunGit(_clientWorkingDir, $"clone {_serverUrl}/multi-branch-test.git {cloneDir}");
+        RunGit(cloneDir, "config user.name \"Test\"");
+        RunGit(cloneDir, "config user.email test@test.com");
+
+        // Create new branches
+        RunGit(cloneDir, "checkout -b feature1 --quiet");
+        File.WriteAllText(Path.Combine(cloneDir, "feature1.txt"), "feature 1");
+        RunGit(cloneDir, "add feature1.txt");
+        RunGit(cloneDir, "commit -m \"Feature 1\" --quiet");
+
+        RunGit(cloneDir, "checkout -b feature2 main --quiet");
+        File.WriteAllText(Path.Combine(cloneDir, "feature2.txt"), "feature 2");
+        RunGit(cloneDir, "add feature2.txt");
+        RunGit(cloneDir, "commit -m \"Feature 2\" --quiet");
+
+        // Act: Push all branches
+        RunGit(cloneDir, "push origin feature1 feature2");
+
+        // Wait for callback
+        var completed = await Task.WhenAny(callbackCompletionSource.Task, Task.Delay(5000));
+        Assert.Same(callbackCompletionSource.Task, completed);
+
+        // Assert: Callback received both branch updates
+        Assert.True(callbackInvoked);
+        Assert.NotNull(capturedUpdatedRefs);
+        Assert.Equal(2, capturedUpdatedRefs.Count);
+        Assert.Contains("refs/heads/feature1", capturedUpdatedRefs);
+        Assert.Contains("refs/heads/feature2", capturedUpdatedRefs);
+    }
+
     private GitRepository CreateSourceRepository(string name, (string path, string content)[] files)
     {
         var bareRepoPath = Path.Combine(_serverRepoRoot, $"{name}.git");
@@ -427,7 +613,11 @@ public sealed class GitSmartHttpEndToEndTest : IDisposable
         return GitRepository.Open(bareRepoPath);
     }
 
-    private async Task StartServerAsync(bool enableUploadPack = true, bool enableReceivePack = false, string routePrefix = "git")
+    private async Task StartServerAsync(
+        bool enableUploadPack = true, 
+        bool enableReceivePack = false, 
+        string routePrefix = "git",
+        Func<HttpContext, string, IReadOnlyList<string>, ValueTask>? onReceivePackCompleted = null)
     {
         var builder = WebApplication.CreateBuilder();
 
@@ -445,6 +635,12 @@ public sealed class GitSmartHttpEndToEndTest : IDisposable
             if (enableReceivePack)
             {
                 options.AuthorizeAsync = (_, _, _, _) => ValueTask.FromResult(true);
+            }
+
+            // Set callback if provided
+            if (onReceivePackCompleted != null)
+            {
+                options.OnReceivePackCompleted = onReceivePackCompleted;
             }
         });
 

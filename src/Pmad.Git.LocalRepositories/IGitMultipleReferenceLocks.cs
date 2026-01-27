@@ -1,5 +1,9 @@
 ﻿namespace Pmad.Git.LocalRepositories;
 
+/// <summary>
+/// Represents a collection of locks for multiple Git references.
+/// This interface ensures that multiple references can be updated atomically while preventing concurrent modifications.
+/// </summary>
 public interface IGitMultipleReferenceLocks : IDisposable
 {
     /// <summary>

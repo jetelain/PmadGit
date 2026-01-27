@@ -2,6 +2,9 @@ using Microsoft.AspNetCore.Http;
 
 namespace Pmad.Git.HttpServer;
 
+/// <summary>
+/// Configuration options for the Git Smart HTTP protocol service.
+/// </summary>
 public sealed class GitSmartHttpOptions
 {
     /// <summary>

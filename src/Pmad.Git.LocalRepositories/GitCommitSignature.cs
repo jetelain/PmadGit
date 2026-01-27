@@ -8,6 +8,13 @@ namespace Pmad.Git.LocalRepositories;
 /// </summary>
 public sealed class GitCommitSignature
 {
+    /// <summary>
+    /// Initializes a new instance of the <see cref="GitCommitSignature"/> class.
+    /// </summary>
+    /// <param name="name">The name of the person signing.</param>
+    /// <param name="email">The email address of the person signing.</param>
+    /// <param name="timestamp">The timestamp when the signature was created.</param>
+    /// <exception cref="ArgumentException">Thrown when <paramref name="name"/> or <paramref name="email"/> is null, empty, or whitespace.</exception>
     public GitCommitSignature(string name, string email, DateTimeOffset timestamp)
     {
         // Note: git does not enforce any constraint on name and email
@@ -26,8 +33,19 @@ public sealed class GitCommitSignature
         Timestamp = timestamp;
     }
 
+    /// <summary>
+    /// Gets the name of the person signing.
+    /// </summary>
     public string Name { get; }
+
+    /// <summary>
+    /// Gets the email address of the person signing.
+    /// </summary>
     public string Email { get; }
+
+    /// <summary>
+    /// Gets the timestamp when the signature was created.
+    /// </summary>
     public DateTimeOffset Timestamp { get; }
 
     /// <summary>
@@ -47,6 +65,10 @@ public sealed class GitCommitSignature
     /// <summary>
     /// Parses a git header signature value ("Name &lt;email&gt; 123456 +0100").
     /// </summary>
+    /// <param name="header">The git header signature string to parse.</param>
+    /// <returns>A new <see cref="GitCommitSignature"/> instance parsed from the header.</returns>
+    /// <exception cref="ArgumentNullException">Thrown when <paramref name="header"/> is null.</exception>
+    /// <exception cref="InvalidOperationException">Thrown when the header format is invalid or missing required information.</exception>
     public static GitCommitSignature Parse(string header)
     {
         if (header is null)
