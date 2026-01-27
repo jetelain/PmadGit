@@ -1,7 +1,7 @@
 using System.Buffers;
 using System.IO.Compression;
 
-namespace Pmad.Git.LocalRepositories;
+namespace Pmad.Git.LocalRepositories.Pack;
 
 /// <summary>
 /// Provides utilities for reading Git pack file objects.

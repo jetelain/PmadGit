@@ -1,8 +1,7 @@
-using System.Buffers;
 using System.IO.Compression;
-using Pmad.Git.LocalRepositories;
+using Pmad.Git.LocalRepositories.Pack;
 
-namespace Pmad.Git.LocalRepositories.Test;
+namespace Pmad.Git.LocalRepositories.Test.Pack;
 
 public sealed class GitPackObjectReaderTest
 {
@@ -500,7 +499,7 @@ public sealed class GitPackObjectReaderTest
         
         // Write type and size header
         var size = content.Length;
-        var firstByte = (byte)((kind << 4) | (size & 0x0F));
+        var firstByte = (byte)(kind << 4 | size & 0x0F);
         if (size < 16)
         {
             stream.WriteByte(firstByte);
@@ -511,7 +510,7 @@ public sealed class GitPackObjectReaderTest
             var remaining = size >> 4;
             while (remaining >= 128)
             {
-                stream.WriteByte((byte)((remaining & 0x7F) | 0x80));
+                stream.WriteByte((byte)(remaining & 0x7F | 0x80));
                 remaining >>= 7;
             }
             stream.WriteByte((byte)(remaining & 0x7F));
@@ -533,7 +532,7 @@ public sealed class GitPackObjectReaderTest
         
         // Write type (7) and size header
         var size = delta.Length;
-        stream.WriteByte((byte)((7 << 4) | (size & 0x0F)));
+        stream.WriteByte((byte)(7 << 4 | size & 0x0F));
 
         // Write base hash (20 bytes for SHA-1)
         var hashBytes = Convert.FromHexString(baseHash.Value);
@@ -555,7 +554,7 @@ public sealed class GitPackObjectReaderTest
         
         // Write type (6) and size header
         var size = delta.Length;
-        stream.WriteByte((byte)((6 << 4) | (size & 0x0F)));
+        stream.WriteByte((byte)(6 << 4 | size & 0x0F));
 
         // Write ofs-delta offset (simplified - single byte for small distances)
         stream.WriteByte((byte)distance);
