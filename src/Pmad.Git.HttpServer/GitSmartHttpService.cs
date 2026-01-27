@@ -1,10 +1,4 @@
-using System;
-using System.Collections.Generic;
-using System.IO;
-using System.Linq;
 using System.Text;
-using System.Threading;
-using System.Threading.Tasks;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Options;
 using Microsoft.Extensions.Primitives;
@@ -14,6 +8,10 @@ using Pmad.Git.LocalRepositories;
 
 namespace Pmad.Git.HttpServer;
 
+/// <summary>
+/// Implements the Git Smart HTTP protocol for serving Git repositories over HTTP.
+/// Handles info/refs, upload-pack (fetch/clone), and receive-pack (push) operations.
+/// </summary>
 public sealed class GitSmartHttpService
 {
     private readonly GitSmartHttpOptions _options;
@@ -22,6 +20,14 @@ public sealed class GitSmartHttpService
     private readonly GitPackBuilder _packBuilder = new();
     private readonly GitPackReader _packReader = new();
 
+    /// <summary>
+    /// Initializes a new instance of the <see cref="GitSmartHttpService"/> class.
+    /// </summary>
+    /// <param name="options">The Git Smart HTTP options.</param>
+    /// <param name="repositoryService">The repository service for accessing Git repositories.</param>
+    /// <exception cref="ArgumentNullException">Thrown when <paramref name="options"/> or <paramref name="repositoryService"/> is null.</exception>
+    /// <exception cref="InvalidOperationException">Thrown when options value is null.</exception>
+    /// <exception cref="ArgumentException">Thrown when repository root is not provided.</exception>
     public GitSmartHttpService(IOptions<GitSmartHttpOptions> options, IGitRepositoryService repositoryService)
     {
         if (options is null)
@@ -40,6 +46,13 @@ public sealed class GitSmartHttpService
         _rootFullPath = Path.GetFullPath(_options.RepositoryRoot);
     }
 
+    /// <summary>
+    /// Handles the info/refs request which advertises available references to the Git client.
+    /// This is the initial discovery phase of the Git Smart HTTP protocol.
+    /// </summary>
+    /// <param name="context">The HTTP context for the current request.</param>
+    /// <param name="cancellationToken">Token to cancel the operation.</param>
+    /// <returns>A task representing the asynchronous operation.</returns>
     public async Task HandleInfoRefsAsync(HttpContext context, CancellationToken cancellationToken = default)
     {
         if (!TryGetServiceName(context.Request, out var serviceName))
@@ -83,6 +96,13 @@ public sealed class GitSmartHttpService
         await PktLineWriter.WriteFlushAsync(context.Response.Body, cancellationToken).ConfigureAwait(false);
     }
 
+    /// <summary>
+    /// Handles the upload-pack request which allows clients to fetch/clone repository data.
+    /// This operation reads objects from the repository and sends them to the client.
+    /// </summary>
+    /// <param name="context">The HTTP context for the current request.</param>
+    /// <param name="cancellationToken">Token to cancel the operation.</param>
+    /// <returns>A task representing the asynchronous operation.</returns>
     public async Task HandleUploadPackAsync(HttpContext context, CancellationToken cancellationToken = default)
     {
         if (!_options.EnableUploadPack)
@@ -116,6 +136,13 @@ public sealed class GitSmartHttpService
         await _packBuilder.WriteAsync(repository, objectClosure, context.Response.Body, cancellationToken).ConfigureAwait(false);
     }
 
+    /// <summary>
+    /// Handles the receive-pack request which allows clients to push data to the repository.
+    /// This operation receives objects from the client and updates references.
+    /// </summary>
+    /// <param name="context">The HTTP context for the current request.</param>
+    /// <param name="cancellationToken">Token to cancel the operation.</param>
+    /// <returns>A task representing the asynchronous operation.</returns>
     public async Task HandleReceivePackAsync(HttpContext context, CancellationToken cancellationToken = default)
     {
         if (!_options.EnableReceivePack)
@@ -207,6 +234,13 @@ public sealed class GitSmartHttpService
         }
     }
 
+    /// <summary>
+    /// Attempts to open a repository from the HTTP context, performing authorization checks.
+    /// </summary>
+    /// <param name="context">The HTTP context containing repository information.</param>
+    /// <param name="operation">The type of operation being performed (Read or Write).</param>
+    /// <param name="cancellationToken">Token to cancel the operation.</param>
+    /// <returns>A tuple containing the repository and its name, or null if the repository cannot be accessed.</returns>
     private async Task<(IGitRepository Repository, string Name)?> TryOpenRepositoryAsync(HttpContext context, GitOperation operation, CancellationToken cancellationToken)
     {
         string? rawValue = null;
@@ -255,6 +289,12 @@ public sealed class GitSmartHttpService
         }
     }
 
+    /// <summary>
+    /// Resolves the file system path for a repository name, checking for both direct and .git suffixed paths.
+    /// </summary>
+    /// <param name="repositoryName">The normalized repository name.</param>
+    /// <returns>The full file system path to the repository.</returns>
+    /// <exception cref="DirectoryNotFoundException">Thrown when the repository cannot be found.</exception>
     private string ResolveRepositoryPath(string repositoryName)
     {
         var candidates = new[]
@@ -280,6 +320,12 @@ public sealed class GitSmartHttpService
         throw new DirectoryNotFoundException();
     }
 
+    /// <summary>
+    /// Normalizes a repository name by removing slashes, .git suffix, and applying custom normalization.
+    /// </summary>
+    /// <param name="raw">The raw repository name from the HTTP context.</param>
+    /// <returns>The normalized repository name.</returns>
+    /// <exception cref="InvalidOperationException">Thrown when the repository name is invalid or contains path traversal attempts.</exception>
     private string NormalizeRepositoryName(string raw)
     {
         var value = raw.Replace('\\', '/').Trim('/');
@@ -297,6 +343,14 @@ public sealed class GitSmartHttpService
         return normalized;
     }
 
+    /// <summary>
+    /// Advertises available references (branches, tags) to the Git client in the info/refs response.
+    /// </summary>
+    /// <param name="repository">The repository to advertise references from.</param>
+    /// <param name="service">The type of service being advertised (upload-pack or receive-pack).</param>
+    /// <param name="destination">The stream to write the advertisement to.</param>
+    /// <param name="cancellationToken">Token to cancel the operation.</param>
+    /// <returns>A task representing the asynchronous operation.</returns>
     private async Task AdvertiseReferencesAsync(IGitRepository repository, GitServiceKind service, Stream destination, CancellationToken cancellationToken)
     {
         var references = await repository.GetReferencesAsync(cancellationToken).ConfigureAwait(false);
@@ -338,6 +392,12 @@ public sealed class GitSmartHttpService
         }
     }
 
+    /// <summary>
+    /// Reads HEAD information from the repository, including symbolic references and direct hash references.
+    /// </summary>
+    /// <param name="repository">The repository to read HEAD from.</param>
+    /// <param name="cancellationToken">Token to cancel the operation.</param>
+    /// <returns>Information about the HEAD reference.</returns>
     private static async Task<HeadInfo> ReadHeadInfoAsync(IGitRepository repository, CancellationToken cancellationToken)
     {
         var headPath = Path.Combine(repository.GitDirectory, "HEAD");
@@ -367,6 +427,12 @@ public sealed class GitSmartHttpService
         return new HeadInfo(null, null);
     }
 
+    /// <summary>
+    /// Attempts to extract the service name from the HTTP request query string.
+    /// </summary>
+    /// <param name="request">The HTTP request.</param>
+    /// <param name="value">The service name if found.</param>
+    /// <returns>True if the service name was found; otherwise, false.</returns>
     private static bool TryGetServiceName(HttpRequest request, out string value)
     {
         if (request.Query.TryGetValue("service", out StringValues serviceValues))
@@ -379,6 +445,12 @@ public sealed class GitSmartHttpService
         return false;
     }
 
+    /// <summary>
+    /// Attempts to parse a service name string into a <see cref="GitServiceKind"/> enum value.
+    /// </summary>
+    /// <param name="serviceName">The service name to parse (e.g., "git-upload-pack" or "git-receive-pack").</param>
+    /// <param name="service">The parsed service kind if successful.</param>
+    /// <returns>True if the service name was recognized; otherwise, false.</returns>
     private static bool TryParseService(string serviceName, out GitServiceKind service)
     {
         if (serviceName.Equals("git-upload-pack", StringComparison.Ordinal))
@@ -397,6 +469,11 @@ public sealed class GitSmartHttpService
         return false;
     }
 
+    /// <summary>
+    /// Checks if a specific Git service is enabled based on the current options.
+    /// </summary>
+    /// <param name="service">The service to check.</param>
+    /// <returns>True if the service is enabled; otherwise, false.</returns>
     private bool IsServiceEnabled(GitServiceKind service) => service switch
     {
         GitServiceKind.UploadPack => _options.EnableUploadPack,
@@ -404,6 +481,12 @@ public sealed class GitSmartHttpService
         _ => false
     };
 
+    /// <summary>
+    /// Builds the capabilities string to advertise to the Git client.
+    /// </summary>
+    /// <param name="service">The type of service being advertised.</param>
+    /// <param name="headSymref">The symbolic reference target of HEAD, if any.</param>
+    /// <returns>A space-separated string of capabilities.</returns>
     private string BuildCapabilities(GitServiceKind service, string? headSymref)
     {
         var capabilities = new List<string>();
@@ -423,6 +506,13 @@ public sealed class GitSmartHttpService
         return string.Join(' ', capabilities);
     }
 
+    /// <summary>
+    /// Parses an upload-pack request body to extract the list of wanted objects.
+    /// </summary>
+    /// <param name="body">The request body stream.</param>
+    /// <param name="hashLengthBytes">The expected length of hash values in bytes.</param>
+    /// <param name="cancellationToken">Token to cancel the operation.</param>
+    /// <returns>A list of wanted object hashes.</returns>
     private static async Task<List<GitHash>> ParseUploadPackRequestAsync(Stream body, int hashLengthBytes, CancellationToken cancellationToken)
     {
         var expectedLength = hashLengthBytes * 2;
@@ -493,6 +583,13 @@ public sealed class GitSmartHttpService
         return wants;
     }
 
+    /// <summary>
+    /// Parses a receive-pack request body to extract reference updates and client capabilities.
+    /// </summary>
+    /// <param name="body">The request body stream.</param>
+    /// <param name="expectedHashLength">The expected length of hash values in characters.</param>
+    /// <param name="cancellationToken">Token to cancel the operation.</param>
+    /// <returns>A tuple containing the list of reference updates and the set of client capabilities.</returns>
     private static async Task<(List<RefUpdate> Updates, HashSet<string> Capabilities)> ParseReceivePackCommandsAsync(Stream body, int expectedHashLength, CancellationToken cancellationToken)
     {
         var reader = new PktLineReader(body);
@@ -554,6 +651,13 @@ public sealed class GitSmartHttpService
         return (updates, capabilities);
     }
 
+    /// <summary>
+    /// Attempts to parse a hash string from a receive-pack command, handling zero hashes specially.
+    /// </summary>
+    /// <param name="value">The hash string to parse.</param>
+    /// <param name="expectedLength">The expected length of the hash string.</param>
+    /// <param name="hash">The parsed hash value, or null for zero hashes or deletions.</param>
+    /// <returns>True if the hash was parsed successfully; otherwise, false.</returns>
     private static bool TryParseCommandHash(string value, int expectedLength, out GitHash? hash)
     {
         if (value.Length != expectedLength)
@@ -578,6 +682,11 @@ public sealed class GitSmartHttpService
         return false;
     }
 
+    /// <summary>
+    /// Checks if a hash string consists entirely of zeros.
+    /// </summary>
+    /// <param name="value">The hash string to check.</param>
+    /// <returns>True if the hash is all zeros; otherwise, false.</returns>
     private static bool IsZeroHash(string value)
     {
         foreach (var c in value)
@@ -591,6 +700,14 @@ public sealed class GitSmartHttpService
         return true;
     }
 
+    /// <summary>
+    /// Applies a single reference update within a locked context, validating expected old values.
+    /// </summary>
+    /// <param name="locks">The locks for the references being updated.</param>
+    /// <param name="snapshot">A snapshot of the current reference state.</param>
+    /// <param name="update">The update to apply.</param>
+    /// <param name="cancellationToken">Token to cancel the operation.</param>
+    /// <returns>The status of the reference update operation.</returns>
     private async Task<RefStatus> ApplyReferenceUpdateInternalAsync(
         IGitMultipleReferenceLocks locks,
         IDictionary<string, GitHash> snapshot,
@@ -637,6 +754,12 @@ public sealed class GitSmartHttpService
         return RefStatus.Ok(update.Name);
     }
 
+    /// <summary>
+    /// Normalizes a reference path, ensuring it starts with "refs/".
+    /// </summary>
+    /// <param name="name">The reference name to normalize.</param>
+    /// <returns>The normalized reference path.</returns>
+    /// <exception cref="InvalidOperationException">Thrown when the reference does not start with "refs/".</exception>
     private static string NormalizeReferencePath(string name)
     {
         var trimmed = name.Replace('\\', '/').Trim();
@@ -648,6 +771,15 @@ public sealed class GitSmartHttpService
         return trimmed;
     }
 
+    /// <summary>
+    /// Writes the receive-pack status response to the client, including unpack status and reference update results.
+    /// </summary>
+    /// <param name="context">The HTTP context.</param>
+    /// <param name="unpackStatus">The status of the pack unpacking operation.</param>
+    /// <param name="refStatuses">The status of each reference update.</param>
+    /// <param name="includeDetails">Whether to include detailed status for each reference.</param>
+    /// <param name="cancellationToken">Token to cancel the operation.</param>
+    /// <returns>A task representing the asynchronous operation.</returns>
     private async Task WriteReceivePackStatusAsync(
         HttpContext context,
         string unpackStatus,
@@ -675,6 +807,14 @@ public sealed class GitSmartHttpService
         await PktLineWriter.WriteFlushAsync(context.Response.Body, cancellationToken).ConfigureAwait(false);
     }
 
+    /// <summary>
+    /// Writes a plain text error response to the client.
+    /// </summary>
+    /// <param name="context">The HTTP context.</param>
+    /// <param name="statusCode">The HTTP status code to return.</param>
+    /// <param name="message">The error message.</param>
+    /// <param name="cancellationToken">Token to cancel the operation.</param>
+    /// <returns>A task representing the asynchronous operation.</returns>
     private static async Task WritePlainErrorAsync(HttpContext context, int statusCode, string message, CancellationToken cancellationToken)
     {
         context.Response.StatusCode = statusCode;
@@ -682,24 +822,73 @@ public sealed class GitSmartHttpService
         await context.Response.WriteAsync(message, cancellationToken).ConfigureAwait(false);
     }
 
+    /// <summary>
+    /// Sanitizes an error message by removing newline characters.
+    /// </summary>
+    /// <param name="message">The message to sanitize.</param>
+    /// <returns>The sanitized message.</returns>
     private static string SanitizeMessage(string message)
         => message.Replace('\n', ' ').Replace('\r', ' ');
 
+    /// <summary>
+    /// Represents the type of Git service being requested.
+    /// </summary>
     private enum GitServiceKind
     {
+        /// <summary>
+        /// Upload-pack service for fetch/clone operations.
+        /// </summary>
         UploadPack,
+        
+        /// <summary>
+        /// Receive-pack service for push operations.
+        /// </summary>
         ReceivePack
     }
 
+    /// <summary>
+    /// Represents a reference advertisement line containing a name and hash.
+    /// </summary>
+    /// <param name="Name">The reference name (e.g., "refs/heads/main").</param>
+    /// <param name="Hash">The hash value the reference points to.</param>
     private sealed record ReferenceLine(string Name, GitHash Hash);
 
+    /// <summary>
+    /// Represents information about the HEAD reference.
+    /// </summary>
+    /// <param name="Hash">The hash that HEAD points to, or null if HEAD is unresolved.</param>
+    /// <param name="SymrefTarget">The symbolic reference target (e.g., "refs/heads/main"), or null if HEAD is a direct reference.</param>
     private sealed record HeadInfo(GitHash? Hash, string? SymrefTarget);
 
+    /// <summary>
+    /// Represents a reference update command from a push operation.
+    /// </summary>
+    /// <param name="OldValue">The expected old value of the reference, or null for creation.</param>
+    /// <param name="NewValue">The new value for the reference, or null for deletion.</param>
+    /// <param name="Name">The name of the reference being updated.</param>
     private sealed record RefUpdate(GitHash? OldValue, GitHash? NewValue, string Name);
 
+    /// <summary>
+    /// Represents the status of a reference update operation.
+    /// </summary>
+    /// <param name="ReferenceName">The name of the reference that was updated.</param>
+    /// <param name="Success">True if the update succeeded; otherwise, false.</param>
+    /// <param name="Message">An error message if the update failed; otherwise, empty.</param>
     private sealed record RefStatus(string ReferenceName, bool Success, string Message)
     {
+        /// <summary>
+        /// Creates a successful reference status.
+        /// </summary>
+        /// <param name="name">The reference name.</param>
+        /// <returns>A successful status.</returns>
         public static RefStatus Ok(string name) => new(name, true, string.Empty);
+        
+        /// <summary>
+        /// Creates a failed reference status with an error message.
+        /// </summary>
+        /// <param name="name">The reference name.</param>
+        /// <param name="message">The error message.</param>
+        /// <returns>A failed status.</returns>
         public static RefStatus Error(string name, string message) => new(name, false, message);
     }
 }

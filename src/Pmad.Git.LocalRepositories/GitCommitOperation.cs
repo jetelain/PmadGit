@@ -5,6 +5,11 @@ namespace Pmad.Git.LocalRepositories;
 /// </summary>
 public abstract class GitCommitOperation
 {
+    /// <summary>
+    /// Initializes a new instance of the <see cref="GitCommitOperation"/> class.
+    /// </summary>
+    /// <param name="path">The repository-relative path targeted by the operation.</param>
+    /// <exception cref="ArgumentException">Thrown when <paramref name="path"/> is null, empty, or whitespace.</exception>
     protected GitCommitOperation(string path)
     {
         if (string.IsNullOrWhiteSpace(path))
