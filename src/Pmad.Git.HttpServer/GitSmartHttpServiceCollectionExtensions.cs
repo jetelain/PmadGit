@@ -55,6 +55,7 @@ public static class GitSmartHttpServiceCollectionExtensions
             opts.AuthorizeAsync = options.AuthorizeAsync;
             opts.RepositoryNameNormalizer = options.RepositoryNameNormalizer;
             opts.RepositoryResolver = options.RepositoryResolver;
+            opts.OnReceivePackCompleted = options.OnReceivePackCompleted;
         });
     }
 
@@ -80,7 +81,7 @@ public static class GitSmartHttpServiceCollectionExtensions
 
         services.AddOptions<GitSmartHttpOptions>()
             .Configure(configureOptions);
-        
+
         services.TryAddSingleton<IGitRepositoryService, GitRepositoryService>();
         services.TryAddSingleton<GitSmartHttpService>();
 

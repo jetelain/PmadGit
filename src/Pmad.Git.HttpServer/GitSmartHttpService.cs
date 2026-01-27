@@ -28,10 +28,10 @@ public sealed class GitSmartHttpService
         {
             throw new ArgumentNullException(nameof(options));
         }
-        
+
         _options = options.Value ?? throw new InvalidOperationException("IOptions<GitSmartHttpOptions>.Value must not be null.");
         _repositoryService = repositoryService ?? throw new ArgumentNullException(nameof(repositoryService));
-        
+
         if (string.IsNullOrWhiteSpace(_options.RepositoryRoot))
         {
             throw new ArgumentException("Repository root must be provided", nameof(options));
@@ -60,17 +60,18 @@ public sealed class GitSmartHttpService
             return;
         }
 
-        var repositoryContext = await TryOpenRepositoryAsync(context, cancellationToken).ConfigureAwait(false);
+        var operation = service == GitServiceKind.UploadPack ? GitOperation.Read : GitOperation.Write;
+        var repositoryContext = await TryOpenRepositoryAsync(context, operation, cancellationToken).ConfigureAwait(false);
         if (repositoryContext is null)
         {
             return;
         }
 
         var (repository, _) = repositoryContext.Value;
-        
+
         // Invalidate caches to ensure we see latest refs from external changes
         repository.InvalidateCaches();
-        
+
         context.Response.StatusCode = StatusCodes.Status200OK;
         context.Response.Headers.CacheControl = "no-cache";
         context.Response.ContentType = $"application/x-{serviceName}-advertisement";
@@ -90,7 +91,7 @@ public sealed class GitSmartHttpService
             return;
         }
 
-        var repositoryContext = await TryOpenRepositoryAsync(context, cancellationToken).ConfigureAwait(false);
+        var repositoryContext = await TryOpenRepositoryAsync(context, GitOperation.Read, cancellationToken).ConfigureAwait(false);
         if (repositoryContext is null)
         {
             return;
@@ -123,7 +124,7 @@ public sealed class GitSmartHttpService
             return;
         }
 
-        var repositoryContext = await TryOpenRepositoryAsync(context, cancellationToken).ConfigureAwait(false);
+        var repositoryContext = await TryOpenRepositoryAsync(context, GitOperation.Write, cancellationToken).ConfigureAwait(false);
         if (repositoryContext is null)
         {
             return;
@@ -141,7 +142,7 @@ public sealed class GitSmartHttpService
             {
                 await _packReader.ReadAsync(repository, context.Request.Body, cancellationToken).ConfigureAwait(false);
                 unpackStatus = "unpack ok";
-                
+
                 // Invalidate object caches after receiving new objects
                 // Reference cache will be invalidated after all reference updates
                 repository.InvalidateCaches();
@@ -161,10 +162,11 @@ public sealed class GitSmartHttpService
         // Acquire locks for all affected references to prevent concurrent modifications
         // Locks are acquired in sorted order to prevent deadlocks
         var referencePaths = updates.Select(u => NormalizeReferencePath(u.Name)).ToList();
+        List<RefStatus> refStatuses;
         using (var locks = await repository.AcquireMultipleReferenceLocksAsync(referencePaths, cancellationToken).ConfigureAwait(false))
         {
             var refSnapshot = new Dictionary<string, GitHash>(await repository.GetReferencesAsync(cancellationToken).ConfigureAwait(false), StringComparer.Ordinal);
-            var refStatuses = new List<RefStatus>(updates.Count);
+            refStatuses = new List<RefStatus>(updates.Count);
             foreach (var update in updates)
             {
                 var status = await ApplyReferenceUpdateInternalAsync(locks, refSnapshot, update, cancellationToken).ConfigureAwait(false);
@@ -173,12 +175,25 @@ public sealed class GitSmartHttpService
 
             await WriteReceivePackStatusAsync(context, unpackStatus, refStatuses, capabilities.Contains("report-status"), cancellationToken).ConfigureAwait(false);
         }
-        
+
         // Note: Cache invalidation for reference updates is handled by WriteReferenceWithValidationAsync
         // which is called within ApplyReferenceUpdateInternalAsync for each update
+
+        if (_options.OnReceivePackCompleted is not null)
+        {
+            var successfulUpdates = refStatuses
+                .Where(static s => s.Success)
+                .Select(static s => s.ReferenceName)
+                .ToList();
+
+            if (successfulUpdates.Count > 0)
+            {
+                await _options.OnReceivePackCompleted(context, repositoryName, successfulUpdates, cancellationToken).ConfigureAwait(false);
+            }
+        }
     }
 
-    private async Task<(GitRepository Repository, string Name)?> TryOpenRepositoryAsync(HttpContext context, CancellationToken cancellationToken)
+    private async Task<(GitRepository Repository, string Name)?> TryOpenRepositoryAsync(HttpContext context, GitOperation operation, CancellationToken cancellationToken)
     {
         string? rawValue = null;
         if (_options.RepositoryResolver is not null)
@@ -205,7 +220,7 @@ public sealed class GitSmartHttpService
 
         if (_options.AuthorizeAsync is not null)
         {
-            var allowed = await _options.AuthorizeAsync(context, repositoryName, cancellationToken).ConfigureAwait(false);
+            var allowed = await _options.AuthorizeAsync(context, repositoryName, operation, cancellationToken).ConfigureAwait(false);
             if (!allowed)
             {
                 await WritePlainErrorAsync(context, StatusCodes.Status403Forbidden, "Access denied", cancellationToken).ConfigureAwait(false);
@@ -590,7 +605,7 @@ public sealed class GitSmartHttpService
                 update.OldValue,
                 update.NewValue,
                 cancellationToken).ConfigureAwait(false);
-            
+
             if (update.NewValue.HasValue)
             {
                 snapshot[normalized] = update.NewValue.Value;

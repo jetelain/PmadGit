@@ -18,6 +18,24 @@ namespace Pmad.Git.HttpServer.Demo
                 options.EnableUploadPack = true;
                 options.EnableReceivePack = true; // Enable push for demo purposes
                 options.Agent = "Pmad.Git.HttpServer.Demo/1.0";
+                
+                // Optional: Get notified when a push operation completes
+                options.OnReceivePackCompleted = async (context, repositoryName, updatedReferences, cancellationToken) =>
+                {
+                    var logger = context.RequestServices.GetRequiredService<ILogger<Program>>();
+                    logger.LogInformation(
+                        "Push completed for repository '{Repository}'. Updated {Count} reference(s): {References}",
+                        repositoryName,
+                        updatedReferences.Count,
+                        string.Join(", ", updatedReferences));
+                    
+                    // Here you could:
+                    // - Invalidate application caches
+                    // - Trigger webhooks
+                    // - Update a database
+                    // - Send notifications
+                    await Task.CompletedTask;
+                };
             });
 
             var app = builder.Build();

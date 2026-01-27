@@ -26,10 +26,10 @@ public sealed class GitSmartHttpOptions
 
     /// <summary>
     /// Optional callback that can block access to specific repositories.
-    /// Parameters are the current HTTP context and the normalized repository name.
+    /// Parameters are the current HTTP context, the normalized repository name, the operation type (Read or Write), and a cancellation token.
     /// </summary>
-    public Func<HttpContext, string, CancellationToken, ValueTask<bool>>? AuthorizeAsync { get; set; }
-        = static (_, _, _) => ValueTask.FromResult(true);
+    public Func<HttpContext, string, GitOperation, CancellationToken, ValueTask<bool>>? AuthorizeAsync { get; set; }
+        = static (_, _, _, _) => ValueTask.FromResult(true);
 
     /// <summary>
     /// Optional callback used to sanitize repository names before accessing the file system.
@@ -43,4 +43,11 @@ public sealed class GitSmartHttpOptions
     /// </summary>
     public Func<HttpContext, string?>? RepositoryResolver { get; set; }
         = static context => context.Request.RouteValues.TryGetValue("repository", out var value) ? value?.ToString() : null;
+
+    /// <summary>
+    /// Optional callback invoked after a receive-pack (push) operation completes successfully.
+    /// Parameters are the HTTP context, the normalized repository name, and a list of updated references.
+    /// This allows the host application to perform cache invalidation or other post-push actions.
+    /// </summary>
+    public Func<HttpContext, string, IReadOnlyList<string>, CancellationToken, ValueTask>? OnReceivePackCompleted { get; set; }
 }

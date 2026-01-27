@@ -30,9 +30,39 @@ With the sample above, git clients can clone/fetch repositories stored under `/s
 - `EnableUploadPack`: Allows `git-upload-pack` (fetch/clone). Enabled by default.
 - `EnableReceivePack`: Allows `git-receive-pack` (push). Disabled by default.
 - `Agent`: String advertised to clients (shown by `git clone --verbose`).
-- `AuthorizeAsync`: Optional callback to allow/deny access per request.
+- `AuthorizeAsync`: Optional callback to allow/deny access per request. Receives the operation type (Read or Write) to distinguish between fetch/clone and push operations.
 - `RepositoryNameNormalizer`: Optional sanitizer for custom routing schemes.
 - `RepositoryResolver`: Callback to resolve the repository name from the HTTP context. By default, extracts the `repository` route parameter.
+- `OnReceivePackCompleted`: Optional callback invoked after a successful push operation. This allows the host application to perform cache invalidation or trigger other post-push actions.
+
+## Push Notification
+
+When push operations are enabled, you can be notified when a push completes successfully to invalidate application caches or trigger webhooks:
+
+```csharp
+builder.Services.AddGitSmartHttp(options =>
+{
+    options.RepositoryRoot = "/srv/git";
+    options.EnableReceivePack = true;
+    options.OnReceivePackCompleted = async (context, repositoryName, updatedReferences, cancellationToken) =>
+    {
+        // Log the push
+        var logger = context.RequestServices.GetRequiredService<ILogger<Program>>();
+        logger.LogInformation("Repository {Repository} received push updating {Count} references", 
+            repositoryName, updatedReferences.Count);
+        
+        // Invalidate cache
+        var cache = context.RequestServices.GetRequiredService<IMyRepositoryCache>();
+        await cache.InvalidateAsync(repositoryName, cancellationToken);
+        
+        // Trigger webhook
+        foreach (var reference in updatedReferences)
+        {
+            logger.LogInformation("  Updated: {Reference}", reference);
+        }
+    };
+});
+```
 
 ## Custom Repository Resolution
 
