@@ -292,7 +292,14 @@ public sealed class GitSmartHttpServiceTest : IDisposable
     public async Task HandleReceivePackAsync_WithMissingRepository_ShouldReturn404()
     {
         // Arrange
-        var service = CreateService();
+        var options = Options.Create(new GitSmartHttpOptions
+        {
+            RepositoryRoot = _serverRepoRoot,
+            EnableReceivePack = true,
+            AuthorizeAsync = (_, _, _, _) => ValueTask.FromResult(true) // Allow all operations for this test
+        });
+        var repositoryService = new GitRepositoryService();
+        var service = new GitSmartHttpService(options, repositoryService);
         var context = CreateHttpContext("/missing-repo.git/git-receive-pack", repository: "missing-repo");
 
         // Act
@@ -672,6 +679,7 @@ public sealed class GitSmartHttpServiceTest : IDisposable
         {
             RepositoryRoot = _serverRepoRoot,
             EnableReceivePack = true,
+            AuthorizeAsync = (_, _, _, _) => ValueTask.FromResult(true), // Allow all operations for this test
             OnReceivePackCompleted = (ctx, repoName, updatedRefs, token) =>
             {
                 callbackInvoked = true;
@@ -705,6 +713,7 @@ public sealed class GitSmartHttpServiceTest : IDisposable
         {
             RepositoryRoot = _serverRepoRoot,
             EnableReceivePack = true,
+            AuthorizeAsync = (_, _, _, _) => ValueTask.FromResult(true), // Allow all operations for this test
             OnReceivePackCompleted = null // No callback
         });
         var repositoryService = new GitRepositoryService();
@@ -731,7 +740,8 @@ public sealed class GitSmartHttpServiceTest : IDisposable
         {
             RepositoryRoot = _serverRepoRoot,
             EnableUploadPack = true,
-            EnableReceivePack = true
+            EnableReceivePack = true,
+            AuthorizeAsync = (_, _, _, _) => ValueTask.FromResult(true) // Allow all operations for test helper
         });
         var repositoryService = new GitRepositoryService();
         return new GitSmartHttpService(options, repositoryService);

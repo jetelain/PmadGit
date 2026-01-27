@@ -27,9 +27,10 @@ public sealed class GitSmartHttpOptions
     /// <summary>
     /// Optional callback that can block access to specific repositories.
     /// Parameters are the current HTTP context, the normalized repository name, the operation type (Read or Write), and a cancellation token.
+    /// By default, only read operations (fetch/clone) are allowed. Write operations (push) are denied for security.
     /// </summary>
     public Func<HttpContext, string, GitOperation, CancellationToken, ValueTask<bool>>? AuthorizeAsync { get; set; }
-        = static (_, _, _, _) => ValueTask.FromResult(true);
+        = static (_, _, operation, _) => ValueTask.FromResult(operation == GitOperation.Read);
 
     /// <summary>
     /// Optional callback used to sanitize repository names before accessing the file system.

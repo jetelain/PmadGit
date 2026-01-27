@@ -42,7 +42,7 @@ public sealed class GitSmartHttpEndToEndTest : IDisposable
         Assert.True(Directory.Exists(cloneDir));
         Assert.True(File.Exists(Path.Combine(cloneDir, "README.md")));
         Assert.True(File.Exists(Path.Combine(cloneDir, "src", "file.txt")));
-        
+
         var readmeContent = File.ReadAllText(Path.Combine(cloneDir, "README.md"));
         Assert.Equal("# Test Repository", readmeContent);
     }
@@ -53,30 +53,30 @@ public sealed class GitSmartHttpEndToEndTest : IDisposable
         // Arrange: Create repository with multiple commits
         var repoPath = Path.Combine(_serverRepoRoot, "multi-commit.git");
         Directory.CreateDirectory(repoPath);
-        
+
         RunGit(repoPath, "init --bare --quiet --initial-branch=main");
-        
+
         var tempWorkDir = Path.Combine(Path.GetTempPath(), "temp-work", Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(tempWorkDir);
-        
+
         try
         {
             RunGit(tempWorkDir, "init --quiet --initial-branch=main");
             RunGit(tempWorkDir, "config user.name \"Test\"");
             RunGit(tempWorkDir, "config user.email test@test.com");
-            
+
             File.WriteAllText(Path.Combine(tempWorkDir, "file1.txt"), "content 1");
             RunGit(tempWorkDir, "add file1.txt");
             RunGit(tempWorkDir, "commit -m \"First commit\" --quiet");
-            
+
             File.WriteAllText(Path.Combine(tempWorkDir, "file2.txt"), "content 2");
             RunGit(tempWorkDir, "add file2.txt");
             RunGit(tempWorkDir, "commit -m \"Second commit\" --quiet");
-            
+
             File.WriteAllText(Path.Combine(tempWorkDir, "file3.txt"), "content 3");
             RunGit(tempWorkDir, "add file3.txt");
             RunGit(tempWorkDir, "commit -m \"Third commit\" --quiet");
-            
+
             RunGit(tempWorkDir, $"remote add origin \"{repoPath}\"");
             RunGit(tempWorkDir, "push -u origin main --quiet");
         }
@@ -96,7 +96,7 @@ public sealed class GitSmartHttpEndToEndTest : IDisposable
         Assert.Contains("Third commit", logOutput);
         Assert.Contains("Second commit", logOutput);
         Assert.Contains("First commit", logOutput);
-        
+
         Assert.True(File.Exists(Path.Combine(cloneDir, "file1.txt")));
         Assert.True(File.Exists(Path.Combine(cloneDir, "file2.txt")));
         Assert.True(File.Exists(Path.Combine(cloneDir, "file3.txt")));
@@ -121,7 +121,7 @@ public sealed class GitSmartHttpEndToEndTest : IDisposable
             RunGit(tempWorkDir, $"clone \"{bareRepoPath}\" .");
             RunGit(tempWorkDir, "config user.name \"Test\"");
             RunGit(tempWorkDir, "config user.email test@test.com");
-            
+
             File.WriteAllText(Path.Combine(tempWorkDir, "new-file.txt"), "new content");
             RunGit(tempWorkDir, "add new-file.txt");
             RunGit(tempWorkDir, "commit -m \"New commit\" --quiet");
@@ -159,7 +159,7 @@ public sealed class GitSmartHttpEndToEndTest : IDisposable
             RunGit(tempWorkDir, $"clone \"{bareRepoPath}\" .");
             RunGit(tempWorkDir, "config user.name \"Test\"");
             RunGit(tempWorkDir, "config user.email test@test.com");
-            
+
             File.WriteAllText(Path.Combine(tempWorkDir, "pulled-file.txt"), "pulled content");
             RunGit(tempWorkDir, "add pulled-file.txt");
             RunGit(tempWorkDir, "commit -m \"Commit to pull\" --quiet");
@@ -184,7 +184,7 @@ public sealed class GitSmartHttpEndToEndTest : IDisposable
     {
         // Arrange: Create initial repository and enable receive-pack
         var sourceRepo = CreateSourceRepository("push-test", new[] { ("initial.txt", "initial") });
-        
+
         // Start server with push enabled
         await StartServerAsync(enableReceivePack: true);
 
@@ -203,7 +203,7 @@ public sealed class GitSmartHttpEndToEndTest : IDisposable
 
         // Assert: Verify push succeeded
         Assert.Contains("main -> main", pushOutput);
-        
+
         // Verify file is in server repository
         var bareRepoPath = Path.Combine(_serverRepoRoot, "push-test.git");
         var verifyWorkDir = Path.Combine(_clientWorkingDir, "verify-push");
@@ -265,27 +265,27 @@ public sealed class GitSmartHttpEndToEndTest : IDisposable
         // Arrange: Create repository with multiple branches
         var repoPath = Path.Combine(_serverRepoRoot, "branches-test.git");
         Directory.CreateDirectory(repoPath);
-        
+
         RunGit(repoPath, "init --bare --quiet --initial-branch=main");
-        
+
         var tempWorkDir = Path.Combine(Path.GetTempPath(), "temp-branches", Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(tempWorkDir);
-        
+
         try
         {
             RunGit(tempWorkDir, "init --quiet --initial-branch=main");
             RunGit(tempWorkDir, "config user.name \"Test\"");
             RunGit(tempWorkDir, "config user.email test@test.com");
-            
+
             File.WriteAllText(Path.Combine(tempWorkDir, "main.txt"), "main branch");
             RunGit(tempWorkDir, "add main.txt");
             RunGit(tempWorkDir, "commit -m \"Main commit\" --quiet");
-            
+
             RunGit(tempWorkDir, "checkout -b feature --quiet");
             File.WriteAllText(Path.Combine(tempWorkDir, "feature.txt"), "feature branch");
             RunGit(tempWorkDir, "add feature.txt");
             RunGit(tempWorkDir, "commit -m \"Feature commit\" --quiet");
-            
+
             RunGit(tempWorkDir, "checkout main --quiet");
             RunGit(tempWorkDir, $"remote add origin \"{repoPath}\"");
             RunGit(tempWorkDir, "push -u origin --all --quiet");
@@ -313,28 +313,28 @@ public sealed class GitSmartHttpEndToEndTest : IDisposable
         // Arrange: Create repository with tags
         var repoPath = Path.Combine(_serverRepoRoot, "tags-test.git");
         Directory.CreateDirectory(repoPath);
-        
+
         RunGit(repoPath, "init --bare --quiet --initial-branch=main");
-        
+
         var tempWorkDir = Path.Combine(Path.GetTempPath(), "temp-tags", Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(tempWorkDir);
-        
+
         try
         {
             RunGit(tempWorkDir, "init --quiet --initial-branch=main");
             RunGit(tempWorkDir, "config user.name \"Test\"");
             RunGit(tempWorkDir, "config user.email test@test.com");
-            
+
             File.WriteAllText(Path.Combine(tempWorkDir, "v1.txt"), "version 1");
             RunGit(tempWorkDir, "add v1.txt");
             RunGit(tempWorkDir, "commit -m \"Version 1\" --quiet");
             RunGit(tempWorkDir, "tag -a v1.0 -m \"Version 1.0\"");
-            
+
             File.WriteAllText(Path.Combine(tempWorkDir, "v2.txt"), "version 2");
             RunGit(tempWorkDir, "add v2.txt");
             RunGit(tempWorkDir, "commit -m \"Version 2\" --quiet");
             RunGit(tempWorkDir, "tag -a v2.0 -m \"Version 2.0\"");
-            
+
             RunGit(tempWorkDir, $"remote add origin \"{repoPath}\"");
             RunGit(tempWorkDir, "push -u origin --all --quiet");
             RunGit(tempWorkDir, "push origin --tags --quiet");
@@ -367,7 +367,7 @@ public sealed class GitSmartHttpEndToEndTest : IDisposable
         var cloneDir = Path.Combine(_clientWorkingDir, "disabled-clone");
         var exception = Assert.Throws<InvalidOperationException>(() =>
             RunGit(_clientWorkingDir, $"clone {_serverUrl}/disabled-upload.git {cloneDir}"));
-        
+
         Assert.Contains("exit code", exception.Message);
     }
 
@@ -391,18 +391,18 @@ public sealed class GitSmartHttpEndToEndTest : IDisposable
     {
         var bareRepoPath = Path.Combine(_serverRepoRoot, $"{name}.git");
         Directory.CreateDirectory(bareRepoPath);
-        
+
         RunGit(bareRepoPath, "init --bare --quiet --initial-branch=main");
-        
+
         var workDir = Path.Combine(Path.GetTempPath(), "temp-source", Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(workDir);
-        
+
         try
         {
             RunGit(workDir, "init --quiet --initial-branch=main");
             RunGit(workDir, "config user.name \"Test User\"");
             RunGit(workDir, "config user.email test@example.com");
-            
+
             foreach (var (path, content) in files)
             {
                 var fullPath = Path.Combine(workDir, path.Replace('/', Path.DirectorySeparatorChar));
@@ -413,7 +413,7 @@ public sealed class GitSmartHttpEndToEndTest : IDisposable
                 }
                 File.WriteAllText(fullPath, content);
             }
-            
+
             RunGit(workDir, "add -A");
             RunGit(workDir, "commit -m \"Initial commit\" --quiet");
             RunGit(workDir, $"remote add origin \"{bareRepoPath}\"");
@@ -423,14 +423,14 @@ public sealed class GitSmartHttpEndToEndTest : IDisposable
         {
             TestHelper.TryDeleteDirectory(workDir);
         }
-        
+
         return GitRepository.Open(bareRepoPath);
     }
 
     private async Task StartServerAsync(bool enableUploadPack = true, bool enableReceivePack = false, string routePrefix = "git")
     {
         var builder = WebApplication.CreateBuilder();
-        
+
         // Configure to listen on a random available port
         builder.WebHost.UseUrls("http://127.0.0.1:0");
 
@@ -440,6 +440,12 @@ public sealed class GitSmartHttpEndToEndTest : IDisposable
             options.RepositoryRoot = _serverRepoRoot;
             options.EnableUploadPack = enableUploadPack;
             options.EnableReceivePack = enableReceivePack;
+
+            // For testing purposes, allow both read and write operations
+            if (enableReceivePack)
+            {
+                options.AuthorizeAsync = (_, _, _, _) => ValueTask.FromResult(true);
+            }
         });
 
         var app = builder.Build();
