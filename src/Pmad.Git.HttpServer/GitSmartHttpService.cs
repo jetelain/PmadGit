@@ -179,6 +179,8 @@ public sealed class GitSmartHttpService
         // Note: Cache invalidation for reference updates is handled by WriteReferenceWithValidationAsync
         // which is called within ApplyReferenceUpdateInternalAsync for each update
 
+        // Fire-and-forget the callback after the response is written to avoid impacting the Git protocol response.
+        // If the callback throws or is slow, it won't cause the push to appear to fail to the client.
         if (_options.OnReceivePackCompleted is not null)
         {
             var successfulUpdates = refStatuses
@@ -188,7 +190,19 @@ public sealed class GitSmartHttpService
 
             if (successfulUpdates.Count > 0)
             {
-                await _options.OnReceivePackCompleted(context, repositoryName, successfulUpdates, cancellationToken).ConfigureAwait(false);
+                // Execute callback in background without awaiting (fire and forget)
+                _ = Task.Run(async () =>
+                {
+                    try
+                    {
+                        await _options.OnReceivePackCompleted(context, repositoryName, successfulUpdates).ConfigureAwait(false);
+                    }
+                    catch
+                    {
+                        // Swallow exceptions to prevent unobserved task exceptions
+                        // Host application should handle logging within the callback if needed
+                    }
+                });
             }
         }
     }

@@ -46,9 +46,17 @@ public sealed class GitSmartHttpOptions
         = static context => context.Request.RouteValues.TryGetValue("repository", out var value) ? value?.ToString() : null;
 
     /// <summary>
-    /// Optional callback invoked after a receive-pack (push) operation completes successfully.
-    /// Parameters are the HTTP context, the normalized repository name, and a list of updated references.
-    /// This allows the host application to perform cache invalidation or other post-push actions.
+    /// Optional callback invoked after a receive-pack (push) operation completes, even for partial success.
+    /// Parameters are the HTTP context, the normalized repository name, and a list of successfully updated references.
+    /// This callback is invoked whenever at least one reference update succeeds, regardless of whether other
+    /// reference updates in the same push operation failed. The list contains only the references that were
+    /// successfully updated. This allows the host application to perform cache invalidation or other post-push
+    /// actions for the successful updates.
+    /// 
+    /// The callback is executed asynchronously in the background after the Git protocol response has been sent
+    /// to the client. This means that exceptions thrown by the callback will not cause the push to appear to
+    /// fail to the client, and slow callbacks will not block the Git client. The callback should handle its
+    /// own logging and error handling as needed.
     /// </summary>
-    public Func<HttpContext, string, IReadOnlyList<string>, CancellationToken, ValueTask>? OnReceivePackCompleted { get; set; }
+    public Func<HttpContext, string, IReadOnlyList<string>, ValueTask>? OnReceivePackCompleted { get; set; }
 }

@@ -29,7 +29,7 @@ namespace Pmad.Git.HttpServer.Demo
                 };
 
                 // Optional: Get notified when a push operation completes
-                options.OnReceivePackCompleted = async (context, repositoryName, updatedReferences, cancellationToken) =>
+                options.OnReceivePackCompleted = async (context, repositoryName, updatedReferences) =>
                 {
                     var logger = context.RequestServices.GetRequiredService<ILogger<Program>>();
                     logger.LogInformation(

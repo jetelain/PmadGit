@@ -67,7 +67,7 @@ builder.Services.AddGitSmartHttp(options =>
 {
     options.RepositoryRoot = "/srv/git";
     options.EnableReceivePack = true;
-    options.OnReceivePackCompleted = async (context, repositoryName, updatedReferences, cancellationToken) =>
+    options.OnReceivePackCompleted = async (context, repositoryName, updatedReferences) =>
     {
         // Log the push
         var logger = context.RequestServices.GetRequiredService<ILogger<Program>>();
@@ -76,7 +76,7 @@ builder.Services.AddGitSmartHttp(options =>
         
         // Invalidate cache
         var cache = context.RequestServices.GetRequiredService<IMyRepositoryCache>();
-        await cache.InvalidateAsync(repositoryName, cancellationToken);
+        await cache.InvalidateAsync(repositoryName);
         
         // Trigger webhook
         foreach (var reference in updatedReferences)
