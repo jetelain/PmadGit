@@ -8,7 +8,7 @@ namespace Pmad.Git.LocalRepositories;
 /// <summary>
 /// High-level entry point for querying commits, trees, and blobs from a local git repository.
 /// </summary>
-public sealed class GitRepository
+public sealed class GitRepository : IGitRepository
 {
     private readonly GitObjectStore _objectStore;
     private readonly Dictionary<GitHash, GitCommit> _commitCache = new();

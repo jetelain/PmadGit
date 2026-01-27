@@ -213,7 +213,7 @@ public sealed class GitRepositoryServiceTest : IDisposable
         // Arrange
         var repoPath = CreateBareRepository();
         var service = new GitRepositoryService();
-        var repositories = new System.Collections.Concurrent.ConcurrentBag<GitRepository>();
+        var repositories = new System.Collections.Concurrent.ConcurrentBag<IGitRepository>();
 
         // Act - Access from multiple threads
         Parallel.For(0, 10, _ =>

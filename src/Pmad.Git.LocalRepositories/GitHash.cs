@@ -1,5 +1,3 @@
-using System;
-
 namespace Pmad.Git.LocalRepositories;
 
 /// <summary>
@@ -11,6 +9,13 @@ public readonly record struct GitHash
     public const int Sha256HexLength = 64;
     public const int Sha1ByteLength = Sha1HexLength / 2;
     public const int Sha256ByteLength = Sha256HexLength / 2;
+
+    /// <summary>
+    /// Gets a GitHash instance that represents an empty (all-zero) Git object hash.
+    /// </summary>
+    /// <remarks>This value can be used as a sentinel or default when no valid Git object hash is available.
+    /// It corresponds to a SHA-1 hash consisting of 40 zero characters.</remarks>
+    public static GitHash Zero => new GitHash("0000000000000000000000000000000000000000");
 
     /// <summary>
     /// Gets the normalized hexadecimal representation of the hash.

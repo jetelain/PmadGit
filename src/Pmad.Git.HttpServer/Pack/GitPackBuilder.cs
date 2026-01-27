@@ -1,10 +1,5 @@
-using System;
-using System.Collections.Generic;
-using System.IO;
 using System.IO.Compression;
 using System.Security.Cryptography;
-using System.Threading;
-using System.Threading.Tasks;
 using Pmad.Git.HttpServer.Utilities;
 using Pmad.Git.LocalRepositories;
 
@@ -12,7 +7,7 @@ namespace Pmad.Git.HttpServer.Pack;
 
 internal sealed class GitPackBuilder
 {
-    public async Task WriteAsync(GitRepository repository, IReadOnlyList<GitHash> objects, Stream destination, CancellationToken cancellationToken)
+    public async Task WriteAsync(IGitRepository repository, IReadOnlyList<GitHash> objects, Stream destination, CancellationToken cancellationToken)
     {
         if (repository is null)
         {
