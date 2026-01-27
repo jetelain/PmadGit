@@ -249,7 +249,7 @@ builder.Services.AddGitSmartHttp(options =>
             ? null 
             : $"{org}/{repo}";
     };
-    options.AuthorizeAsync = async (context, repositoryName, cancellationToken) =>
+    options.AuthorizeAsync = async (context, repositoryName, operation, cancellationToken) =>
     {
         // Split back to get organization
         var parts = repositoryName.Split('/');
@@ -260,8 +260,15 @@ builder.Services.AddGitSmartHttp(options =>
         var user = context.User;
         
         // Check if user has access to this organization
-        return user.Identity?.IsAuthenticated == true 
-            && user.HasClaim("org", org);
+        if (user.Identity?.IsAuthenticated != true || !user.HasClaim("org", org))
+            return false;
+        
+        // Allow read for all authenticated users in the org
+        if (operation == GitOperation.Read)
+            return true;
+        
+        // Only allow write for users with write permission
+        return user.HasClaim("org-write", org);
     };
 });
 
@@ -271,6 +278,38 @@ app.UseAuthentication();
 app.UseAuthorization();
 
 app.MapGitSmartHttp("/git/{organization}/{repository}.git");
+
+app.Run();
+```
+
+## Read-Only Repository Access
+
+Allow anyone to read but restrict push operations:
+
+```csharp
+var builder = WebApplication.CreateBuilder(args);
+
+builder.Services.AddGitSmartHttp(options =>
+{
+    options.RepositoryRoot = "/srv/git";
+    options.EnableReceivePack = true;
+    options.AuthorizeAsync = async (context, repositoryName, operation, cancellationToken) =>
+    {
+        // Allow all read operations (clone, fetch)
+        if (operation == GitOperation.Read)
+            return true;
+        
+        // Only allow write operations (push) for authenticated users
+        return context.User.Identity?.IsAuthenticated == true;
+    };
+});
+
+var app = builder.Build();
+
+app.UseAuthentication();
+app.UseAuthorization();
+
+app.MapGitSmartHttp();
 
 app.Run();
 ```

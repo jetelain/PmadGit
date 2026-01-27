@@ -34,7 +34,7 @@ public sealed class GitSmartHttpConcurrencyTests : IDisposable
         // Create two separate clones
         var clone1Dir = Path.Combine(_clientWorkingDir, "clone1");
         var clone2Dir = Path.Combine(_clientWorkingDir, "clone2");
-        
+
         RunGit(_clientWorkingDir, $"clone {_serverUrl}/concurrent-test.git {clone1Dir}");
         RunGit(_clientWorkingDir, $"clone {_serverUrl}/concurrent-test.git {clone2Dir}");
 
@@ -84,13 +84,13 @@ public sealed class GitSmartHttpConcurrencyTests : IDisposable
         // Assert - One should succeed, one should fail with non-fast-forward
         var resultsList = results.ToList();
         Assert.Equal(2, resultsList.Count);
-        
+
         var successCount = resultsList.Count(r => r.success);
         var failCount = resultsList.Count(r => !r.success);
-        
+
         // At least one should succeed
         Assert.True(successCount >= 1, "At least one push should succeed");
-        
+
         // If one failed, it should be due to non-fast-forward
         if (failCount > 0)
         {
@@ -108,7 +108,7 @@ public sealed class GitSmartHttpConcurrencyTests : IDisposable
 
         var clone1Dir = Path.Combine(_clientWorkingDir, "clone1");
         var clone2Dir = Path.Combine(_clientWorkingDir, "clone2");
-        
+
         RunGit(_clientWorkingDir, $"clone {_serverUrl}/ff-test.git {clone1Dir}");
         RunGit(_clientWorkingDir, $"clone {_serverUrl}/ff-test.git {clone2Dir}");
 
@@ -129,7 +129,7 @@ public sealed class GitSmartHttpConcurrencyTests : IDisposable
         // Act & Assert - Push should be rejected
         var exception = Assert.Throws<InvalidOperationException>(() =>
             RunGit(clone2Dir, "push origin main"));
-        
+
         // Git CLI shows different error messages depending on version, but it should indicate rejection
         Assert.True(
             exception.Message.Contains("non-fast-forward", StringComparison.OrdinalIgnoreCase) ||
@@ -170,7 +170,7 @@ public sealed class GitSmartHttpConcurrencyTests : IDisposable
 
         var clone1Dir = Path.Combine(_clientWorkingDir, "clone1");
         var clone2Dir = Path.Combine(_clientWorkingDir, "clone2");
-        
+
         RunGit(_clientWorkingDir, $"clone {_serverUrl}/fetch-test.git {clone1Dir}");
         RunGit(_clientWorkingDir, $"clone {_serverUrl}/fetch-test.git {clone2Dir}");
 
@@ -186,7 +186,7 @@ public sealed class GitSmartHttpConcurrencyTests : IDisposable
         // Clone2: Fetch, merge, then create and push commit
         RunGit(clone2Dir, "fetch origin");
         RunGit(clone2Dir, "merge origin/main --no-edit");
-        
+
         File.WriteAllText(Path.Combine(clone2Dir, "file2.txt"), "from clone2");
         RunGit(clone2Dir, "add file2.txt");
         RunGit(clone2Dir, "commit -m \"Commit from clone2\" --quiet");
@@ -207,7 +207,7 @@ public sealed class GitSmartHttpConcurrencyTests : IDisposable
 
         var cloneCount = 5;
         var cloneDirs = new List<string>();
-        
+
         // Create multiple clones
         for (int i = 0; i < cloneCount; i++)
         {
@@ -240,14 +240,14 @@ public sealed class GitSmartHttpConcurrencyTests : IDisposable
 
         // Assert - At least one should succeed
         Assert.Contains(true, results);
-        
+
         // The ones that failed should be able to succeed after fetching
         var failedClones = cloneDirs.Where((dir, i) => !results.ElementAt(i)).ToList();
         foreach (var cloneDir in failedClones)
         {
             RunGit(cloneDir, "fetch origin");
             RunGit(cloneDir, "rebase origin/main");
-            
+
             // This should succeed now (either push or indicate it's up-to-date)
             var output = RunGit(cloneDir, "push origin main");
             // After rebase, if the content is the same, git might say "Everything up-to-date"
@@ -270,7 +270,7 @@ public sealed class GitSmartHttpConcurrencyTests : IDisposable
 
         var clone1Dir = Path.Combine(_clientWorkingDir, "clone1");
         var clone2Dir = Path.Combine(_clientWorkingDir, "clone2");
-        
+
         RunGit(_clientWorkingDir, $"clone {_serverUrl}/lock-test.git {clone1Dir}");
         RunGit(_clientWorkingDir, $"clone {_serverUrl}/lock-test.git {clone2Dir}");
 
@@ -331,17 +331,17 @@ public sealed class GitSmartHttpConcurrencyTests : IDisposable
     {
         var bareRepoPath = Path.Combine(_serverRepoRoot, $"{name}.git");
         Directory.CreateDirectory(bareRepoPath);
-        
+
         RunGitInDirectory(bareRepoPath, "init --bare --quiet --initial-branch=main");
-        
+
         var workDir = Path.Combine(Path.GetTempPath(), "temp-source", Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(workDir);
-        
+
         try
         {
             RunGitInDirectory(workDir, "init --quiet --initial-branch=main");
             ConfigureGit(workDir);
-            
+
             foreach (var (path, content) in files)
             {
                 var fullPath = Path.Combine(workDir, path.Replace('/', Path.DirectorySeparatorChar));
@@ -352,7 +352,7 @@ public sealed class GitSmartHttpConcurrencyTests : IDisposable
                 }
                 File.WriteAllText(fullPath, content);
             }
-            
+
             RunGitInDirectory(workDir, "add -A");
             RunGitInDirectory(workDir, "commit -m \"Initial commit\" --quiet");
             RunGitInDirectory(workDir, $"remote add origin \"{bareRepoPath}\"");
@@ -362,7 +362,7 @@ public sealed class GitSmartHttpConcurrencyTests : IDisposable
         {
             TestHelper.TryDeleteDirectory(workDir);
         }
-        
+
         return GitRepository.Open(bareRepoPath);
     }
 
@@ -376,6 +376,12 @@ public sealed class GitSmartHttpConcurrencyTests : IDisposable
             options.RepositoryRoot = _serverRepoRoot;
             options.EnableUploadPack = enableUploadPack;
             options.EnableReceivePack = enableReceivePack;
+
+            // For testing purposes, allow both read and write operations
+            if (enableReceivePack)
+            {
+                options.AuthorizeAsync = (_, _, _, _) => ValueTask.FromResult(true);
+            }
         });
 
         var app = builder.Build();
