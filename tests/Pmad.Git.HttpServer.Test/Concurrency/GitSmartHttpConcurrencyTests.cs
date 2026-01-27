@@ -95,7 +95,6 @@ public sealed class GitSmartHttpConcurrencyTests : IDisposable
         Assert.Equal(1, failCount);
 
         var failedPush = resultsList.First(r => !r.success);
-        Console.WriteLine($"Failed push output: {failedPush.output}");
         Assert.Contains("non-fast-forward", failedPush.output, StringComparison.OrdinalIgnoreCase);
     }
 
