@@ -60,7 +60,8 @@ public sealed class GitSmartHttpService
             return;
         }
 
-        var repositoryContext = await TryOpenRepositoryAsync(context, cancellationToken).ConfigureAwait(false);
+        var operation = service == GitServiceKind.UploadPack ? GitOperation.Read : GitOperation.Write;
+        var repositoryContext = await TryOpenRepositoryAsync(context, operation, cancellationToken).ConfigureAwait(false);
         if (repositoryContext is null)
         {
             return;
@@ -90,7 +91,7 @@ public sealed class GitSmartHttpService
             return;
         }
 
-        var repositoryContext = await TryOpenRepositoryAsync(context, cancellationToken).ConfigureAwait(false);
+        var repositoryContext = await TryOpenRepositoryAsync(context, GitOperation.Read, cancellationToken).ConfigureAwait(false);
         if (repositoryContext is null)
         {
             return;
@@ -123,7 +124,7 @@ public sealed class GitSmartHttpService
             return;
         }
 
-        var repositoryContext = await TryOpenRepositoryAsync(context, cancellationToken).ConfigureAwait(false);
+        var repositoryContext = await TryOpenRepositoryAsync(context, GitOperation.Write, cancellationToken).ConfigureAwait(false);
         if (repositoryContext is null)
         {
             return;
@@ -161,10 +162,11 @@ public sealed class GitSmartHttpService
         // Acquire locks for all affected references to prevent concurrent modifications
         // Locks are acquired in sorted order to prevent deadlocks
         var referencePaths = updates.Select(u => NormalizeReferencePath(u.Name)).ToList();
+        List<RefStatus> refStatuses;
         using (var locks = await repository.AcquireMultipleReferenceLocksAsync(referencePaths, cancellationToken).ConfigureAwait(false))
         {
             var refSnapshot = new Dictionary<string, GitHash>(await repository.GetReferencesAsync(cancellationToken).ConfigureAwait(false), StringComparer.Ordinal);
-            var refStatuses = new List<RefStatus>(updates.Count);
+            refStatuses = new List<RefStatus>(updates.Count);
             foreach (var update in updates)
             {
                 var status = await ApplyReferenceUpdateInternalAsync(locks, refSnapshot, update, cancellationToken).ConfigureAwait(false);
@@ -176,9 +178,36 @@ public sealed class GitSmartHttpService
 
         // Note: Cache invalidation for reference updates is handled by WriteReferenceWithValidationAsync
         // which is called within ApplyReferenceUpdateInternalAsync for each update
+
+        // Fire-and-forget the callback after the response is written to avoid impacting the Git protocol response.
+        // If the callback throws or is slow, it won't cause the push to appear to fail to the client.
+        if (_options.OnReceivePackCompleted is not null)
+        {
+            var successfulUpdates = refStatuses
+                .Where(static s => s.Success)
+                .Select(static s => s.ReferenceName)
+                .ToList();
+
+            if (successfulUpdates.Count > 0)
+            {
+                // Execute callback in background without awaiting (fire and forget)
+                _ = Task.Run(async () =>
+                {
+                    try
+                    {
+                        await _options.OnReceivePackCompleted(context, repositoryName, successfulUpdates).ConfigureAwait(false);
+                    }
+                    catch
+                    {
+                        // Swallow exceptions to prevent unobserved task exceptions
+                        // Host application should handle logging within the callback if needed
+                    }
+                });
+            }
+        }
     }
 
-    private async Task<(IGitRepository Repository, string Name)?> TryOpenRepositoryAsync(HttpContext context, CancellationToken cancellationToken)
+    private async Task<(IGitRepository Repository, string Name)?> TryOpenRepositoryAsync(HttpContext context, GitOperation operation, CancellationToken cancellationToken)
     {
         string? rawValue = null;
         if (_options.RepositoryResolver is not null)
@@ -205,7 +234,7 @@ public sealed class GitSmartHttpService
 
         if (_options.AuthorizeAsync is not null)
         {
-            var allowed = await _options.AuthorizeAsync(context, repositoryName, cancellationToken).ConfigureAwait(false);
+            var allowed = await _options.AuthorizeAsync(context, repositoryName, operation, cancellationToken).ConfigureAwait(false);
             if (!allowed)
             {
                 await WritePlainErrorAsync(context, StatusCodes.Status403Forbidden, "Access denied", cancellationToken).ConfigureAwait(false);

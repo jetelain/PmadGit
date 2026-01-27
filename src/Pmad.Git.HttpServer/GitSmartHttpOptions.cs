@@ -26,10 +26,11 @@ public sealed class GitSmartHttpOptions
 
     /// <summary>
     /// Optional callback that can block access to specific repositories.
-    /// Parameters are the current HTTP context and the normalized repository name.
+    /// Parameters are the current HTTP context, the normalized repository name, the operation type (Read or Write), and a cancellation token.
+    /// By default, only read operations (fetch/clone) are allowed. Write operations (push) are denied for security.
     /// </summary>
-    public Func<HttpContext, string, CancellationToken, ValueTask<bool>>? AuthorizeAsync { get; set; }
-        = static (_, _, _) => ValueTask.FromResult(true);
+    public Func<HttpContext, string, GitOperation, CancellationToken, ValueTask<bool>>? AuthorizeAsync { get; set; }
+        = static (_, _, operation, _) => ValueTask.FromResult(operation == GitOperation.Read);
 
     /// <summary>
     /// Optional callback used to sanitize repository names before accessing the file system.
@@ -43,4 +44,19 @@ public sealed class GitSmartHttpOptions
     /// </summary>
     public Func<HttpContext, string?>? RepositoryResolver { get; set; }
         = static context => context.Request.RouteValues.TryGetValue("repository", out var value) ? value?.ToString() : null;
+
+    /// <summary>
+    /// Optional callback invoked after a receive-pack (push) operation completes, even for partial success.
+    /// Parameters are the HTTP context, the normalized repository name, and a list of successfully updated references.
+    /// This callback is invoked whenever at least one reference update succeeds, regardless of whether other
+    /// reference updates in the same push operation failed. The list contains only the references that were
+    /// successfully updated. This allows the host application to perform cache invalidation or other post-push
+    /// actions for the successful updates.
+    /// 
+    /// The callback is executed asynchronously in the background after the Git protocol response has been sent
+    /// to the client. This means that exceptions thrown by the callback will not cause the push to appear to
+    /// fail to the client, and slow callbacks will not block the Git client. The callback should handle its
+    /// own logging and error handling as needed.
+    /// </summary>
+    public Func<HttpContext, string, IReadOnlyList<string>, ValueTask>? OnReceivePackCompleted { get; set; }
 }
