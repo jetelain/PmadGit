@@ -11,7 +11,7 @@ namespace Pmad.Git.HttpServer.Pack;
 
 internal sealed class GitPackReader
 {
-    public async Task<IReadOnlyList<GitHash>> ReadAsync(GitRepository repository, Stream source, CancellationToken cancellationToken)
+    public async Task<IReadOnlyList<GitHash>> ReadAsync(IGitRepository repository, Stream source, CancellationToken cancellationToken)
     {
         if (repository is null)
         {
@@ -44,7 +44,7 @@ internal sealed class GitPackReader
         {
             cancellationToken.ThrowIfCancellationRequested();
             var objectOffset = hashingStream.BytesRead;
-            
+
             // Use shared pack object reader
             var materialized = await GitPackObjectReader.ReadObjectAsync(
                 hashingStream,

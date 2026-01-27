@@ -1,16 +1,13 @@
-using System.Collections.Generic;
 using System.Text;
-using System.Threading;
-using System.Threading.Tasks;
 using Pmad.Git.LocalRepositories;
 
 namespace Pmad.Git.HttpServer.Pack;
 
 internal sealed class GitObjectWalker
 {
-    private readonly GitRepository _repository;
+    private readonly IGitRepository _repository;
 
-    public GitObjectWalker(GitRepository repository)
+    public GitObjectWalker(IGitRepository repository)
     {
         _repository = repository ?? throw new ArgumentNullException(nameof(repository));
     }

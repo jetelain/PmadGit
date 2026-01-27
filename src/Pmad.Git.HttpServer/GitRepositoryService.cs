@@ -9,9 +9,9 @@ namespace Pmad.Git.HttpServer;
 /// </summary>
 internal sealed class GitRepositoryService : IGitRepositoryService
 {
-    private readonly ConcurrentDictionary<string, GitRepository> _repositories = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ConcurrentDictionary<string, IGitRepository> _repositories = new(StringComparer.OrdinalIgnoreCase);
 
-    public GitRepository GetRepository(string repositoryPath)
+    public IGitRepository GetRepository(string repositoryPath)
     {
         if (string.IsNullOrWhiteSpace(repositoryPath))
         {

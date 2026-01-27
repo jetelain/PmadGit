@@ -207,7 +207,7 @@ public sealed class GitSmartHttpService
         }
     }
 
-    private async Task<(GitRepository Repository, string Name)?> TryOpenRepositoryAsync(HttpContext context, GitOperation operation, CancellationToken cancellationToken)
+    private async Task<(IGitRepository Repository, string Name)?> TryOpenRepositoryAsync(HttpContext context, GitOperation operation, CancellationToken cancellationToken)
     {
         string? rawValue = null;
         if (_options.RepositoryResolver is not null)
@@ -297,7 +297,7 @@ public sealed class GitSmartHttpService
         return normalized;
     }
 
-    private async Task AdvertiseReferencesAsync(GitRepository repository, GitServiceKind service, Stream destination, CancellationToken cancellationToken)
+    private async Task AdvertiseReferencesAsync(IGitRepository repository, GitServiceKind service, Stream destination, CancellationToken cancellationToken)
     {
         var references = await repository.GetReferencesAsync(cancellationToken).ConfigureAwait(false);
         var headInfo = await ReadHeadInfoAsync(repository, cancellationToken).ConfigureAwait(false);
@@ -338,7 +338,7 @@ public sealed class GitSmartHttpService
         }
     }
 
-    private static async Task<HeadInfo> ReadHeadInfoAsync(GitRepository repository, CancellationToken cancellationToken)
+    private static async Task<HeadInfo> ReadHeadInfoAsync(IGitRepository repository, CancellationToken cancellationToken)
     {
         var headPath = Path.Combine(repository.GitDirectory, "HEAD");
         if (!File.Exists(headPath))

@@ -103,4 +103,13 @@ public sealed class GitHashTests
 		var hash = new GitHash($" \n{inner} \t");
 		Assert.Equal(inner, hash.Value);
 	}
+
+	[Fact]
+	public void Zero_ReturnsSha1AllZeroHash()
+	{
+		var zero = GitHash.Zero;
+		Assert.Equal("0000000000000000000000000000000000000000", zero.Value);
+		Assert.Equal(GitHash.Sha1HexLength, zero.Value.Length);
+		Assert.Equal(GitHash.Sha1ByteLength, zero.ByteLength);
+	}
 }
