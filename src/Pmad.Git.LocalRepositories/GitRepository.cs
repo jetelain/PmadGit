@@ -384,7 +384,7 @@ public sealed class GitRepository : IGitRepository
         var blobHash = await GetBlobHashAsync(commit.Tree, normalized, cancellationToken).ConfigureAwait(false)
             ?? throw new FileNotFoundException($"File '{filePath}' not found in commit {commit.Id}");
 
-        var blob = await _objectStore.ReadObjectNoCacheAsync(blobHash, cancellationToken).ConfigureAwait(false);
+        var blob = await _objectStore.ReadObjectAsync(blobHash, cancellationToken).ConfigureAwait(false);
         if (blob.Type != GitObjectType.Blob)
         {
             throw new InvalidOperationException($"Object {blobHash} is not a blob");
@@ -574,7 +574,7 @@ public sealed class GitRepository : IGitRepository
     /// <param name="clearAllData">Clears all cached data, including data that should not change on normal git operations</param>
     public void InvalidateCaches(bool clearAllData = false)
     {
-        _objectStore.InvalidateCaches(clearAllData);
+        _objectStore.InvalidateCaches();
 
         if (clearAllData)
         {
@@ -609,7 +609,7 @@ public sealed class GitRepository : IGitRepository
     /// <param name="cancellationToken">Token used to cancel the async operation.</param>
     /// <returns>The hash assigned to the stored object.</returns>
     public Task<GitHash> WriteObjectAsync(GitObjectType type, ReadOnlyMemory<byte> content, CancellationToken cancellationToken = default)
-        => WriteObjectCoreAsync(type, content, cancellationToken);
+        => _objectStore.WriteObjectAsync(type, content, cancellationToken);
 
     /// <summary>
     /// Returns a snapshot of all references stored in the repository.
@@ -1181,53 +1181,6 @@ public sealed class GitRepository : IGitRepository
         await File.WriteAllTextAsync(tempPath, commitHash.Value + "\n", cancellationToken).ConfigureAwait(false);
         File.Move(tempPath, refPath, overwrite: true);
     }
-
-    private async Task<GitHash> WriteObjectCoreAsync(GitObjectType type, ReadOnlyMemory<byte> content, CancellationToken cancellationToken)
-    {
-        cancellationToken.ThrowIfCancellationRequested();
-
-        var header = Encoding.ASCII.GetBytes($"{GitObjectTypeHelper.GetObjectTypeName(type)} {content.Length}\0");
-        var buffer = new byte[header.Length + content.Length];
-        Buffer.BlockCopy(header, 0, buffer, 0, header.Length);
-        content.Span.CopyTo(buffer.AsSpan(header.Length));
-
-        using var algorithm = CreateHashAlgorithm();
-        var hashBytes = algorithm.ComputeHash(buffer);
-        var hash = GitHash.FromBytes(hashBytes);
-
-        var objectPath = Path.Combine(GitDirectory, "objects", hash.Value[..2], hash.Value[2..]);
-        if (!File.Exists(objectPath))
-        {
-            Directory.CreateDirectory(Path.GetDirectoryName(objectPath)!);
-            var options = new FileStreamOptions
-            {
-                Mode = FileMode.CreateNew,
-                Access = FileAccess.Write,
-                Share = FileShare.Read,
-                Options = FileOptions.Asynchronous | FileOptions.SequentialScan
-            };
-
-            try
-            {
-                await using var stream = new FileStream(objectPath, options);
-                await using var zlib = new ZLibStream(stream, CompressionLevel.Optimal, leaveOpen: false);
-                await zlib.WriteAsync(buffer, cancellationToken).ConfigureAwait(false);
-            }
-            catch (IOException) when (File.Exists(objectPath))
-            {
-                // Object already exists; reuse it.
-            }
-        }
-
-        return hash;
-    }
-
-    private HashAlgorithm CreateHashAlgorithm() => _objectStore.HashLengthBytes switch
-    {
-        GitHash.Sha1ByteLength => SHA1.Create(),
-        GitHash.Sha256ByteLength => SHA256.Create(),
-        _ => throw new NotSupportedException("Unsupported git object hash length.")
-    };
 
     private async Task<Dictionary<string, GitHash>> LoadReferencesAsync()
     {

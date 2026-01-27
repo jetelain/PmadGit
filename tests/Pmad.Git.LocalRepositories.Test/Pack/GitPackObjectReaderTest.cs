@@ -1,8 +1,7 @@
-using System.Buffers;
 using System.IO.Compression;
-using Pmad.Git.LocalRepositories;
+using Pmad.Git.LocalRepositories.Pack;
 
-namespace Pmad.Git.LocalRepositories.Test;
+namespace Pmad.Git.LocalRepositories.Test.Pack;
 
 public sealed class GitPackObjectReaderTest
 {
