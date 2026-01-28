@@ -1,18 +1,15 @@
-using System.IO;
 using System.Security.Cryptography;
-using System.Threading;
-using System.Threading.Tasks;
 
 namespace Pmad.Git.HttpServer.Utilities;
 
-internal sealed class HashingStream : Stream
+internal sealed class HashingWriteStream : Stream
 {
     private readonly Stream _inner;
     private readonly IncrementalHash _hash;
     private readonly bool _leaveOpen;
     private bool _completed;
 
-    public HashingStream(Stream inner, HashAlgorithmName algorithm, bool leaveOpen = false)
+    public HashingWriteStream(Stream inner, HashAlgorithmName algorithm, bool leaveOpen = false)
     {
         _inner = inner ?? throw new ArgumentNullException(nameof(inner));
         _hash = IncrementalHash.CreateHash(algorithm);
@@ -49,8 +46,7 @@ internal sealed class HashingStream : Stream
 
     public override Task WriteAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken)
     {
-        _hash.AppendData(buffer, offset, count);
-        return _inner.WriteAsync(buffer, offset, count, cancellationToken);
+        return WriteAsync(buffer.AsMemory(offset, count), cancellationToken).AsTask();
     }
 
     public byte[] CompleteHash()
