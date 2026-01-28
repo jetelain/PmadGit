@@ -1,5 +1,5 @@
 using System.Security.Cryptography;
-using Pmad.Git.HttpServer.Utilities;
+using Pmad.Git.LocalRepositories.Utilities;
 using Pmad.Git.LocalRepositories;
 using Pmad.Git.LocalRepositories.Pack;
 
