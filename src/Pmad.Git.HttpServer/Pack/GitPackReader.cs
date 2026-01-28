@@ -26,7 +26,7 @@ internal sealed class GitPackReader
             _ => throw new NotSupportedException("Unsupported git hash length")
         };
 
-        using var hashingStream = new HashingReadStream(source, algorithm);
+        using var hashingStream = new HashingReadStream(source, algorithm, leaveOpen: true);
         var header = new byte[12];
         await hashingStream.ReadExactlyAsync(header, cancellationToken).ConfigureAwait(false);
         ValidateHeader(header);

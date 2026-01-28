@@ -46,8 +46,7 @@ internal sealed class HashingWriteStream : Stream
 
     public override Task WriteAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken)
     {
-        _hash.AppendData(buffer, offset, count);
-        return _inner.WriteAsync(buffer, offset, count, cancellationToken);
+        return WriteAsync(buffer.AsMemory(offset, count), cancellationToken).AsTask();
     }
 
     public byte[] CompleteHash()

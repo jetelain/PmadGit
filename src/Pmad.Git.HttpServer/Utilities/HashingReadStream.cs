@@ -1,18 +1,20 @@
-﻿using System.Buffers;
-using System.Security.Cryptography;
+﻿using System.Security.Cryptography;
 
 namespace Pmad.Git.HttpServer.Utilities;
 
 internal sealed class HashingReadStream : Stream
 {
     private readonly Stream _inner;
-    private readonly IncrementalHash _hash;
+    private readonly IncrementalHash _hash; 
+    private readonly bool _leaveOpen;
+
     private bool _hashCompleted;
 
-    public HashingReadStream(Stream inner, HashAlgorithmName algorithm)
+    public HashingReadStream(Stream inner, HashAlgorithmName algorithm, bool leaveOpen = false)
     {
         _inner = inner ?? throw new ArgumentNullException(nameof(inner));
         _hash = IncrementalHash.CreateHash(algorithm);
+        _leaveOpen = leaveOpen;
     }
 
     public long BytesRead { get; private set; }
@@ -33,97 +35,50 @@ internal sealed class HashingReadStream : Stream
             _hash.AppendData(buffer, offset, read);
             BytesRead += read;
         }
-
         return read;
     }
 
-    public override async Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken)
+    public override Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken)
     {
-        var read = await _inner.ReadAsync(buffer.AsMemory(offset, count), cancellationToken).ConfigureAwait(false);
-        if (read > 0 && !_hashCompleted)
-        {
-            _hash.AppendData(buffer, offset, read);
-            BytesRead += read;
-        }
-
-        return read;
+        return ReadAsync(buffer.AsMemory(offset, count), cancellationToken).AsTask();
     }
 
-    public override ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
-        => ReadAsync(buffer, cancellationToken, appendHash: !_hashCompleted);
-
-    private async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken, bool appendHash)
+    public async override ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
     {
         var read = await _inner.ReadAsync(buffer, cancellationToken).ConfigureAwait(false);
-        if (read > 0 && appendHash)
+        if (read > 0 && !_hashCompleted)
         {
             _hash.AppendData(buffer.Span[..read]);
             BytesRead += read;
         }
-
         return read;
-    }
-
-    public async Task ReadExactlyAsync(byte[] buffer, CancellationToken cancellationToken)
-    {
-        await _inner.ReadExactlyAsync(buffer, cancellationToken).ConfigureAwait(false);
-        if (!_hashCompleted)
-        {
-            _hash.AppendData(buffer);
-            BytesRead += buffer.Length;
-        }
-    }
-
-    public new async Task ReadExactlyAsync(Memory<byte> buffer, CancellationToken cancellationToken)
-    {
-        await _inner.ReadExactlyAsync(buffer, cancellationToken).ConfigureAwait(false);
-        if (!_hashCompleted)
-        {
-            _hash.AppendData(buffer.Span);
-            BytesRead += buffer.Length;
-        }
-    }
-
-    public async Task<int> ReadByteAsync(CancellationToken cancellationToken)
-    {
-        var buffer = ArrayPool<byte>.Shared.Rent(1);
-        try
-        {
-            var read = await _inner.ReadAsync(buffer.AsMemory(0, 1), cancellationToken).ConfigureAwait(false);
-            if (read == 0)
-            {
-                return -1;
-            }
-
-            if (!_hashCompleted)
-            {
-                _hash.AppendData(buffer, 0, 1);
-                BytesRead += 1;
-            }
-
-            return buffer[0];
-        }
-        finally
-        {
-            ArrayPool<byte>.Shared.Return(buffer);
-        }
     }
 
     public byte[] CompleteHash()
     {
+        if (_hashCompleted)
+        {
+            throw new InvalidOperationException("Hash already finalized");
+        }
         _hashCompleted = true;
         return _hash.GetHashAndReset();
     }
 
     public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+
     public override void SetLength(long value) => throw new NotSupportedException();
+
     public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
 
     protected override void Dispose(bool disposing)
     {
         if (disposing)
         {
-            _hash.Dispose();
+            _hash.Dispose(); 
+            if (!_leaveOpen)
+            {
+                _inner.Dispose();
+            }
         }
 
         base.Dispose(disposing);
