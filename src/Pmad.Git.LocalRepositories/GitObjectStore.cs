@@ -2,6 +2,7 @@ using System.IO.Compression;
 using System.Security.Cryptography;
 using System.Text;
 using Pmad.Git.LocalRepositories.Pack;
+using Pmad.Git.LocalRepositories.Utilities;
 
 namespace Pmad.Git.LocalRepositories;
 
@@ -52,6 +53,31 @@ internal sealed class GitObjectStore
         throw new FileNotFoundException($"Git object {hash} could not be found");
     }
 
+    public async Task<GitObjectStream> ReadObjectStreamAsync(GitHash hash, CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+
+        var loose = await TryReadLooseObjectStreamAsync(hash, cancellationToken).ConfigureAwait(false);
+        if (loose is not null)
+        {
+            return loose;
+        }
+
+        var packs = await _packsTask.ConfigureAwait(false);
+
+        foreach (var pack in packs)
+        {
+            var packed = await pack.TryReadObject(hash, ReadObjectAsync, cancellationToken).ConfigureAwait(false);
+            if (packed is not null)
+            {
+                var stream = new MemoryStream(packed.Content, writable: false);
+                return new GitObjectStream(packed.Type, stream, packed.Content.Length);
+            }
+        }
+
+        throw new FileNotFoundException($"Git object {hash} could not be found");
+    }
+
     private async Task<GitObjectData?> TryReadLooseObjectAsync(GitHash hash, CancellationToken cancellationToken)
     {
         var path = Path.Combine(_gitDirectory, "objects", hash.Value[..2], hash.Value[2..]);
@@ -90,6 +116,64 @@ internal sealed class GitObjectStore
         var typeString = header[..spaceIndex];
         var payload = content[(separator + 1)..];
         return new GitObjectData(GitObjectTypeHelper.ParseType(typeString), payload);
+    }
+
+    private async Task<GitObjectStream?> TryReadLooseObjectStreamAsync(GitHash hash, CancellationToken cancellationToken)
+    {
+        var path = Path.Combine(_gitDirectory, "objects", hash.Value[..2], hash.Value[2..]);
+        if (!File.Exists(path))
+        {
+            return null;
+        }
+
+        var options = new FileStreamOptions
+        {
+            Mode = FileMode.Open,
+            Access = FileAccess.Read,
+            Share = FileShare.Read,
+            Options = FileOptions.Asynchronous | FileOptions.SequentialScan
+        };
+
+        var fileStream = new FileStream(path, options);
+        try
+        {
+            var zlib = new ZLibStream(fileStream, CompressionMode.Decompress, leaveOpen: false);
+            try
+            {
+                var stream = new EfficientAsyncReadStream(zlib);
+
+                var headerBytes = await stream.ReadUntilAsync(0, cancellationToken);
+
+                var header = System.Text.Encoding.ASCII.GetString(headerBytes);
+                var spaceIndex = header.IndexOf(' ');
+                if (spaceIndex < 0)
+                {
+                    throw new InvalidDataException("Invalid loose object header");
+                }
+
+                var typeString = header[..spaceIndex];
+                var sizeString = header[(spaceIndex + 1)..];
+                
+                if (!long.TryParse(sizeString, out var length))
+                {
+                    throw new InvalidDataException("Invalid loose object header: invalid size");
+                }
+
+                var objectType = GitObjectTypeHelper.ParseType(typeString);
+
+                return new GitObjectStream(objectType, stream, length);
+            }
+            catch
+            {
+                await zlib.DisposeAsync().ConfigureAwait(false);
+                throw;
+            }
+        }
+        catch
+        {
+            await fileStream.DisposeAsync().ConfigureAwait(false);
+            throw;
+        }
     }
 
     private async Task<GitPackEntry[]> LoadPackEntriesAsync()
