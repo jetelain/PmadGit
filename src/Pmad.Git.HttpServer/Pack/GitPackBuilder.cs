@@ -26,7 +26,7 @@ internal sealed class GitPackBuilder
             _ => throw new NotSupportedException("Unsupported git hash length")
         };
 
-        await using var hashingStream = new HashingStream(destination, algorithm, leaveOpen: true);
+        await using var hashingStream = new HashingWriteStream(destination, algorithm, leaveOpen: true);
         await WriteHeaderAsync(hashingStream, objects.Count, cancellationToken).ConfigureAwait(false);
 
         foreach (var hash in objects)
