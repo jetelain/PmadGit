@@ -94,11 +94,8 @@ public sealed class GitSmartHttpConcurrencyTests : IDisposable
         // One should fail, it should be due to non-fast-forward
         Assert.Equal(1, failCount);
 
-        // XXX: This test fails sometimes on the CI due to timing issues, so commenting out the detailed check for now
-        //      "git push origin main failed with exit cod"··· (XUnit is too agressive in trimming the exception message)
-
-        // var failedPush = resultsList.First(r => !r.success);
-        // Assert.Contains("non-fast-forward", failedPush.output, StringComparison.OrdinalIgnoreCase);
+        var failedPush = resultsList.First(r => !r.success);
+        Assert.Contains("non-fast-forward", failedPush.output, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
