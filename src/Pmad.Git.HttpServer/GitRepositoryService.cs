@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using Pmad.Git.LocalRepositories;
+using Pmad.Git.LocalRepositories.Utilities;
 
 namespace Pmad.Git.HttpServer;
 
@@ -25,10 +26,7 @@ internal sealed class GitRepositoryService : IGitRepositoryService
             throw new DirectoryNotFoundException($"Repository not found at path: {normalizedPath}");
         }
 
-        return _repositories.GetOrAdd(normalizedPath, path =>
-        {
-            return GitRepository.Open(path);
-        });
+        return _repositories.GetOrAddSingleton(normalizedPath, GitRepository.Open);
     }
 
     public void InvalidateCache()

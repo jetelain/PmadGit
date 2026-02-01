@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using Pmad.Git.LocalRepositories.Utilities;
 
 namespace Pmad.Git.LocalRepositories;
 
@@ -8,7 +9,6 @@ namespace Pmad.Git.LocalRepositories;
 internal sealed class GitRepositoryLockManager
 {
     private readonly ConcurrentDictionary<string, SemaphoreSlim> _referenceLocks = new(StringComparer.Ordinal);
-    private readonly object _lockCreationLock = new();
 
     /// <summary>
     /// Acquires a lock for a specific reference (branch).
@@ -33,14 +33,7 @@ internal sealed class GitRepositoryLockManager
     /// </remarks>
     private SemaphoreSlim GetSemaphore(string referencePath)
     {
-        if (!_referenceLocks.TryGetValue(referencePath, out var semaphore))
-        {
-            lock (_lockCreationLock)
-            {
-                semaphore = _referenceLocks.GetOrAdd(referencePath, static _ => new SemaphoreSlim(1, 1));
-            }
-        }
-        return semaphore;
+        return _referenceLocks.GetOrAddSingleton(referencePath, static _ => new SemaphoreSlim(1, 1));
     }
 
     /// <summary>
