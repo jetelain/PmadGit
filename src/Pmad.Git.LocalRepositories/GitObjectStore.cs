@@ -313,7 +313,7 @@ internal sealed class GitObjectStore : IGitObjectStore
 
             var options = new FileStreamOptions
             {
-                Mode = FileMode.CreateNew,
+                Mode = FileMode.Create,
                 Access = FileAccess.Write,
                 Share = FileShare.Read,
                 Options = FileOptions.Asynchronous | FileOptions.SequentialScan
@@ -322,16 +322,15 @@ internal sealed class GitObjectStore : IGitObjectStore
             // Write object to a temp file to compute hash
             using (var tempFileStream = new FileStream(tempFile, options))
             {
-                var hashAlgorithm = CreateHashAlgorithm();
-                using (var hashing = new CryptoStream(tempFileStream, hashAlgorithm, CryptoStreamMode.Write))
-                {
-                    using var zlib = new ZLibStream(tempFileStream, CompressionLevel.Optimal, leaveOpen: true);
-                    var header = CreateHeader(type, stream.Length);
-                    await zlib.WriteAsync(header, cancellationToken).ConfigureAwait(false);
-                    await stream.CopyToAsync(zlib, cancellationToken).ConfigureAwait(false);
-                    await zlib.FlushAsync().ConfigureAwait(false);
-                }
-                hash = GitHash.FromBytes(hashAlgorithm.Hash!);
+                using var zlib = new ZLibStream(tempFileStream, CompressionLevel.Optimal, leaveOpen: true);
+                using var hashing = new HashingWriteStream(zlib, GetHashAlgorithmName(), leaveOpen: true);
+                var header = CreateHeader(type, stream.Length);
+                await hashing.WriteAsync(header, cancellationToken).ConfigureAwait(false);
+                await stream.CopyToAsync(hashing, cancellationToken).ConfigureAwait(false);
+                await hashing.FlushAsync(cancellationToken).ConfigureAwait(false);
+                await zlib.FlushAsync(cancellationToken).ConfigureAwait(false);
+
+                hash = GitHash.FromBytes(hashing.CompleteHash());
             }
 
             // Move to object store
@@ -363,4 +362,12 @@ internal sealed class GitObjectStore : IGitObjectStore
         GitHash.Sha256ByteLength => SHA256.Create(),
         _ => throw new NotSupportedException("Unsupported git object hash length.")
     };
+
+    private HashAlgorithmName GetHashAlgorithmName() => _hashLengthBytes switch
+    {
+        GitHash.Sha1ByteLength => HashAlgorithmName.SHA1,
+        GitHash.Sha256ByteLength => HashAlgorithmName.SHA256,
+        _ => throw new NotSupportedException("Unsupported git hash length")
+    };
+
 }

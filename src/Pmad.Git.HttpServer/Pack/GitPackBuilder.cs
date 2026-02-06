@@ -1,6 +1,6 @@
 using System.IO.Compression;
 using System.Security.Cryptography;
-using Pmad.Git.HttpServer.Utilities;
+using Pmad.Git.LocalRepositories.Utilities;
 using Pmad.Git.LocalRepositories;
 
 namespace Pmad.Git.HttpServer.Pack;
