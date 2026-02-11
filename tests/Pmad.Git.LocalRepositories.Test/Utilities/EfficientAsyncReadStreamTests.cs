@@ -259,7 +259,7 @@ public sealed class EfficientAsyncReadStreamTests
         using var innerStream = new SlowStream(new byte[] { 1, 2, 3 });
         using var stream = new EfficientAsyncReadStream(innerStream);
         var buffer = new byte[3];
-        var cts = new CancellationTokenSource();
+        using var cts = new CancellationTokenSource();
         cts.Cancel();
 
         // Act & Assert
@@ -354,7 +354,7 @@ public sealed class EfficientAsyncReadStreamTests
         // Arrange
         using var innerStream = new SlowStream(new byte[] { 1, 2, 3 });
         using var stream = new EfficientAsyncReadStream(innerStream);
-        var cts = new CancellationTokenSource();
+        using var cts = new CancellationTokenSource();
         cts.Cancel();
 
         // Act & Assert
@@ -501,7 +501,7 @@ public sealed class EfficientAsyncReadStreamTests
         // Arrange
         using var innerStream = new SlowStream(Encoding.UTF8.GetBytes("Hello\nWorld"));
         using var stream = new EfficientAsyncReadStream(innerStream);
-        var cts = new CancellationTokenSource();
+        using var cts = new CancellationTokenSource();
         cts.Cancel();
 
         // Act & Assert

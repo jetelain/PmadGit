@@ -7,9 +7,10 @@ namespace Pmad.Git.LocalRepositories.Utilities;
 /// Provides a read-only, stream wrapper that supports efficient asynchronous reading with
 /// delimiter-based operations.
 /// </summary>
-/// <remarks>SmartReadAsyncStream is designed for scenarios where reading up to a specific delimiter is
-/// required, such as parsing protocol messages or records from a continuous stream. The stream does not support
-/// seeking or writing. All read operations are performed on the underlying stream, with internal buffering to
+/// <remarks>EfficientAsyncReadStream is designed for scenarios where reading up to a specific delimiter is
+/// required, such as parsing protocol messages or records from a continuous stream. The stream is read-only and does
+/// not support writing. Seeking is supported when the underlying stream supports seeking; in that case, seek and
+/// position operations are delegated to the underlying stream, and internal buffering is managed accordingly to
 /// optimize delimiter-based reads. The stream and its underlying resources are disposed when the instance is
 /// disposed. This type is not thread-safe; callers should ensure appropriate synchronization if accessed
 /// concurrently.</remarks>

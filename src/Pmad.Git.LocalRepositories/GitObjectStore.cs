@@ -309,7 +309,7 @@ internal sealed class GitObjectStore : IGitObjectStore
         var tempFile = Path.GetTempFileName();
         try
         {
-            var hash = GitHash.Zero;
+            GitHash hash;
 
             var options = new FileStreamOptions
             {
