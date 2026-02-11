@@ -311,14 +311,15 @@ internal sealed class GitObjectStore : IGitObjectStore
             throw new ArgumentException("Stream must be seekable", nameof(stream));
         }
 
-        var tempFile = Path.GetTempFileName();
+        // Create a temporary file in the same directory to ensure move operation will be atomic
+        var tempFile = Path.Combine(_gitDirectory, "objects", Guid.NewGuid().ToString("N") + ".tmp");
         try
         {
             GitHash hash;
 
             var options = new FileStreamOptions
             {
-                Mode = FileMode.Create,
+                Mode = FileMode.CreateNew,
                 Access = FileAccess.Write,
                 Share = FileShare.Read,
                 Options = FileOptions.Asynchronous | FileOptions.SequentialScan

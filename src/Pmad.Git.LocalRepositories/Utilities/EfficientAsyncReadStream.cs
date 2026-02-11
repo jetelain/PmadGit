@@ -143,7 +143,7 @@ internal sealed class EfficientAsyncReadStream : Stream
     /// <exception cref="EndOfStreamException">Thrown if the end of the stream is reached before the delimiter is found.</exception>
     public async ValueTask<byte[]> ReadUntilAsync(byte delimiter, CancellationToken cancellationToken = default)
     {
-        using var chunkBuffer = new MemoryStream();
+        using var chunkBuffer = new MemoryStream(BufferSize);
 
         // First, scan the internal buffer if it has data
         if (!_bufferExhausted && TryReadUntilFromInternalBuffer(chunkBuffer, delimiter))
