@@ -95,6 +95,10 @@ internal sealed class EfficientAsyncReadStream : Stream
     /// <returns>A task that represents the asynchronous preload operation.</returns>
     public async Task PreLoadAsync(int byteCount, CancellationToken cancellationToken = default)
     {
+        if (byteCount < 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(byteCount), "byteCount must be non-negative.");
+        }
         var initialBufferPosition = _buffer.Position;
         _buffer.Position = _buffer.Length; 
 
@@ -189,31 +193,36 @@ internal sealed class EfficientAsyncReadStream : Stream
                 int bytesRead;
                 while ((bytesRead = await _inner.ReadAsync(readBuffer.AsMemory(0, BufferSize), cancellationToken).ConfigureAwait(false)) > 0)
                 {
-                    for (int i = 0; i < bytesRead; i++)
-                    {
-                        if (readBuffer[i] == delimiter)
-                        {
-                            foundDelimiter = true;
-                            remainingStart = i + 1;
-                            remainingLength = bytesRead - remainingStart;
-                            break;
-                        }
-                        chunkBuffer.WriteByte(readBuffer[i]);
-                    }
+                    var readSpan = readBuffer.AsSpan(0, bytesRead);
+                    int delimiterIndex = readSpan.IndexOf(delimiter);
 
-                    if (foundDelimiter)
+                    if (delimiterIndex >= 0)
                     {
+                        // Write all bytes before the delimiter in one operation
+                        if (delimiterIndex > 0)
+                        {
+                            chunkBuffer.Write(readBuffer, 0, delimiterIndex);
+                        }
+
+                        foundDelimiter = true;
+                        remainingStart = delimiterIndex + 1;
+                        remainingLength = bytesRead - remainingStart;
                         break;
+                    }
+                    else
+                    {
+                        // No delimiter in this chunk, write all bytes to output
+                        chunkBuffer.Write(readBuffer, 0, bytesRead);
                     }
                 }
 
                 // Put any remaining bytes back into the internal buffer
                 if (remainingLength > 0)
                 {
-                    var initalBufferPosition = _buffer.Position;
+                    var initialBufferPosition = _buffer.Position;
                     _buffer.Position = _buffer.Length;
                     _buffer.Write(readBuffer, remainingStart, remainingLength);
-                    _buffer.Position = initalBufferPosition;
+                    _buffer.Position = initialBufferPosition;
                     _bufferExhausted = false;
                 }
             }
