@@ -197,6 +197,42 @@ public sealed class EfficientAsyncReadStreamTests
         Assert.Equal(new byte[] { 3, 4 }, buffer2);
     }
 
+    [Fact]
+    public void Read_WithZeroCount_ShouldBeNoOp()
+    {
+        // Arrange
+        var data = new byte[] { 1, 2, 3, 4, 5 };
+        using var innerStream = new MemoryStream(data);
+        using var stream = new EfficientAsyncReadStream(innerStream);
+        var buffer = new byte[5];
+
+        // Act
+        var bytesRead = stream.Read(buffer, 0, 0);
+
+        // Assert
+        Assert.Equal(0, bytesRead);
+        Assert.Equal(0, stream.Position); // Position should not change
+        Assert.All(buffer, b => Assert.Equal(0, b)); // Buffer should remain unchanged
+    }
+
+    [Fact]
+    public void Read_WithZeroCount_AfterReading_ShouldNotChangePosition()
+    {
+        // Arrange
+        var data = new byte[] { 1, 2, 3, 4, 5 };
+        using var innerStream = new MemoryStream(data);
+        using var stream = new EfficientAsyncReadStream(innerStream);
+        var buffer = new byte[2];
+        stream.Read(buffer, 0, 2); // Read 2 bytes first
+
+        // Act
+        var bytesRead = stream.Read(buffer, 0, 0);
+
+        // Assert
+        Assert.Equal(0, bytesRead);
+        Assert.Equal(2, stream.Position); // Position should remain at 2
+    }
+
     #endregion
 
     #region ReadAsync Tests
@@ -265,6 +301,76 @@ public sealed class EfficientAsyncReadStreamTests
         // Act & Assert
         await Assert.ThrowsAnyAsync<OperationCanceledException>(
             async () => await stream.ReadAsync(buffer.AsMemory(), cts.Token));
+    }
+
+    [Fact]
+    public async Task ReadAsync_WithZeroLengthBuffer_ShouldBeNoOp()
+    {
+        // Arrange
+        var data = new byte[] { 1, 2, 3, 4, 5 };
+        using var innerStream = new MemoryStream(data);
+        using var stream = new EfficientAsyncReadStream(innerStream);
+
+        // Act
+        var bytesRead = await stream.ReadAsync(Memory<byte>.Empty, CancellationToken.None);
+
+        // Assert
+        Assert.Equal(0, bytesRead);
+        Assert.Equal(0, stream.Position); // Position should not change
+    }
+
+    [Fact]
+    public async Task ReadAsync_WithZeroLengthBuffer_AfterReading_ShouldNotChangePosition()
+    {
+        // Arrange
+        var data = new byte[] { 1, 2, 3, 4, 5 };
+        using var innerStream = new MemoryStream(data);
+        using var stream = new EfficientAsyncReadStream(innerStream);
+        var buffer = new byte[2];
+        await stream.ReadAsync(buffer.AsMemory(), CancellationToken.None); // Read 2 bytes first
+
+        // Act
+        var bytesRead = await stream.ReadAsync(Memory<byte>.Empty, CancellationToken.None);
+
+        // Assert
+        Assert.Equal(0, bytesRead);
+        Assert.Equal(2, stream.Position); // Position should remain at 2
+    }
+
+    [Fact]
+    public async Task ReadAsync_WithZeroCount_ShouldBeNoOp()
+    {
+        // Arrange
+        var data = new byte[] { 1, 2, 3, 4, 5 };
+        using var innerStream = new MemoryStream(data);
+        using var stream = new EfficientAsyncReadStream(innerStream);
+        var buffer = new byte[5];
+
+        // Act
+        var bytesRead = await stream.ReadAsync(buffer, 0, 0, CancellationToken.None);
+
+        // Assert
+        Assert.Equal(0, bytesRead);
+        Assert.Equal(0, stream.Position); // Position should not change
+        Assert.All(buffer, b => Assert.Equal(0, b)); // Buffer should remain unchanged
+    }
+
+    [Fact]
+    public async Task ReadAsync_WithZeroCount_AfterReading_ShouldNotChangePosition()
+    {
+        // Arrange
+        var data = new byte[] { 1, 2, 3, 4, 5 };
+        using var innerStream = new MemoryStream(data);
+        using var stream = new EfficientAsyncReadStream(innerStream);
+        var buffer = new byte[2];
+        await stream.ReadAsync(buffer, 0, 2, CancellationToken.None); // Read 2 bytes first
+
+        // Act
+        var bytesRead = await stream.ReadAsync(buffer, 0, 0, CancellationToken.None);
+
+        // Assert
+        Assert.Equal(0, bytesRead);
+        Assert.Equal(2, stream.Position); // Position should remain at 2
     }
 
     #endregion
