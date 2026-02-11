@@ -1,5 +1,4 @@
-﻿using System;
-using System.Buffers;
+﻿using System.Buffers;
 
 namespace Pmad.Git.LocalRepositories.Utilities;
 
@@ -144,87 +143,55 @@ internal sealed class EfficientAsyncReadStream : Stream
     /// <exception cref="EndOfStreamException">Thrown if the end of the stream is reached before the delimiter is found.</exception>
     public async ValueTask<byte[]> ReadUntilAsync(byte delimiter, CancellationToken cancellationToken = default)
     {
-        bool foundDelimiter = false;
-
         using var chunkBuffer = new MemoryStream();
+
+        // First, scan the internal buffer if it has data
+        if (!_bufferExhausted && TryReadUntilFromInternalBuffer(chunkBuffer, delimiter))
+        {
+            return chunkBuffer.ToArray();
+        }
+
+        // If delimiter not found in buffer, read from underlying stream
+        bool foundDelimiter = false;
         var readBuffer = ArrayPool<byte>.Shared.Rent(BufferSize);
         try
         {
-            // First, scan the internal buffer if it has data
-            if (!_bufferExhausted)
-            {
-                var bufferArray = _buffer.GetBuffer();
-                var bufferPos = (int)_buffer.Position;
-                var bufferLen = (int)_buffer.Length;
-                
-                for (int i = bufferPos; i < bufferLen; i++)
-                {
-                    if (bufferArray[i] == delimiter)
-                    {
-                        foundDelimiter = true;
-                        // Copy data before delimiter to output
-                        if (i > bufferPos)
-                        {
-                            chunkBuffer.Write(bufferArray, bufferPos, i - bufferPos);
-                        }
-                        // Advance buffer position past the delimiter
-                        _buffer.Position = i + 1;
-                        break;
-                    }
-                }
+            int remainingStart = 0;
+            int remainingLength = 0;
 
-                if (!foundDelimiter)
+            int bytesRead;
+            while ((bytesRead = await _inner.ReadAsync(readBuffer.AsMemory(0, BufferSize), cancellationToken).ConfigureAwait(false)) > 0)
+            {
+                int delimiterIndex = readBuffer.AsSpan(0, bytesRead).IndexOf(delimiter);
+
+                if (delimiterIndex >= 0)
                 {
-                    // Delimiter not in buffer, copy all remaining buffer data to output
-                    if (bufferLen > bufferPos)
+                    // Write all bytes before the delimiter in one operation
+                    if (delimiterIndex > 0)
                     {
-                        chunkBuffer.Write(bufferArray, bufferPos, bufferLen - bufferPos);
+                        chunkBuffer.Write(readBuffer, 0, delimiterIndex);
                     }
-                    MarkBufferExhausted();
+
+                    foundDelimiter = true;
+                    remainingStart = delimiterIndex + 1;
+                    remainingLength = bytesRead - remainingStart;
+                    break;
+                }
+                else
+                {
+                    // No delimiter in this chunk, write all bytes to output
+                    chunkBuffer.Write(readBuffer, 0, bytesRead);
                 }
             }
 
-            // If delimiter not found in buffer, read from underlying stream
-            if (!foundDelimiter)
+            // Put any remaining bytes back into the internal buffer
+            if (remainingLength > 0)
             {
-                int remainingStart = 0;
-                int remainingLength = 0;
-
-                int bytesRead;
-                while ((bytesRead = await _inner.ReadAsync(readBuffer.AsMemory(0, BufferSize), cancellationToken).ConfigureAwait(false)) > 0)
-                {
-                    var readSpan = readBuffer.AsSpan(0, bytesRead);
-                    int delimiterIndex = readSpan.IndexOf(delimiter);
-
-                    if (delimiterIndex >= 0)
-                    {
-                        // Write all bytes before the delimiter in one operation
-                        if (delimiterIndex > 0)
-                        {
-                            chunkBuffer.Write(readBuffer, 0, delimiterIndex);
-                        }
-
-                        foundDelimiter = true;
-                        remainingStart = delimiterIndex + 1;
-                        remainingLength = bytesRead - remainingStart;
-                        break;
-                    }
-                    else
-                    {
-                        // No delimiter in this chunk, write all bytes to output
-                        chunkBuffer.Write(readBuffer, 0, bytesRead);
-                    }
-                }
-
-                // Put any remaining bytes back into the internal buffer
-                if (remainingLength > 0)
-                {
-                    var initialBufferPosition = _buffer.Position;
-                    _buffer.Position = _buffer.Length;
-                    _buffer.Write(readBuffer, remainingStart, remainingLength);
-                    _buffer.Position = initialBufferPosition;
-                    _bufferExhausted = false;
-                }
+                var initialBufferPosition = _buffer.Position;
+                _buffer.Position = _buffer.Length;
+                _buffer.Write(readBuffer, remainingStart, remainingLength);
+                _buffer.Position = initialBufferPosition;
+                _bufferExhausted = false;
             }
         }
         finally
@@ -236,6 +203,40 @@ internal sealed class EfficientAsyncReadStream : Stream
             throw new EndOfStreamException("Delimiter not found before end of stream.");
         }
         return chunkBuffer.ToArray();
+    }
+
+    private bool TryReadUntilFromInternalBuffer(MemoryStream chunkBuffer, byte delimiter)
+    {
+        var bufferPos = (int)_buffer.Position;
+        var bufferLen = (int)_buffer.Length;
+
+        var bufferSpan = _buffer.GetBuffer().AsSpan(bufferPos, bufferLen - bufferPos);
+
+        var delimiterIndexInBuffer = bufferSpan.IndexOf(delimiter);
+
+        if (delimiterIndexInBuffer >= 0)
+        {
+            if (delimiterIndexInBuffer > 0)
+            {
+                chunkBuffer.Write(bufferSpan.Slice(0, delimiterIndexInBuffer));
+            }
+
+            // Move past the delimiter
+            _buffer.Position = bufferPos + delimiterIndexInBuffer + 1; 
+
+            if (_buffer.Position == _buffer.Length)
+            {
+                MarkBufferExhausted();
+            }
+            return true;
+        }
+
+        // Delimiter not in buffer, copy all remaining buffer data to output
+        chunkBuffer.Write(bufferSpan);
+
+        MarkBufferExhausted();
+
+        return false;
     }
 
     /// <inheritdoc />
