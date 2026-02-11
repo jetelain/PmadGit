@@ -16,6 +16,8 @@ internal sealed class HashingWriteStream : Stream
         _leaveOpen = leaveOpen;
     }
 
+    public long BytesWritten { get; private set; }
+
     public override bool CanRead => false;
     public override bool CanSeek => false;
     public override bool CanWrite => _inner.CanWrite;
@@ -36,12 +38,14 @@ internal sealed class HashingWriteStream : Stream
     {
         _hash.AppendData(buffer, offset, count);
         _inner.Write(buffer, offset, count);
+        BytesWritten += count;
     }
 
     public override async ValueTask WriteAsync(ReadOnlyMemory<byte> buffer, CancellationToken cancellationToken = default)
     {
         _hash.AppendData(buffer.Span);
         await _inner.WriteAsync(buffer, cancellationToken).ConfigureAwait(false);
+        BytesWritten += buffer.Length;
     }
 
     public override Task WriteAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken)

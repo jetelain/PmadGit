@@ -306,6 +306,11 @@ internal sealed class GitObjectStore : IGitObjectStore
 
     public async Task<GitHash> WriteObjectAsync(GitObjectType type, Stream stream, CancellationToken cancellationToken)
     {
+        if (!stream.CanSeek)
+        {
+            throw new ArgumentException("Stream must be seekable", nameof(stream));
+        }
+
         var tempFile = Path.GetTempFileName();
         try
         {
@@ -322,14 +327,20 @@ internal sealed class GitObjectStore : IGitObjectStore
             // Write object to a temp file to compute hash
             using (var tempFileStream = new FileStream(tempFile, options))
             {
+                var contentLength = stream.Length - stream.Position;
+
                 using var zlib = new ZLibStream(tempFileStream, CompressionLevel.Optimal, leaveOpen: true);
                 using var hashing = new HashingWriteStream(zlib, GetHashAlgorithmName(), leaveOpen: true);
-                var header = CreateHeader(type, stream.Length);
+                var header = CreateHeader(type, contentLength);
                 await hashing.WriteAsync(header, cancellationToken).ConfigureAwait(false);
                 await stream.CopyToAsync(hashing, cancellationToken).ConfigureAwait(false);
                 await hashing.FlushAsync(cancellationToken).ConfigureAwait(false);
                 await zlib.FlushAsync(cancellationToken).ConfigureAwait(false);
 
+                if (hashing.BytesWritten != header.Length + contentLength)
+                {
+                    throw new InvalidDataException("Stream length changed during write");
+                }
                 hash = GitHash.FromBytes(hashing.CompleteHash());
             }
 

@@ -59,6 +59,11 @@ internal sealed class EfficientAsyncReadStream : Stream
     /// <inheritdoc />
     public override int Read(byte[] buffer, int offset, int count)
     {
+        if (count == 0)
+        {
+            // Per Stream.Read contract, a zero-length read should be a no-op
+            return 0;
+        }
         if (!_bufferExhausted)
         {
             var bytesRead = _buffer.Read(buffer, offset, count);
@@ -90,7 +95,7 @@ internal sealed class EfficientAsyncReadStream : Stream
     /// <returns>A task that represents the asynchronous preload operation.</returns>
     public async Task PreLoadAsync(int byteCount, CancellationToken cancellationToken = default)
     {
-        var initalBufferPosition = _buffer.Position;
+        var initialBufferPosition = _buffer.Position;
         _buffer.Position = _buffer.Length; 
 
         var readBuffer = ArrayPool<byte>.Shared.Rent(BufferSize);
@@ -108,13 +113,13 @@ internal sealed class EfficientAsyncReadStream : Stream
                 _buffer.Write(readBuffer, 0, bytesRead);
                 totalBytesRead += bytesRead;
             }
-
-            // Make preloaded data available for subsequent reads
-            _buffer.Position = initalBufferPosition;
-            _bufferExhausted = false;
         }
         finally
-        {
+        {            
+            // Make preloaded data available for subsequent reads
+            _buffer.Position = initialBufferPosition;
+            _bufferExhausted = false;
+
             ArrayPool<byte>.Shared.Return(readBuffer);
         }
     }
@@ -141,35 +146,77 @@ internal sealed class EfficientAsyncReadStream : Stream
         var readBuffer = ArrayPool<byte>.Shared.Rent(BufferSize);
         try
         {
-            int bytesRead;
-            int remainingStart = 0;
-            int remainingLength = 0;
-
-            while ((bytesRead = await ReadAsync(readBuffer.AsMemory(0, BufferSize), cancellationToken).ConfigureAwait(false)) > 0)
+            // First, scan the internal buffer if it has data
+            if (!_bufferExhausted)
             {
-                for (int i = 0; i < bytesRead; i++)
+                var bufferArray = _buffer.GetBuffer();
+                var bufferPos = (int)_buffer.Position;
+                var bufferLen = (int)_buffer.Length;
+                
+                for (int i = bufferPos; i < bufferLen; i++)
                 {
-                    if (readBuffer[i] == delimiter)
+                    if (bufferArray[i] == delimiter)
                     {
                         foundDelimiter = true;
-                        remainingStart = i + 1;
-                        remainingLength = bytesRead - remainingStart;
+                        // Copy data before delimiter to output
+                        if (i > bufferPos)
+                        {
+                            chunkBuffer.Write(bufferArray, bufferPos, i - bufferPos);
+                        }
+                        // Advance buffer position past the delimiter
+                        _buffer.Position = i + 1;
                         break;
                     }
-                    chunkBuffer.WriteByte(readBuffer[i]);
                 }
 
-                if (foundDelimiter)
+                if (!foundDelimiter)
                 {
-                    break;
+                    // Delimiter not in buffer, copy all remaining buffer data to output
+                    if (bufferLen > bufferPos)
+                    {
+                        chunkBuffer.Write(bufferArray, bufferPos, bufferLen - bufferPos);
+                    }
+                    MarkBufferExhausted();
                 }
             }
 
-            var initalBufferPosition = _buffer.Position;
-            _buffer.Position = _buffer.Length;
-            _buffer.Write(readBuffer, remainingStart, remainingLength);
-            _buffer.Position = initalBufferPosition;
-            _bufferExhausted = false;
+            // If delimiter not found in buffer, read from underlying stream
+            if (!foundDelimiter)
+            {
+                int remainingStart = 0;
+                int remainingLength = 0;
+
+                int bytesRead;
+                while ((bytesRead = await _inner.ReadAsync(readBuffer.AsMemory(0, BufferSize), cancellationToken).ConfigureAwait(false)) > 0)
+                {
+                    for (int i = 0; i < bytesRead; i++)
+                    {
+                        if (readBuffer[i] == delimiter)
+                        {
+                            foundDelimiter = true;
+                            remainingStart = i + 1;
+                            remainingLength = bytesRead - remainingStart;
+                            break;
+                        }
+                        chunkBuffer.WriteByte(readBuffer[i]);
+                    }
+
+                    if (foundDelimiter)
+                    {
+                        break;
+                    }
+                }
+
+                // Put any remaining bytes back into the internal buffer
+                if (remainingLength > 0)
+                {
+                    var initalBufferPosition = _buffer.Position;
+                    _buffer.Position = _buffer.Length;
+                    _buffer.Write(readBuffer, remainingStart, remainingLength);
+                    _buffer.Position = initalBufferPosition;
+                    _bufferExhausted = false;
+                }
+            }
         }
         finally
         {
@@ -191,6 +238,11 @@ internal sealed class EfficientAsyncReadStream : Stream
     /// <inheritdoc />
     public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
     {
+        if (buffer.Length == 0)
+        {
+            // Per Stream.ReadAsync contract, a zero-length read should be a no-op
+            return 0;
+        }
         if (!_bufferExhausted)
         {
             var bytesRead = await _buffer.ReadAsync(buffer, cancellationToken).ConfigureAwait(false);
