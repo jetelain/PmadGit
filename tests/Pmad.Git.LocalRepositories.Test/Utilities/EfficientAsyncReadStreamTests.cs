@@ -1158,6 +1158,262 @@ public sealed class EfficientAsyncReadStreamTests
 
     #endregion
 
+    #region Rewind Tests
+
+    [Fact]
+    public void Rewind_WithExhaustedBuffer_ShouldAddDataToBuffer()
+    {
+        // Arrange
+        var data = new byte[] { 1, 2, 3, 4, 5 };
+        using var innerStream = new MemoryStream(data);
+        using var stream = new EfficientAsyncReadStream(innerStream);
+        
+        // Read all data to exhaust buffer (buffer starts exhausted)
+        var buffer = new byte[3];
+        stream.Read(buffer, 0, 3);
+
+        // Act - Rewind 2 bytes
+        var rewindData = new byte[] { 10, 20 };
+        stream.Rewind(rewindData);
+
+        // Assert - Should read rewound data first
+        var result = new byte[2];
+        var bytesRead = stream.Read(result, 0, 2);
+        Assert.Equal(2, bytesRead);
+        Assert.Equal(new byte[] { 10, 20 }, result);
+    }
+
+    [Fact]
+    public void Rewind_WithExhaustedBuffer_ShouldMakeBufferNonExhausted()
+    {
+        // Arrange
+        var data = new byte[] { 1, 2, 3, 4, 5 };
+        using var innerStream = new MemoryStream(data);
+        using var stream = new EfficientAsyncReadStream(innerStream);
+
+        // Act - Rewind data into exhausted buffer
+        var rewindData = new byte[] { 10, 20 };
+        stream.Rewind(rewindData);
+
+        // Assert - Rewound data should be read from buffer, not inner stream
+        var result = new byte[2];
+        var bytesRead = stream.Read(result, 0, 2);
+        Assert.Equal(2, bytesRead);
+        Assert.Equal(new byte[] { 10, 20 }, result);
+        
+        // Next read should come from inner stream
+        bytesRead = stream.Read(result, 0, 2);
+        Assert.Equal(2, bytesRead);
+        Assert.Equal(new byte[] { 1, 2 }, result);
+    }
+
+    [Fact]
+    public async Task Rewind_WithNonExhaustedBuffer_ShouldPrependData()
+    {
+        // Arrange
+        var data = new byte[] { 1, 2, 3, 4, 5, 6, 7, 8 };
+        using var innerStream = new MemoryStream(data);
+        using var stream = new EfficientAsyncReadStream(innerStream);
+        
+        // PreLoad 5 bytes and read 2, leaving 3 in buffer
+        await stream.PreLoadAsync(5, CancellationToken.None);
+        var buffer = new byte[2];
+        stream.Read(buffer, 0, 2); // Read 1, 2; buffer has 3, 4, 5
+
+        // Act - Rewind 2 bytes
+        var rewindData = new byte[] { 10, 20 };
+        stream.Rewind(rewindData);
+
+        // Assert - Should read rewound data followed by remaining buffer data
+        var result = new byte[5];
+        var bytesRead = stream.Read(result, 0, 5);
+        Assert.Equal(5, bytesRead);
+        Assert.Equal(new byte[] { 10, 20, 3, 4, 5 }, result);
+    }
+
+    [Fact]
+    public async Task Rewind_WithNonExhaustedBuffer_ThenContinueReading_ShouldWorkCorrectly()
+    {
+        // Arrange
+        var data = new byte[] { 1, 2, 3, 4, 5, 6, 7, 8 };
+        using var innerStream = new MemoryStream(data);
+        using var stream = new EfficientAsyncReadStream(innerStream);
+        
+        // PreLoad 5 bytes and read 2
+        await stream.PreLoadAsync(5, CancellationToken.None);
+        var buffer = new byte[2];
+        stream.Read(buffer, 0, 2); // Read 1, 2
+
+        // Act - Rewind 2 bytes
+        var rewindData = new byte[] { 10, 20 };
+        stream.Rewind(rewindData);
+
+        // Assert - Read rewound + buffered + stream data using ReadExactly
+        var result1 = new byte[3];
+        stream.ReadExactly(result1, 0, 3); // Should get 10, 20, 3
+        Assert.Equal(new byte[] { 10, 20, 3 }, result1);
+
+        var result2 = new byte[3];
+        stream.ReadExactly(result2, 0, 3); // Should get 4, 5, 6
+        Assert.Equal(new byte[] { 4, 5, 6 }, result2);
+
+        var result3 = new byte[2];
+        stream.ReadExactly(result3, 0, 2); // Should get 7, 8
+        Assert.Equal(new byte[] { 7, 8 }, result3);
+    }
+
+    [Fact]
+    public void Rewind_WithEmptySpan_ShouldNotChangeBuffer()
+    {
+        // Arrange
+        var data = new byte[] { 1, 2, 3, 4, 5 };
+        using var innerStream = new MemoryStream(data);
+        using var stream = new EfficientAsyncReadStream(innerStream);
+
+        // Act - Rewind empty data
+        stream.Rewind(ReadOnlySpan<byte>.Empty);
+
+        // Assert - Should read normal data
+        var result = new byte[3];
+        var bytesRead = stream.Read(result, 0, 3);
+        Assert.Equal(3, bytesRead);
+        Assert.Equal(new byte[] { 1, 2, 3 }, result);
+    }
+
+    [Fact]
+    public void Rewind_MultipleTimes_ShouldAccumulateData()
+    {
+        // Arrange
+        var data = new byte[] { 1, 2, 3 };
+        using var innerStream = new MemoryStream(data);
+        using var stream = new EfficientAsyncReadStream(innerStream);
+
+        // Act - Rewind multiple times
+        stream.Rewind(new byte[] { 10 });
+        stream.Rewind(new byte[] { 20 });
+        stream.Rewind(new byte[] { 30 });
+
+        // Assert - Should read all rewound data in LIFO order (last rewound first)
+        var result = new byte[3];
+        var bytesRead = stream.Read(result, 0, 3);
+        Assert.Equal(3, bytesRead);
+        Assert.Equal(new byte[] { 30, 20, 10 }, result);
+    }
+
+    [Fact]
+    public async Task Rewind_AfterReadUntil_WithRemainingData_ShouldPrependCorrectly()
+    {
+        // Arrange
+        var data = Encoding.UTF8.GetBytes("Line1\nLine2\nLine3");
+        using var innerStream = new MemoryStream(data);
+        using var stream = new EfficientAsyncReadStream(innerStream);
+
+        // Act - ReadUntil will buffer remaining data after delimiter
+        var line1 = await stream.ReadUntilAsync((byte)'\n', CancellationToken.None);
+        
+        // Rewind some data
+        var rewindData = Encoding.UTF8.GetBytes("XXX");
+        stream.Rewind(rewindData);
+
+        // Assert - Rewound data should come before buffered "Line2\nLine3"
+        var buffer = new byte[3];
+        stream.Read(buffer, 0, 3);
+        Assert.Equal(Encoding.UTF8.GetBytes("XXX"), buffer);
+
+        // Continue reading
+        var line2 = await stream.ReadUntilAsync((byte)'\n', CancellationToken.None);
+        Assert.Equal(Encoding.UTF8.GetBytes("Line2"), line2);
+    }
+
+    [Fact]
+    public async Task Rewind_WithLargeData_ShouldHandleCorrectly()
+    {
+        // Arrange
+        var data = new byte[500];
+        for (int i = 0; i < data.Length; i++)
+        {
+            data[i] = (byte)(i % 256);
+        }
+        using var innerStream = new MemoryStream(data);
+        using var stream = new EfficientAsyncReadStream(innerStream);
+        
+        // PreLoad some data
+        await stream.PreLoadAsync(200, CancellationToken.None);
+        var buffer = new byte[100];
+        stream.Read(buffer, 0, 100);
+
+        // Act - Rewind large amount of data
+        var rewindData = new byte[150];
+        for (int i = 0; i < rewindData.Length; i++)
+        {
+            rewindData[i] = (byte)255;
+        }
+        stream.Rewind(rewindData);
+
+        // Assert - Should read rewound data first
+        var result = new byte[150];
+        var bytesRead = stream.Read(result, 0, 150);
+        Assert.Equal(150, bytesRead);
+        Assert.All(result, b => Assert.Equal((byte)255, b));
+
+        // Then buffered data
+        var result2 = new byte[100];
+        bytesRead = stream.Read(result2, 0, 100);
+        Assert.Equal(100, bytesRead);
+        for (int i = 0; i < 100; i++)
+        {
+            Assert.Equal((byte)((i + 100) % 256), result2[i]);
+        }
+    }
+
+    [Fact]
+    public void Rewind_ThenSeek_ShouldClearRewoundData()
+    {
+        // Arrange
+        var data = new byte[] { 1, 2, 3, 4, 5 };
+        using var innerStream = new MemoryStream(data);
+        using var stream = new EfficientAsyncReadStream(innerStream);
+        
+        // Rewind some data
+        stream.Rewind(new byte[] { 10, 20 });
+
+        // Act - Seek should clear buffer
+        stream.Position = 0;
+
+        // Assert - Should read from inner stream, not rewound data
+        var result = new byte[2];
+        var bytesRead = stream.Read(result, 0, 2);
+        Assert.Equal(2, bytesRead);
+        Assert.Equal(new byte[] { 1, 2 }, result);
+    }
+
+    [Fact]
+    public async Task Rewind_IntegrationWithReadUntilAsync_ShouldWorkCorrectly()
+    {
+        // Arrange: Simulate a scenario where we over-read and need to rewind
+        var data = Encoding.UTF8.GetBytes("Header1\nHeader2\nBody");
+        using var innerStream = new MemoryStream(data);
+        using var stream = new EfficientAsyncReadStream(innerStream);
+
+        // Act - Read first line
+        var header1 = await stream.ReadUntilAsync((byte)'\n', CancellationToken.None);
+        Assert.Equal(Encoding.UTF8.GetBytes("Header1"), header1);
+
+        // Simulate over-reading: read some data then rewind part of it
+        var tempBuffer = new byte[10];
+        stream.ReadExactly(tempBuffer, 0, 10);
+        // tempBuffer now contains: "Header2\nBo"
+        
+        // We decided we only needed 3 bytes ("Hea"), rewind the other 7 ("der2\nBo")
+        stream.Rewind(tempBuffer.AsSpan(3, 7));
+
+        // Assert - Should be able to read second header correctly
+        var header2 = await stream.ReadUntilAsync((byte)'\n', CancellationToken.None);
+        Assert.Equal(Encoding.UTF8.GetBytes("der2"), header2);
+    }
+
+    #endregion
+
     #region Helper Classes
 
     /// <summary>

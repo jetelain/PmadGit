@@ -127,6 +127,33 @@ internal sealed class EfficientAsyncReadStream : Stream
         }
     }
 
+    /// <summary>
+    /// Rewinds the internal buffer by prepending the specified over-read data.
+    /// </summary>
+    /// <param name="overReadData">The data that was read beyond the intended read boundary and needs to be rewound into the buffer.</param>
+    public void Rewind(ReadOnlySpan<byte> overReadData)
+    {
+        if (_bufferExhausted)
+        {
+            // If the buffer is exhausted, simply write the over-read data into the buffer
+            _buffer.Write(overReadData);
+            _buffer.Position = 0;
+            _bufferExhausted = false;
+        }
+        else
+        {
+            // Reconstruct the buffer with the over-read data followed by any remaining buffer data
+            var remainingBufferData = _buffer.GetBuffer().AsSpan((int)_buffer.Position, (int)(_buffer.Length - _buffer.Position)); 
+            var newBufferData = new byte[overReadData.Length + remainingBufferData.Length]; 
+            overReadData.CopyTo(newBufferData); 
+            remainingBufferData.CopyTo(newBufferData.AsSpan(overReadData.Length)); 
+
+            _buffer.Position = 0;
+            _buffer.SetLength(0);
+            _buffer.Write(newBufferData);
+            _buffer.Position = 0;
+        }
+    }
 
     /// <summary>
     /// Asynchronously reads bytes from the stream until the specified delimiter is encountered, returning the data
