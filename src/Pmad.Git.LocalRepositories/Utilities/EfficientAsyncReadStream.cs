@@ -29,7 +29,7 @@ internal sealed class EfficientAsyncReadStream : Stream
     {
         _buffer = new MemoryStream(BufferSize);
         _inner = inner;
-        _bufferExhausted = true;
+        _bufferExhausted = true; 
     }
 
     /// <inheritdoc />
@@ -83,76 +83,6 @@ internal sealed class EfficientAsyncReadStream : Stream
         _bufferExhausted = true;
         _buffer.Position = 0;
         _buffer.SetLength(0);
-    }
-
-    /// <summary>
-    /// Asynchronously reads and buffers up to the specified number of bytes from the underlying stream.
-    /// This allows to use synchronous reads from the stream up to the preloaded byte count without I/O operations.
-    /// </summary>
-    /// <param name="byteCount">The maximum number of bytes to read and buffer. Must be non-negative.</param>
-    /// <param name="cancellationToken">A cancellation token that can be used to cancel the preload operation.</param>
-    /// <returns>A task that represents the asynchronous preload operation.</returns>
-    public async Task PreLoadAsync(int byteCount, CancellationToken cancellationToken = default)
-    {
-        if (byteCount < 0)
-        {
-            throw new ArgumentOutOfRangeException(nameof(byteCount), "byteCount must be non-negative.");
-        }
-        var initialBufferPosition = _buffer.Position;
-        _buffer.Position = _buffer.Length; 
-
-        var readBuffer = ArrayPool<byte>.Shared.Rent(BufferSize);
-        try
-        {
-            int totalBytesRead = 0;
-            while (totalBytesRead < byteCount)
-            {
-                int bytesToRead = Math.Min(BufferSize, byteCount - totalBytesRead);
-                int bytesRead = await _inner.ReadAsync(readBuffer.AsMemory(0, bytesToRead), cancellationToken).ConfigureAwait(false);
-                if (bytesRead == 0)
-                {
-                    break; // End of stream reached
-                }
-                _buffer.Write(readBuffer, 0, bytesRead);
-                totalBytesRead += bytesRead;
-            }
-        }
-        finally
-        {            
-            // Make preloaded data available for subsequent reads
-            _buffer.Position = initialBufferPosition;
-            _bufferExhausted = false;
-
-            ArrayPool<byte>.Shared.Return(readBuffer);
-        }
-    }
-
-    /// <summary>
-    /// Rewinds the internal buffer by prepending the specified over-read data.
-    /// </summary>
-    /// <param name="overReadData">The data that was read beyond the intended read boundary and needs to be rewound into the buffer.</param>
-    public void Rewind(ReadOnlySpan<byte> overReadData)
-    {
-        if (_bufferExhausted)
-        {
-            // If the buffer is exhausted, simply write the over-read data into the buffer
-            _buffer.Write(overReadData);
-            _buffer.Position = 0;
-            _bufferExhausted = false;
-        }
-        else
-        {
-            // Reconstruct the buffer with the over-read data followed by any remaining buffer data
-            var remainingBufferData = _buffer.GetBuffer().AsSpan((int)_buffer.Position, (int)(_buffer.Length - _buffer.Position)); 
-            var newBufferData = new byte[overReadData.Length + remainingBufferData.Length]; 
-            overReadData.CopyTo(newBufferData); 
-            remainingBufferData.CopyTo(newBufferData.AsSpan(overReadData.Length)); 
-
-            _buffer.Position = 0;
-            _buffer.SetLength(0);
-            _buffer.Write(newBufferData);
-            _buffer.Position = 0;
-        }
     }
 
     /// <summary>
@@ -330,7 +260,7 @@ internal sealed class EfficientAsyncReadStream : Stream
     {
         if (disposing)
         {
-            _buffer.Dispose();
+            _buffer.Dispose(); 
             _inner.Dispose();
         }
         base.Dispose(disposing);

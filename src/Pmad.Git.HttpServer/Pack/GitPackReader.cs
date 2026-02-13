@@ -7,6 +7,8 @@ namespace Pmad.Git.HttpServer.Pack;
 
 internal sealed class GitPackReader
 {
+    private const int HeaderLength = 12;
+
     public async Task<IReadOnlyList<GitHash>> ReadAsync(IGitRepository repository, Stream source, CancellationToken cancellationToken)
     {
         if (repository is null)
@@ -19,19 +21,31 @@ internal sealed class GitPackReader
             throw new ArgumentNullException(nameof(source));
         }
 
-        var algorithm = repository.HashLengthBytes switch
+        if (source is FileStream fileStream)
         {
-            GitHash.Sha1ByteLength => HashAlgorithmName.SHA1,
-            GitHash.Sha256ByteLength => HashAlgorithmName.SHA256,
-            _ => throw new NotSupportedException("Unsupported git hash length")
-        };
+            return await ReadAsync(repository, fileStream, cancellationToken).ConfigureAwait(false);
+        }
 
-        using var hashingStream = new HashingReadStream(source, algorithm, leaveOpen: true);
-        var header = new byte[12];
-        await hashingStream.ReadExactlyAsync(header, cancellationToken).ConfigureAwait(false);
-        ValidateHeader(header);
-        var objectCount = ReadUInt32(header.AsSpan(8, 4));
+        var temp = Path.GetTempFileName();
+        try
+        {
+            using var tempStream = File.Open(temp, FileMode.Create, FileAccess.ReadWrite, FileShare.None);
+            await source.CopyToAsync(tempStream, cancellationToken).ConfigureAwait(false);
+            tempStream.Seek(0, SeekOrigin.Begin);
+            return await ReadAsync(repository, tempStream, cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            File.Delete(temp);
+        }       
+    }
 
+    internal async Task<IReadOnlyList<GitHash>> ReadAsync(IGitRepository repository, FileStream fileStream, CancellationToken cancellationToken)
+    {
+        var objectCount = await ValidatePackFile(repository, fileStream, cancellationToken).ConfigureAwait(false);
+
+        fileStream.Position = HeaderLength;
+       
         var created = new List<GitHash>(checked((int)objectCount));
         var offsetCache = new Dictionary<long, GitObjectData>();
         var hashCache = new Dictionary<string, GitObjectData>(StringComparer.Ordinal);
@@ -39,11 +53,11 @@ internal sealed class GitPackReader
         for (var i = 0u; i < objectCount; i++)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            var objectOffset = hashingStream.BytesRead;
+            var objectOffset = fileStream.Position;
 
             // Use shared pack object reader
             var materialized = await GitPackObjectReader.ReadObjectAsync(
-                hashingStream,
+                fileStream,
                 objectOffset,
                 repository.HashLengthBytes,
                 async (hash, ct) =>
@@ -72,6 +86,39 @@ internal sealed class GitPackReader
             hashCache[storedHash.Value] = materialized;
         }
 
+        repository.InvalidateCaches();
+        return created;
+    }
+
+    private static async Task<uint> ValidatePackFile(IGitRepository repository, FileStream fileStream, CancellationToken cancellationToken)
+    {
+        var header = new byte[HeaderLength];
+
+        var algorithm = repository.HashLengthBytes switch
+        {
+            GitHash.Sha1ByteLength => HashAlgorithmName.SHA1,
+            GitHash.Sha256ByteLength => HashAlgorithmName.SHA256,
+            _ => throw new NotSupportedException("Unsupported git hash length")
+        };
+
+        using var hashingStream = new HashingReadStream(fileStream, algorithm, leaveOpen: true);
+        
+        await hashingStream.ReadExactlyAsync(header, cancellationToken).ConfigureAwait(false);
+        ValidateHeader(header);
+
+        var toRead = fileStream.Length - repository.HashLengthBytes - HeaderLength;
+        var buffer = new byte[4096];
+        while (toRead > 0)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var read = await hashingStream.ReadAsync(buffer, 0, (int)Math.Min(buffer.Length, toRead), cancellationToken).ConfigureAwait(false);
+            if (read == 0)
+            {
+                throw new EndOfStreamException("Unexpected end of stream while reading pack data");
+            }
+            toRead -= read;
+        }
+
         var computedHash = hashingStream.CompleteHash();
         var trailer = new byte[repository.HashLengthBytes];
         await hashingStream.ReadExactlyAsync(trailer, cancellationToken).ConfigureAwait(false);
@@ -79,9 +126,8 @@ internal sealed class GitPackReader
         {
             throw new InvalidDataException("Pack checksum mismatch");
         }
-
-        repository.InvalidateCaches();
-        return created;
+        
+        return ReadUInt32(header.AsSpan(8, 4));
     }
 
     private static void ValidateHeader(ReadOnlySpan<byte> header)

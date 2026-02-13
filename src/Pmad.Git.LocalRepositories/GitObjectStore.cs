@@ -161,7 +161,7 @@ internal sealed class GitObjectStore : IGitObjectStore
 
                 var objectType = GitObjectTypeHelper.ParseType(typeString);
 
-                return new GitObjectStream(objectType, stream, length);
+                return new GitObjectStream(objectType, new SliceReadStream(stream, length), length);
             }
             catch
             {
