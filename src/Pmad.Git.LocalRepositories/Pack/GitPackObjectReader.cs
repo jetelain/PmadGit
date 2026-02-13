@@ -190,7 +190,17 @@ internal static class GitPackObjectReader
         }
     }
 
-    public static async Task<byte[]> ReadZLibAsync(Stream sourceStream, CancellationToken cancellationToken)
+    /// <summary>
+    /// Reads and decompresses zlib-compressed data from a stream.
+    /// </summary>
+    /// <param name="sourceStream">The source stream to read from. Must be seekable to rewind after decompression.</param>
+    /// <param name="cancellationToken">Cancellation token</param>
+    /// <returns>The decompressed data</returns>
+    /// <remarks>
+    /// The stream must support seeking because this method rewinds the stream to the position
+    /// immediately after the compressed data, compensating for any extra bytes read by the inflater.
+    /// </remarks>
+    internal static async Task<byte[]> ReadZLibAsync(Stream sourceStream, CancellationToken cancellationToken)
     {
         using var buffer = new MemoryStream();
 
@@ -224,6 +234,8 @@ internal static class GitPackObjectReader
 
                     return buffer.ToArray();
                 }
+
+                cancellationToken.ThrowIfCancellationRequested();
             }
         }
         finally
@@ -279,6 +291,18 @@ internal static class GitPackObjectReader
         return result;
     }
 
+    /// <summary>
+    /// Reads variable-length encoded bytes from a stream into a buffer.
+    /// </summary>
+    /// <param name="stream">The source stream to read from. Must be seekable to rewind any over-read bytes.</param>
+    /// <param name="buffer">The buffer to read into. Must be at least 10 bytes to handle maximum variable-length encoding.</param>
+    /// <param name="cancellationToken">Cancellation token</param>
+    /// <returns>The number of bytes consumed from the variable-length encoding</returns>
+    /// <remarks>
+    /// The stream must support seeking because this method may read ahead to find the end of the
+    /// variable-length encoding (marked by a byte with the high bit clear), and then rewinds the
+    /// stream to the position immediately after the last consumed byte.
+    /// </remarks>
     internal static async ValueTask<int> ReadVariableLengthBytesAsync(Stream stream, byte[] buffer, CancellationToken cancellationToken)
     {
         var maxBytes = Math.Min(10, buffer.Length);
