@@ -194,7 +194,7 @@ internal static class GitPackObjectReader
     {
         using var buffer = new MemoryStream();
 
-        Inflater inflater = new Inflater(noHeader: false);
+        var inflater = new Inflater(noHeader: false);
 
         var inputBuffer = ArrayPool<byte>.Shared.Rent(4096);
         var outputBuffer = ArrayPool<byte>.Shared.Rent(4096);
@@ -213,9 +213,9 @@ internal static class GitPackObjectReader
                     inflater.SetInput(inputBuffer, 0, readBytes);
                 }
 
-                int ouputBytes = inflater.Inflate(outputBuffer);
+                int outputBytes = inflater.Inflate(outputBuffer);
 
-                buffer.Write(outputBuffer, 0, ouputBytes);
+                buffer.Write(outputBuffer, 0, outputBytes);
 
                 if (inflater.IsFinished)
                 {

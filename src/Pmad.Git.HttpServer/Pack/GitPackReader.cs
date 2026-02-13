@@ -26,18 +26,16 @@ internal sealed class GitPackReader
             return await ReadAsync(repository, fileStream, cancellationToken).ConfigureAwait(false);
         }
 
-        var temp = Path.GetTempFileName();
-        try
-        {
-            using var tempStream = File.Open(temp, FileMode.Create, FileAccess.ReadWrite, FileShare.None);
-            await source.CopyToAsync(tempStream, cancellationToken).ConfigureAwait(false);
-            tempStream.Seek(0, SeekOrigin.Begin);
-            return await ReadAsync(repository, tempStream, cancellationToken).ConfigureAwait(false);
-        }
-        finally
-        {
-            File.Delete(temp);
-        }       
+        using var tempStream = new FileStream(
+                            Path.Combine(Path.GetTempPath(), Path.GetRandomFileName()),
+                            FileMode.CreateNew,
+                            FileAccess.ReadWrite,
+                            FileShare.Read,
+                            bufferSize: 4096,
+                            FileOptions.DeleteOnClose);
+        await source.CopyToAsync(tempStream, cancellationToken).ConfigureAwait(false);
+        tempStream.Seek(0, SeekOrigin.Begin);
+        return await ReadAsync(repository, tempStream, cancellationToken).ConfigureAwait(false);
     }
 
     internal async Task<IReadOnlyList<GitHash>> ReadAsync(IGitRepository repository, FileStream fileStream, CancellationToken cancellationToken)

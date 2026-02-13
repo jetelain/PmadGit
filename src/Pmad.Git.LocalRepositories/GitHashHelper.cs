@@ -30,6 +30,6 @@ public static class GitHashHelper
     {
         GitHash.Sha1ByteLength => SHA1.Create(),
         GitHash.Sha256ByteLength => SHA256.Create(),
-        _ => throw new NotSupportedException("Unsupported git object hash length.")
+        _ => throw new NotSupportedException("Unsupported git hash length")
     };
 }

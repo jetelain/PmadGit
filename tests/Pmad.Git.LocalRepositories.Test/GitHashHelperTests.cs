@@ -126,7 +126,7 @@ public sealed class GitHashHelperTests
         var exception = Assert.Throws<NotSupportedException>(
             () => GitHashHelper.CreateHashAlgorithm(hashLength));
 
-        Assert.Contains("Unsupported git object hash length", exception.Message);
+        Assert.Contains("Unsupported git hash length", exception.Message);
     }
 
     [Fact]
@@ -429,19 +429,6 @@ public sealed class GitHashHelperTests
 
         Assert.False(string.IsNullOrWhiteSpace(exception.Message));
         Assert.Contains("hash", exception.Message, StringComparison.OrdinalIgnoreCase);
-    }
-
-    [Fact]
-    public void GetAlgorithmName_And_CreateHashAlgorithm_HaveDifferentErrorMessages()
-    {
-        // Act
-        var exception1 = Assert.Throws<NotSupportedException>(
-            () => GitHashHelper.GetAlgorithmName(999));
-        var exception2 = Assert.Throws<NotSupportedException>(
-            () => GitHashHelper.CreateHashAlgorithm(999));
-
-        // Assert - Messages should be different but both descriptive
-        Assert.NotEqual(exception1.Message, exception2.Message);
     }
 
     #endregion
