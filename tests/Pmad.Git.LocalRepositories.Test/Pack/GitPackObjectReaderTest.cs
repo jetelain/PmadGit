@@ -245,6 +245,20 @@ public sealed class GitPackObjectReaderTest
             async () => await GitPackObjectReader.ReadZLibAsync(stream, CancellationToken.None));
     }
 
+    [Fact]
+    public async Task ReadZLibAsync_WithTruncatedStream_ShouldThrowEndOfStreamException()
+    {
+        // Arrange: Start of valid zlib header but truncated
+        var truncatedData = new byte[] { 0x78, 0x9C }; // Valid zlib header but no data
+        var stream = new MemoryStream(truncatedData);
+
+        // Act & Assert
+        var exception = await Assert.ThrowsAsync<EndOfStreamException>(
+            async () => await GitPackObjectReader.ReadZLibAsync(stream, CancellationToken.None));
+
+        Assert.Contains("Unexpected end of stream while reading compressed data", exception.Message);
+    }
+
     #endregion
 
     #region ReadObjectAsync Tests

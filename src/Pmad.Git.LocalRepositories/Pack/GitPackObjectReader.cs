@@ -217,7 +217,7 @@ internal static class GitPackObjectReader
                     int readBytes = await sourceStream.ReadAsync(inputBuffer, 0, inputBuffer.Length, cancellationToken).ConfigureAwait(false);
                     if (readBytes == 0)
                     {
-                        throw new EndOfStreamException();
+                        throw new EndOfStreamException("Unexpected end of stream while reading compressed data");
                     }
 
                     inflater.SetInput(inputBuffer, 0, readBytes);
@@ -225,7 +225,16 @@ internal static class GitPackObjectReader
 
                 int outputBytes = inflater.Inflate(outputBuffer);
 
-                buffer.Write(outputBuffer, 0, outputBytes);
+                if (outputBytes > 0)
+                {
+                    buffer.Write(outputBuffer, 0, outputBytes);
+                }
+                else if (!inflater.IsNeedingInput && !inflater.IsFinished)
+                {
+                    // Inflater made no progress but claims it doesn't need input and isn't finished
+                    // This shouldn't happen with valid data, but protect against infinite loop
+                    throw new InvalidDataException("Decompression failed: inflater is stuck in an invalid state");
+                }
 
                 if (inflater.IsFinished)
                 {
