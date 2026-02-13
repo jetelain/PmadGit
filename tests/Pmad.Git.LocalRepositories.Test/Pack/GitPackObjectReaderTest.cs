@@ -441,6 +441,325 @@ public sealed class GitPackObjectReaderTest
                 CancellationToken.None));
     }
 
+    [Fact]
+    public async Task ReadObjectAsync_WithNonSeekableStream_ShouldThrowArgumentException()
+    {
+        // Arrange: Create a non-seekable stream
+        var nonSeekableStream = new NonSeekableStream();
+
+        // Act & Assert
+        var exception = await Assert.ThrowsAsync<ArgumentException>(
+            async () => await GitPackObjectReader.ReadObjectAsync(
+                nonSeekableStream,
+                0,
+                20,
+                (hash, ct) => throw new InvalidOperationException("Should not be called"),
+                null,
+                CancellationToken.None));
+
+        Assert.Contains("Stream must support seeking", exception.Message);
+        Assert.Equal("stream", exception.ParamName);
+    }
+
+    [Fact]
+    public async Task ReadObjectAsync_WithSHA256Hash_ShouldReadRefDeltaCorrectly()
+    {
+        // Arrange: Create a ref-delta object with SHA-256 hash (32 bytes)
+        var baseContent = "Test content"u8.ToArray();
+        var baseObject = new GitObjectData(GitObjectType.Blob, baseContent);
+        var baseHash = new GitHash("a".PadRight(64, '0')); // SHA-256 hash (64 hex chars)
+
+        var delta = CreateSimpleCopyDelta(baseContent.Length, baseContent.Length);
+        var stream = CreateRefDeltaStream(baseHash, delta, 32); // 32 bytes for SHA-256
+
+        var resolvedHash = false;
+
+        // Act
+        var result = await GitPackObjectReader.ReadObjectAsync(
+            stream,
+            0,
+            32, // SHA-256 hash length
+            (hash, ct) =>
+            {
+                resolvedHash = true;
+                Assert.Equal(baseHash, hash);
+                return Task.FromResult(baseObject);
+            },
+            null,
+            CancellationToken.None);
+
+        // Assert
+        Assert.True(resolvedHash);
+        Assert.Equal(GitObjectType.Blob, result.Type);
+        Assert.Equal(baseContent, result.Content);
+    }
+
+    [Fact]
+    public async Task ReadObjectAsync_WithCancellation_ShouldRespectCancellationToken()
+    {
+        // Arrange: Create a large blob that takes time to read
+        var largeContent = new byte[100000];
+        Array.Fill<byte>(largeContent, 0x42);
+        var stream = CreatePackObjectStream(3, largeContent);
+
+        var cts = new CancellationTokenSource();
+        cts.Cancel(); // Cancel immediately
+
+        // Act & Assert
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            async () => await GitPackObjectReader.ReadObjectAsync(
+                stream,
+                0,
+                20,
+                (hash, ct) => throw new InvalidOperationException("Should not be called"),
+                null,
+                cts.Token));
+    }
+
+    #endregion
+
+    #region Delta Application Tests
+
+    [Fact]
+    public async Task ReadObjectAsync_WithDeltaBaseSizeMismatch_ShouldThrowInvalidDataException()
+    {
+        // Arrange: Create a delta with wrong base size
+        var baseContent = "Hello World"u8.ToArray(); // 11 bytes
+        var baseObject = new GitObjectData(GitObjectType.Blob, baseContent);
+
+        // Create delta that expects different base size
+        var delta = new List<byte>
+        {
+            50, // Base size = 50 (wrong!)
+            5,  // Result size = 5
+            0x91, 0x00, 0x05 // Copy 5 bytes from offset 0
+        };
+
+        var stream = CreateOfsDeltaStream(100, delta.ToArray());
+
+        // Act & Assert
+        var exception = await Assert.ThrowsAsync<InvalidDataException>(
+            async () => await GitPackObjectReader.ReadObjectAsync(
+                stream,
+                200,
+                20,
+                (hash, ct) => throw new InvalidOperationException("Should not be called"),
+                (offset, ct) => Task.FromResult(baseObject),
+                CancellationToken.None));
+
+        Assert.Contains("Delta base size mismatch", exception.Message);
+    }
+
+    [Fact]
+    public async Task ReadObjectAsync_WithDeltaCopyExceedingBase_ShouldThrowInvalidDataException()
+    {
+        // Arrange: Create a delta that tries to copy beyond base size
+        var baseContent = "Hello"u8.ToArray(); // 5 bytes
+        var baseObject = new GitObjectData(GitObjectType.Blob, baseContent);
+
+        // Create delta that tries to copy from offset 10 (beyond base)
+        var delta = new List<byte>
+        {
+            5,    // Base size = 5
+            5,    // Result size = 5
+            0x91, // Copy opcode with offset and size
+            10,   // Offset = 10 (exceeds base!)
+            5     // Size = 5
+        };
+
+        var stream = CreateOfsDeltaStream(100, delta.ToArray());
+
+        // Act & Assert
+        var exception = await Assert.ThrowsAsync<InvalidDataException>(
+            async () => await GitPackObjectReader.ReadObjectAsync(
+                stream,
+                200,
+                20,
+                (hash, ct) => throw new InvalidOperationException("Should not be called"),
+                (offset, ct) => Task.FromResult(baseObject),
+                CancellationToken.None));
+
+        Assert.Contains("Delta copy instruction exceeds base size", exception.Message);
+    }
+
+    [Fact]
+    public async Task ReadObjectAsync_WithDeltaInsertExceedingPayload_ShouldThrowInvalidDataException()
+    {
+        // Arrange: Create a delta with insert that exceeds available data
+        var baseContent = "Hello"u8.ToArray();
+        var baseObject = new GitObjectData(GitObjectType.Blob, baseContent);
+
+        // Create delta with insert opcode that exceeds remaining data
+        var delta = new List<byte>
+        {
+            5,   // Base size = 5
+            10,  // Result size = 10
+            10   // Insert 10 bytes, but no data follows!
+        };
+
+        var stream = CreateOfsDeltaStream(100, delta.ToArray());
+
+        // Act & Assert
+        var exception = await Assert.ThrowsAsync<InvalidDataException>(
+            async () => await GitPackObjectReader.ReadObjectAsync(
+                stream,
+                200,
+                20,
+                (hash, ct) => throw new InvalidOperationException("Should not be called"),
+                (offset, ct) => Task.FromResult(baseObject),
+                CancellationToken.None));
+
+        Assert.Contains("Delta insert instruction exceeds payload", exception.Message);
+    }
+
+    [Fact]
+    public async Task ReadObjectAsync_WithDeltaInvalidOpcode_ShouldThrowInvalidDataException()
+    {
+        // Arrange: Create a delta with invalid opcode (0x00)
+        var baseContent = "Hello"u8.ToArray();
+        var baseObject = new GitObjectData(GitObjectType.Blob, baseContent);
+
+        // Create delta with invalid opcode
+        var delta = new List<byte>
+        {
+            5,   // Base size = 5
+            5,   // Result size = 5
+            0x00 // Invalid opcode
+        };
+
+        var stream = CreateOfsDeltaStream(100, delta.ToArray());
+
+        // Act & Assert
+        var exception = await Assert.ThrowsAsync<InvalidDataException>(
+            async () => await GitPackObjectReader.ReadObjectAsync(
+                stream,
+                200,
+                20,
+                (hash, ct) => throw new InvalidOperationException("Should not be called"),
+                (offset, ct) => Task.FromResult(baseObject),
+                CancellationToken.None));
+
+        Assert.Contains("Invalid delta opcode", exception.Message);
+    }
+
+    [Fact]
+    public async Task ReadObjectAsync_WithDeltaWrongResultSize_ShouldThrowInvalidDataException()
+    {
+        // Arrange: Create a delta that produces wrong result size
+        var baseContent = "Hello World"u8.ToArray();
+        var baseObject = new GitObjectData(GitObjectType.Blob, baseContent);
+
+        // Create delta that claims result size 10 but only produces 5
+        var delta = new List<byte>
+        {
+            11,   // Base size = 11
+            10,   // Result size = 10 (claimed)
+            0x91, // Copy opcode
+            0x00, // Offset = 0
+            0x05  // Size = 5 (only produces 5 bytes!)
+        };
+
+        var stream = CreateOfsDeltaStream(100, delta.ToArray());
+
+        // Act & Assert
+        var exception = await Assert.ThrowsAsync<InvalidDataException>(
+            async () => await GitPackObjectReader.ReadObjectAsync(
+                stream,
+                200,
+                20,
+                (hash, ct) => throw new InvalidOperationException("Should not be called"),
+                (offset, ct) => Task.FromResult(baseObject),
+                CancellationToken.None));
+
+        Assert.Contains("Delta application produced incorrect length", exception.Message);
+    }
+
+    [Fact]
+    public async Task ReadObjectAsync_WithComplexDelta_ShouldApplyCorrectly()
+    {
+        // Arrange: Create a complex delta with copy and insert operations
+        var baseContent = "Hello World! This is a test."u8.ToArray();
+        var baseObject = new GitObjectData(GitObjectType.Blob, baseContent);
+
+        // Create delta: copy "Hello ", insert "Beautiful ", copy "World!"
+        var delta = new List<byte>();
+        delta.Add((byte)baseContent.Length); // Base size
+        delta.Add(25); // Result size: "Hello Beautiful World!" = 23 bytes, but we'll make it 25 for exact match
+        
+        // Copy "Hello " (6 bytes from offset 0)
+        delta.Add(0x91); // Copy opcode (offset bit 0, size bit 4)
+        delta.Add(0x00); // Offset = 0
+        delta.Add(0x06); // Size = 6
+
+        // Insert "Beautiful " (10 bytes)
+        delta.Add(10); // Insert 10 bytes
+        delta.AddRange("Beautiful "u8.ToArray());
+
+        // Copy "World!" (6 bytes from offset 6)
+        delta.Add(0x91); // Copy opcode
+        delta.Add(0x06); // Offset = 6
+        delta.Add(0x06); // Size = 6
+
+        // Insert "!!" (3 bytes to reach 25)
+        delta.Add(3); // Insert 3 bytes
+        delta.AddRange("!!!"u8.ToArray());
+
+        var stream = CreateOfsDeltaStream(100, delta.ToArray());
+
+        // Act
+        var result = await GitPackObjectReader.ReadObjectAsync(
+            stream,
+            200,
+            20,
+            (hash, ct) => throw new InvalidOperationException("Should not be called"),
+            (offset, ct) => Task.FromResult(baseObject),
+            CancellationToken.None);
+
+        // Assert
+        Assert.Equal(GitObjectType.Blob, result.Type);
+        Assert.Equal("Hello Beautiful World!!!!", System.Text.Encoding.UTF8.GetString(result.Content));
+    }
+
+    [Fact]
+    public async Task ReadObjectAsync_WithDeltaMaxCopySize_ShouldUseDefaultCopySize()
+    {
+        // Arrange: Test that copy size of 0 defaults to 0x10000
+        var baseContent = new byte[0x20000]; // Large base (131072 bytes)
+        Array.Fill<byte>(baseContent, 0x42);
+        var baseObject = new GitObjectData(GitObjectType.Blob, baseContent);
+
+        // Create delta with copy size = 0 (should default to 0x10000)
+        var delta = new List<byte>();
+        
+        // Base size = 0x20000 (131072) - variable length encoding
+        delta.Add(0x80); // Continue bit set, lower 7 bits = 0
+        delta.Add(0x80); // Continue bit set, next 7 bits = 0
+        delta.Add(0x08); // No continue bit, next 7 bits = 8 (total: 8 << 14 = 131072)
+        
+        // Result size = 0x10000 (65536) - variable length encoding
+        delta.Add(0x80); // Continue bit set, lower 7 bits = 0
+        delta.Add(0x80); // Continue bit set, next 7 bits = 0
+        delta.Add(0x04); // No continue bit, next 7 bits = 4 (total: 4 << 14 = 65536)
+        
+        // Copy opcode with no size bits set (defaults to 0x10000)
+        delta.Add(0x80); // Copy opcode, no offset or size bits set
+
+        var stream = CreateOfsDeltaStream(100, delta.ToArray());
+
+        // Act
+        var result = await GitPackObjectReader.ReadObjectAsync(
+            stream,
+            200,
+            20,
+            (hash, ct) => throw new InvalidOperationException("Should not be called"),
+            (offset, ct) => Task.FromResult(baseObject),
+            CancellationToken.None);
+
+        // Assert
+        Assert.Equal(GitObjectType.Blob, result.Type);
+        Assert.Equal(0x10000, result.Content.Length);
+    }
+
     #endregion
 
     #region Helper Methods
@@ -478,7 +797,7 @@ public sealed class GitPackObjectReaderTest
         return stream;
     }
 
-    private static Stream CreateRefDeltaStream(GitHash baseHash, byte[] delta)
+    private static Stream CreateRefDeltaStream(GitHash baseHash, byte[] delta, int hashLengthBytes = 20)
     {
         var stream = new MemoryStream();
         
@@ -486,9 +805,19 @@ public sealed class GitPackObjectReaderTest
         var size = delta.Length;
         stream.WriteByte((byte)((7 << 4) | (size & 0x0F)));
 
-        // Write base hash (20 bytes for SHA-1)
+        // Write base hash (20 bytes for SHA-1 or 32 bytes for SHA-256)
         var hashBytes = Convert.FromHexString(baseHash.Value);
-        stream.Write(hashBytes);
+        if (hashBytes.Length < hashLengthBytes)
+        {
+            // Pad with zeros if needed
+            var paddedBytes = new byte[hashLengthBytes];
+            Array.Copy(hashBytes, paddedBytes, hashBytes.Length);
+            stream.Write(paddedBytes);
+        }
+        else
+        {
+            stream.Write(hashBytes, 0, hashLengthBytes);
+        }
 
         // Write compressed delta
         using (var zlib = new ZLibStream(stream, CompressionMode.Compress, leaveOpen: true))
@@ -537,6 +866,29 @@ public sealed class GitPackObjectReaderTest
         delta.Add((byte)copySize); // Size = copySize
 
         return delta.ToArray();
+    }
+
+    #endregion
+
+    #region Helper Classes
+
+    private sealed class NonSeekableStream : Stream
+    {
+        public override bool CanRead => true;
+        public override bool CanSeek => false;
+        public override bool CanWrite => false;
+        public override long Length => throw new NotSupportedException();
+        public override long Position
+        {
+            get => throw new NotSupportedException();
+            set => throw new NotSupportedException();
+        }
+
+        public override void Flush() { }
+        public override int Read(byte[] buffer, int offset, int count) => 0;
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+        public override void SetLength(long value) => throw new NotSupportedException();
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
     }
 
     #endregion

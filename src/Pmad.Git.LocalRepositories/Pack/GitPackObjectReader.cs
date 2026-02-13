@@ -27,7 +27,7 @@ internal static class GitPackObjectReader
     {
         if (!stream.CanSeek)
         {
-            throw new ArgumentException("Stream must support seeking for ofs-delta objects", nameof(stream));
+            throw new ArgumentException("Stream must support seeking", nameof(stream));
         }
 
         var (kind, _) = await ReadTypeAndSizeAsync(stream, cancellationToken).ConfigureAwait(false);
