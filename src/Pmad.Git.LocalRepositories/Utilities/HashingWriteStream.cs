@@ -1,6 +1,6 @@
 using System.Security.Cryptography;
 
-namespace Pmad.Git.HttpServer.Utilities;
+namespace Pmad.Git.LocalRepositories.Utilities;
 
 internal sealed class HashingWriteStream : Stream
 {
@@ -15,6 +15,8 @@ internal sealed class HashingWriteStream : Stream
         _hash = IncrementalHash.CreateHash(algorithm);
         _leaveOpen = leaveOpen;
     }
+
+    public long BytesWritten { get; private set; }
 
     public override bool CanRead => false;
     public override bool CanSeek => false;
@@ -36,12 +38,14 @@ internal sealed class HashingWriteStream : Stream
     {
         _hash.AppendData(buffer, offset, count);
         _inner.Write(buffer, offset, count);
+        BytesWritten += count;
     }
 
     public override async ValueTask WriteAsync(ReadOnlyMemory<byte> buffer, CancellationToken cancellationToken = default)
     {
         _hash.AppendData(buffer.Span);
         await _inner.WriteAsync(buffer, cancellationToken).ConfigureAwait(false);
+        BytesWritten += buffer.Length;
     }
 
     public override Task WriteAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken)

@@ -2,10 +2,11 @@ using System.IO.Compression;
 using System.Security.Cryptography;
 using System.Text;
 using Pmad.Git.LocalRepositories.Pack;
+using Pmad.Git.LocalRepositories.Utilities;
 
 namespace Pmad.Git.LocalRepositories;
 
-internal sealed class GitObjectStore
+internal sealed class GitObjectStore : IGitObjectStore
 {
     private readonly string _gitDirectory;
     private Task<GitPackEntry[]> _packsTask;
@@ -52,6 +53,31 @@ internal sealed class GitObjectStore
         throw new FileNotFoundException($"Git object {hash} could not be found");
     }
 
+    public async Task<GitObjectStream> ReadObjectStreamAsync(GitHash hash, CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+
+        var loose = await TryReadLooseObjectStreamAsync(hash, cancellationToken).ConfigureAwait(false);
+        if (loose is not null)
+        {
+            return loose;
+        }
+
+        var packs = await _packsTask.ConfigureAwait(false);
+
+        foreach (var pack in packs)
+        {
+            var packed = await pack.TryReadObject(hash, ReadObjectAsync, cancellationToken).ConfigureAwait(false);
+            if (packed is not null)
+            {
+                var stream = new MemoryStream(packed.Content, writable: false);
+                return new GitObjectStream(packed.Type, stream, packed.Content.Length);
+            }
+        }
+
+        throw new FileNotFoundException($"Git object {hash} could not be found");
+    }
+
     private async Task<GitObjectData?> TryReadLooseObjectAsync(GitHash hash, CancellationToken cancellationToken)
     {
         var path = Path.Combine(_gitDirectory, "objects", hash.Value[..2], hash.Value[2..]);
@@ -90,6 +116,69 @@ internal sealed class GitObjectStore
         var typeString = header[..spaceIndex];
         var payload = content[(separator + 1)..];
         return new GitObjectData(GitObjectTypeHelper.ParseType(typeString), payload);
+    }
+
+    private async Task<GitObjectStream?> TryReadLooseObjectStreamAsync(GitHash hash, CancellationToken cancellationToken)
+    {
+        var path = GetPath(hash);
+        if (!File.Exists(path))
+        {
+            return null;
+        }
+
+        var options = new FileStreamOptions
+        {
+            Mode = FileMode.Open,
+            Access = FileAccess.Read,
+            Share = FileShare.Read,
+            Options = FileOptions.Asynchronous | FileOptions.SequentialScan
+        };
+
+        var fileStream = new FileStream(path, options);
+        try
+        {
+            var zlib = new ZLibStream(fileStream, CompressionMode.Decompress, leaveOpen: false);
+            try
+            {
+                var stream = new EfficientAsyncReadStream(zlib);
+
+                var headerBytes = await stream.ReadUntilAsync(0, cancellationToken);
+
+                var header = System.Text.Encoding.ASCII.GetString(headerBytes);
+                var spaceIndex = header.IndexOf(' ');
+                if (spaceIndex < 0)
+                {
+                    throw new InvalidDataException("Invalid loose object header");
+                }
+
+                var typeString = header[..spaceIndex];
+                var sizeString = header[(spaceIndex + 1)..];
+
+                if (!long.TryParse(sizeString, out var length))
+                {
+                    throw new InvalidDataException("Invalid loose object header: invalid size");
+                }
+
+                var objectType = GitObjectTypeHelper.ParseType(typeString);
+
+                return new GitObjectStream(objectType, new SliceReadStream(stream, length), length);
+            }
+            catch
+            {
+                await zlib.DisposeAsync().ConfigureAwait(false);
+                throw;
+            }
+        }
+        catch
+        {
+            await fileStream.DisposeAsync().ConfigureAwait(false);
+            throw;
+        }
+    }
+
+    private string GetPath(GitHash hash)
+    {
+        return Path.Combine(_gitDirectory, "objects", hash.Value[..2], hash.Value[2..]);
     }
 
     private async Task<GitPackEntry[]> LoadPackEntriesAsync()
@@ -174,8 +263,7 @@ internal sealed class GitObjectStore
     public async Task<GitHash> WriteObjectAsync(GitObjectType type, ReadOnlyMemory<byte> content, CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
-
-        var header = Encoding.ASCII.GetBytes($"{GitObjectTypeHelper.GetObjectTypeName(type)} {content.Length}\0");
+        byte[] header = CreateHeader(type, content.Length);
         var buffer = new byte[header.Length + content.Length];
         Buffer.BlockCopy(header, 0, buffer, 0, header.Length);
         content.Span.CopyTo(buffer.AsSpan(header.Length));
@@ -184,7 +272,7 @@ internal sealed class GitObjectStore
         var hashBytes = algorithm.ComputeHash(buffer);
         var hash = GitHash.FromBytes(hashBytes);
 
-        var objectPath = Path.Combine(_gitDirectory, "objects", hash.Value[..2], hash.Value[2..]);
+        var objectPath = GetPath(hash);
         if (!File.Exists(objectPath))
         {
             Directory.CreateDirectory(Path.GetDirectoryName(objectPath)!);
@@ -211,11 +299,87 @@ internal sealed class GitObjectStore
         return hash;
     }
 
+    private static byte[] CreateHeader(GitObjectType type, long length)
+    {
+        return Encoding.ASCII.GetBytes($"{GitObjectTypeHelper.GetObjectTypeName(type)} {length}\0");
+    }
+
+    public async Task<GitHash> WriteObjectAsync(GitObjectType type, Stream stream, CancellationToken cancellationToken)
+    {
+        if (!stream.CanSeek)
+        {
+            throw new ArgumentException("Stream must be seekable", nameof(stream));
+        }
+
+        // Create a temporary file in the same directory to ensure move operation will be atomic
+        var tempFile = Path.Combine(_gitDirectory, "objects", Guid.NewGuid().ToString("N") + ".tmp");
+        try
+        {
+            GitHash hash;
+
+            var options = new FileStreamOptions
+            {
+                Mode = FileMode.CreateNew,
+                Access = FileAccess.Write,
+                Share = FileShare.Read,
+                Options = FileOptions.Asynchronous | FileOptions.SequentialScan
+            };
+
+            // Write object to a temp file to compute hash
+            using (var tempFileStream = new FileStream(tempFile, options))
+            {
+                var contentLength = stream.Length - stream.Position;
+
+                using var zlib = new ZLibStream(tempFileStream, CompressionLevel.Optimal, leaveOpen: true);
+                using var hashing = new HashingWriteStream(zlib, GetHashAlgorithmName(), leaveOpen: true);
+                var header = CreateHeader(type, contentLength);
+                await hashing.WriteAsync(header, cancellationToken).ConfigureAwait(false);
+                await stream.CopyToAsync(hashing, cancellationToken).ConfigureAwait(false);
+                await hashing.FlushAsync(cancellationToken).ConfigureAwait(false);
+                await zlib.FlushAsync(cancellationToken).ConfigureAwait(false);
+
+                if (hashing.BytesWritten != header.Length + contentLength)
+                {
+                    throw new InvalidDataException("Stream length changed during write");
+                }
+                hash = GitHash.FromBytes(hashing.CompleteHash());
+            }
+
+            // Move to object store
+            var objectPath = GetPath(hash);
+            Directory.CreateDirectory(Path.GetDirectoryName(objectPath)!);
+
+            if (File.Exists(objectPath) && new FileInfo(tempFile).Length == new FileInfo(objectPath).Length)
+            {
+                // Object already exists; reuse it.
+                return hash;
+            }
+
+            File.Move(tempFile, objectPath, overwrite: true);
+
+            return hash;
+        }
+        finally
+        {
+            if (File.Exists(tempFile))
+            {
+                File.Delete(tempFile);
+            }
+        }
+    }
+
     private HashAlgorithm CreateHashAlgorithm() => _hashLengthBytes switch
     {
         GitHash.Sha1ByteLength => SHA1.Create(),
         GitHash.Sha256ByteLength => SHA256.Create(),
         _ => throw new NotSupportedException("Unsupported git object hash length.")
+    };
+
+    private HashAlgorithmName GetHashAlgorithmName() => _hashLengthBytes switch
+    {
+        GitHash.Sha1ByteLength => HashAlgorithmName.SHA1,
+        GitHash.Sha256ByteLength => HashAlgorithmName.SHA256,
+        _ => throw new NotSupportedException("Unsupported git hash length")
     };
 
 }

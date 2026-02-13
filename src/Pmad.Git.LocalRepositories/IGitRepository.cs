@@ -144,6 +144,16 @@ public interface IGitRepository
     Task<GitObjectData> ReadObjectAsync(GitHash hash, CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Reads a raw git object from the repository object database as a stream.
+    /// For loose objects, this returns a stream that reads directly from disk without buffering the entire content.
+    /// For pack objects, this returns a MemoryStream with the decompressed content.
+    /// </summary>
+    /// <param name="hash">Identifier of the object to retrieve.</param>
+    /// <param name="cancellationToken">Token used to cancel the async operation.</param>
+    /// <returns>The decoded object as a stream. The caller is responsible for disposing the stream.</returns>
+    Task<GitObjectStream> ReadObjectStreamAsync(GitHash hash, CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// Writes a raw git object to the repository object database.
     /// </summary>
     /// <param name="type">Object kind to persist.</param>
