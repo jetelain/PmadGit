@@ -1,5 +1,5 @@
 using System.Buffers;
-using System.IO.Compression;
+using ICSharpCode.SharpZipLib.Zip.Compression;
 
 namespace Pmad.Git.LocalRepositories.Pack;
 
@@ -25,6 +25,11 @@ internal static class GitPackObjectReader
         Func<long, CancellationToken, Task<GitObjectData>>? resolveByOffset,
         CancellationToken cancellationToken)
     {
+        if (!stream.CanSeek)
+        {
+            throw new ArgumentException("Stream must support seeking", nameof(stream));
+        }
+
         var (kind, _) = await ReadTypeAndSizeAsync(stream, cancellationToken).ConfigureAwait(false);
 
         return kind switch
@@ -78,7 +83,7 @@ internal static class GitPackObjectReader
         CancellationToken cancellationToken)
     {
         var baseHashBytes = new byte[hashLengthBytes];
-        await ReadExactlyAsync(stream, baseHashBytes, cancellationToken).ConfigureAwait(false);
+        await stream.ReadExactlyAsync(baseHashBytes, cancellationToken).ConfigureAwait(false);
         var baseHash = GitHash.FromBytes(baseHashBytes);
         var baseObject = await resolveByHash(baseHash, cancellationToken).ConfigureAwait(false);
         var deltaPayload = await ReadZLibAsync(stream, cancellationToken).ConfigureAwait(false);
@@ -163,130 +168,112 @@ internal static class GitPackObjectReader
 
     public static async Task<long> ReadOfsDeltaOffsetAsync(Stream stream, CancellationToken cancellationToken)
     {
-        var b = await ReadByteAsync(stream, cancellationToken).ConfigureAwait(false);
-        if (b < 0)
+        var buffer = ArrayPool<byte>.Shared.Rent(10);
+        try
         {
-            throw new EndOfStreamException();
-        }
-
-        long offset = (uint)(b & 0x7F);
-        while ((b & 0x80) != 0)
-        {
-            b = await ReadByteAsync(stream, cancellationToken).ConfigureAwait(false);
-            if (b < 0)
+            var read = await ReadVariableLengthBytesAsync(stream, buffer, cancellationToken).ConfigureAwait(false);
+            
+            var b = buffer[0];
+            long offset = (uint)(b & 0x7F);
+            
+            for (int i = 1; i < read; i++)
             {
-                throw new EndOfStreamException();
+                b = buffer[i];
+                offset = ((offset + 1) << 7) | (uint)(b & 0x7F);
             }
 
-            offset = ((offset + 1) << 7) | (uint)(b & 0x7F);
+            return offset;
         }
-
-        return offset;
-    }
-
-    public static async Task<byte[]> ReadZLibAsync(Stream stream, CancellationToken cancellationToken)
-    {
-        // Wrap in a non-buffering stream to prevent ZLibStream from reading ahead
-        // This is critical for pack files where multiple compressed objects are consecutive
-        using var nonBufferingStream = new NonBufferingStreamWrapper(stream);
-        using var zlib = new ZLibStream(nonBufferingStream, CompressionMode.Decompress, leaveOpen: true);
-        using var buffer = new MemoryStream();
-        var readBuffer = new byte[4096];
-        int bytesRead;
-        while ((bytesRead = await zlib.ReadAsync(readBuffer, cancellationToken).ConfigureAwait(false)) > 0)
+        finally
         {
-            await buffer.WriteAsync(readBuffer.AsMemory(0, bytesRead), cancellationToken).ConfigureAwait(false);
+            ArrayPool<byte>.Shared.Return(buffer);
         }
-        return buffer.ToArray();
     }
 
     /// <summary>
-    /// Stream wrapper that prevents buffering by only reading one byte at a time.
-    /// This is necessary to prevent ZLibStream from reading ahead past the end of a compressed object.
+    /// Reads and decompresses zlib-compressed data from a stream.
     /// </summary>
-    private sealed class NonBufferingStreamWrapper : Stream
+    /// <param name="sourceStream">The source stream to read from. Must be seekable to rewind after decompression.</param>
+    /// <param name="cancellationToken">Cancellation token</param>
+    /// <returns>The decompressed data</returns>
+    /// <remarks>
+    /// The stream must support seeking because this method rewinds the stream to the position
+    /// immediately after the compressed data, compensating for any extra bytes read by the inflater.
+    /// </remarks>
+    internal static async Task<byte[]> ReadZLibAsync(Stream sourceStream, CancellationToken cancellationToken)
     {
-        private readonly Stream _inner;
+        using var buffer = new MemoryStream();
 
-        public NonBufferingStreamWrapper(Stream inner)
+        var inflater = new Inflater(noHeader: false);
+
+        var inputBuffer = ArrayPool<byte>.Shared.Rent(4096);
+        var outputBuffer = ArrayPool<byte>.Shared.Rent(4096);
+        try
         {
-            _inner = inner;
-        }
-
-        public override bool CanRead => _inner.CanRead;
-        public override bool CanSeek => false;
-        public override bool CanWrite => false;
-        public override long Length => throw new NotSupportedException();
-        public override long Position { get => throw new NotSupportedException(); set => throw new NotSupportedException(); }
-
-        public override void Flush() => throw new NotSupportedException();
-
-        public override int Read(byte[] buffer, int offset, int count)
-        {
-            // Only read one byte at a time to prevent buffering
-            if (count == 0)
+            while (true)
             {
-                return 0;
-            }
-            return _inner.Read(buffer, offset, 1);
-        }
+                if (inflater.IsNeedingInput)
+                {
+                    int readBytes = await sourceStream.ReadAsync(inputBuffer, 0, inputBuffer.Length, cancellationToken).ConfigureAwait(false);
+                    if (readBytes == 0)
+                    {
+                        throw new EndOfStreamException("Unexpected end of stream while reading compressed data");
+                    }
 
-        public override async Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken)
+                    inflater.SetInput(inputBuffer, 0, readBytes);
+                }
+
+                int outputBytes = inflater.Inflate(outputBuffer);
+
+                if (outputBytes > 0)
+                {
+                    buffer.Write(outputBuffer, 0, outputBytes);
+                }
+                else if (!inflater.IsNeedingInput && !inflater.IsFinished)
+                {
+                    // Inflater made no progress but claims it doesn't need input and isn't finished
+                    // This shouldn't happen with valid data, but protect against infinite loop
+                    throw new InvalidDataException("Decompression failed: inflater is stuck in an invalid state");
+                }
+
+                if (inflater.IsFinished)
+                {
+                    // Move the source stream back to the position right after the compressed data
+                    sourceStream.Seek(-inflater.RemainingInput, SeekOrigin.Current);
+
+                    return buffer.ToArray();
+                }
+
+                cancellationToken.ThrowIfCancellationRequested();
+            }
+        }
+        finally
         {
-            if (count == 0)
-            {
-                return 0;
-            }
-            return await _inner.ReadAsync(buffer.AsMemory(offset, 1), cancellationToken).ConfigureAwait(false);
+            ArrayPool<byte>.Shared.Return(inputBuffer);
+            ArrayPool<byte>.Shared.Return(outputBuffer);
         }
-
-        public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
-        {
-            if (buffer.Length == 0)
-            {
-                return 0;
-            }
-            return await _inner.ReadAsync(buffer.Slice(0, 1), cancellationToken).ConfigureAwait(false);
-        }
-
-        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
-        public override void SetLength(long value) => throw new NotSupportedException();
-        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
     }
 
     public static async ValueTask<(int kind, long size)> ReadTypeAndSizeAsync(Stream stream, CancellationToken cancellationToken)
     {
-        var first = await ReadByteAsync(stream, cancellationToken).ConfigureAwait(false);
-        if (first < 0)
-        {
-            throw new EndOfStreamException();
-        }
-
-        var kind = (first >> 4) & 0x7;
-        long size = first & 0x0F;
-        var shift = 4;
-        while ((first & 0x80) != 0)
-        {
-            first = await ReadByteAsync(stream, cancellationToken).ConfigureAwait(false);
-            if (first < 0)
-            {
-                throw new EndOfStreamException();
-            }
-
-            size |= (long)(first & 0x7F) << shift;
-            shift += 7;
-        }
-
-        return (kind, size);
-    }
-
-    public static async ValueTask<int> ReadByteAsync(Stream stream, CancellationToken cancellationToken)
-    {
-        var buffer = ArrayPool<byte>.Shared.Rent(1);
+        var buffer = ArrayPool<byte>.Shared.Rent(10);
         try
         {
-            var read = await stream.ReadAsync(buffer.AsMemory(0, 1), cancellationToken).ConfigureAwait(false);
-            return read == 0 ? -1 : buffer[0];
+            var read = await ReadVariableLengthBytesAsync(stream, buffer, cancellationToken).ConfigureAwait(false);
+            
+            var first = buffer[0];
+            var kind = (first >> 4) & 0x7;
+            long size = first & 0x0F;
+            var shift = 4;
+            
+            for (int i = 1; i < read; i++)
+            {
+                first = buffer[i];
+                size |= (long)(first & 0x7F) << shift;
+                shift += 7;
+            }
+
+            return (kind, size);
         }
         finally
         {
@@ -313,17 +300,69 @@ internal static class GitPackObjectReader
         return result;
     }
 
-    private static async Task ReadExactlyAsync(Stream stream, byte[] buffer, CancellationToken cancellationToken)
+    /// <summary>
+    /// Reads variable-length encoded bytes from a stream into a buffer.
+    /// </summary>
+    /// <param name="stream">The source stream to read from. Must be seekable to rewind any over-read bytes.</param>
+    /// <param name="buffer">The buffer to read into. Must be at least 10 bytes to handle maximum variable-length encoding.</param>
+    /// <param name="cancellationToken">Cancellation token</param>
+    /// <returns>The number of bytes consumed from the variable-length encoding</returns>
+    /// <remarks>
+    /// The stream must support seeking because this method may read ahead to find the end of the
+    /// variable-length encoding (marked by a byte with the high bit clear), and then rewinds the
+    /// stream to the position immediately after the last consumed byte.
+    /// </remarks>
+    internal static async ValueTask<int> ReadVariableLengthBytesAsync(Stream stream, byte[] buffer, CancellationToken cancellationToken)
     {
-        var offset = 0;
-        while (offset < buffer.Length)
+        var maxBytes = Math.Min(10, buffer.Length);
+        var totalBytesRead = 0;
+        
+        var bytesRead = await stream.ReadAsync(buffer.AsMemory(0, maxBytes), cancellationToken).ConfigureAwait(false);
+        if (bytesRead == 0)
         {
-            var read = await stream.ReadAsync(buffer.AsMemory(offset), cancellationToken).ConfigureAwait(false);
-            if (read == 0)
+            throw new EndOfStreamException();
+        }
+        
+        totalBytesRead = bytesRead;
+        
+        for (int i = 0; i < totalBytesRead; i++)
+        {
+            if ((buffer[i] & 0x80) == 0)
+            {
+                var bytesConsumed = i + 1;
+                if (bytesConsumed < totalBytesRead)
+                {
+                    stream.Seek(bytesConsumed - totalBytesRead, SeekOrigin.Current);
+                }
+                return bytesConsumed;
+            }
+        }
+        
+        while (totalBytesRead < maxBytes)
+        {
+            bytesRead = await stream.ReadAsync(buffer.AsMemory(totalBytesRead, maxBytes - totalBytesRead), cancellationToken).ConfigureAwait(false);
+            if (bytesRead == 0)
             {
                 throw new EndOfStreamException();
             }
-            offset += read;
+            
+            var endIndex = totalBytesRead + bytesRead;
+            for (int i = totalBytesRead; i < endIndex; i++)
+            {
+                if ((buffer[i] & 0x80) == 0)
+                {
+                    var bytesConsumed = i + 1;
+                    if (endIndex > bytesConsumed)
+                    {
+                        stream.Seek(bytesConsumed - endIndex, SeekOrigin.Current);
+                    }
+                    return bytesConsumed;
+                }
+            }
+            
+            totalBytesRead = endIndex;
         }
+        
+        throw new InvalidDataException("Variable length encoding exceeds maximum size");
     }
 }
