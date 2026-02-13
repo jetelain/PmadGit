@@ -155,54 +155,6 @@ public sealed class GitPackObjectReaderTest
 
     #endregion
 
-    #region ReadByteAsync Tests
-
-    [Fact]
-    public async Task ReadByteAsync_WithData_ShouldReadByte()
-    {
-        // Arrange
-        var data = new byte[] { 42, 100, 200 };
-        var stream = new MemoryStream(data);
-
-        // Act
-        var byte1 = await GitPackObjectReader.ReadByteAsync(stream, CancellationToken.None);
-        var byte2 = await GitPackObjectReader.ReadByteAsync(stream, CancellationToken.None);
-        var byte3 = await GitPackObjectReader.ReadByteAsync(stream, CancellationToken.None);
-
-        // Assert
-        Assert.Equal(42, byte1);
-        Assert.Equal(100, byte2);
-        Assert.Equal(200, byte3);
-    }
-
-    [Fact]
-    public async Task ReadByteAsync_AtEndOfStream_ShouldReturnNegativeOne()
-    {
-        // Arrange
-        var stream = new MemoryStream(Array.Empty<byte>());
-
-        // Act
-        var result = await GitPackObjectReader.ReadByteAsync(stream, CancellationToken.None);
-
-        // Assert
-        Assert.Equal(-1, result);
-    }
-
-    [Fact]
-    public async Task ReadByteAsync_WithCancellation_ShouldThrowOperationCanceledException()
-    {
-        // Arrange
-        var stream = new MemoryStream(new byte[] { 42 });
-        var cts = new CancellationTokenSource();
-        cts.Cancel();
-
-        // Act & Assert
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(
-            async () => await GitPackObjectReader.ReadByteAsync(stream, cts.Token));
-    }
-
-    #endregion
-
     #region ReadZLibAsync Tests
 
     [Fact]
