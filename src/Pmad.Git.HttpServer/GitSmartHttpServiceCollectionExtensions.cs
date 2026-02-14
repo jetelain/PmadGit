@@ -56,6 +56,7 @@ public static class GitSmartHttpServiceCollectionExtensions
             opts.RepositoryNameNormalizer = options.RepositoryNameNormalizer;
             opts.RepositoryResolver = options.RepositoryResolver;
             opts.OnReceivePackCompleted = options.OnReceivePackCompleted;
+            opts.RepositoryNameValidator = options.RepositoryNameValidator;
         });
     }
 

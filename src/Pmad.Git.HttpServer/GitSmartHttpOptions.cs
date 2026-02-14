@@ -1,4 +1,5 @@
 using Microsoft.AspNetCore.Http;
+using Pmad.Git.HttpServer.Helpers;
 
 namespace Pmad.Git.HttpServer;
 
@@ -40,6 +41,16 @@ public sealed class GitSmartHttpOptions
     /// </summary>
     public Func<string, string>? RepositoryNameNormalizer { get; set; }
         = static name => name;
+
+    /// <summary>
+    /// Callback used to validate repository names for security.
+    /// By default, only allows alphanumeric characters, hyphens, underscores, and forward slashes.
+    /// Forward slashes are only allowed between path segments (no leading, trailing, or repeated slashes).
+    /// This provides secure-by-default behavior to prevent directory traversal and injection attacks.
+    /// Host applications can override this to allow additional characters if needed.
+    /// Returns true if the name is valid, false otherwise.
+    /// </summary>
+    public Func<string, bool>? RepositoryNameValidator { get; set; } = RepositoryNameHelper.DefaultRepositoryNameValidator;
 
     /// <summary>
     /// Callback used to resolve the repository name from the HTTP context.

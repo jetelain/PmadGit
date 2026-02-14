@@ -9,15 +9,25 @@ namespace Pmad.Git.LocalRepositories;
 public sealed class GitCommitSignature
 {
     /// <summary>
+    /// Invalid characters that are not allowed in the name or email of a git signature, as they can break the header format.
+    /// </summary>
+    private static readonly char[] InvalidCharacters = ['<', '>', '\n', '\r', '\0'];
+
+    /// <summary>
+    /// Gets the invalid characters that are not allowed in the name or email of a git signature, as they can break the header format.
+    /// </summary>
+    /// <returns>A read-only span of invalid characters.</returns>
+    public static ReadOnlySpan<char> GetInvalidCharacters() => InvalidCharacters;
+
+    /// <summary>
     /// Initializes a new instance of the <see cref="GitCommitSignature"/> class.
     /// </summary>
     /// <param name="name">The name of the person signing.</param>
     /// <param name="email">The email address of the person signing.</param>
     /// <param name="timestamp">The timestamp when the signature was created.</param>
-    /// <exception cref="ArgumentException">Thrown when <paramref name="name"/> or <paramref name="email"/> is null, empty, or whitespace.</exception>
+    /// <exception cref="ArgumentException">Thrown when <paramref name="name"/> or <paramref name="email"/> is null, empty, whitespace, or contains invalid characters (&lt;, &gt;, \n, \r, or \0).</exception>
     public GitCommitSignature(string name, string email, DateTimeOffset timestamp)
     {
-        // Note: git does not enforce any constraint on name and email
         if (string.IsNullOrWhiteSpace(name))
         {
             throw new ArgumentException("Signature name cannot be empty", nameof(name));
@@ -28,9 +38,24 @@ public sealed class GitCommitSignature
             throw new ArgumentException("Signature email cannot be empty", nameof(email));
         }
 
+        if (ContainsInvalidCharacters(name))
+        {
+            throw new ArgumentException("Signature name cannot contain '<', '>', newline, or null characters", nameof(name));
+        }
+
+        if (ContainsInvalidCharacters(email))
+        {
+            throw new ArgumentException("Signature email cannot contain '<', '>', newline, or null characters", nameof(email));
+        }
+
         Name = name.Trim();
         Email = email.Trim();
         Timestamp = timestamp;
+    }
+
+    private static bool ContainsInvalidCharacters(string value)
+    {
+        return value.IndexOfAny(InvalidCharacters) >= 0;
     }
 
     /// <summary>

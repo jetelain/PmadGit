@@ -339,6 +339,25 @@ public sealed class GitSmartHttpService
             throw new InvalidOperationException("Invalid repository name");
         }
 
+        if (_options.RepositoryNameValidator is not null)
+        {
+            try
+            {
+                if (!_options.RepositoryNameValidator(value))
+                {
+                    throw new InvalidOperationException("Repository name contains invalid characters");
+                }
+            }
+            catch (InvalidOperationException)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                throw new InvalidOperationException("Repository name validation failed", ex);
+            }
+        }
+
         var normalized = _options.RepositoryNameNormalizer?.Invoke(value) ?? value;
         return normalized;
     }
