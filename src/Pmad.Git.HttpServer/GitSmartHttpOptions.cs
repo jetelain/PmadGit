@@ -39,6 +39,10 @@ public sealed class GitSmartHttpOptions
     /// <summary>
     /// Optional callback used to sanitize repository names before accessing the file system.
     /// </summary>
+    /// <remarks>
+    /// The normalizer is applied after the ".git" suffix is removed from the repository name.
+    /// The normalizer is called before the repository name validator. If the normalizer modifies the name, the modified name is what gets validated and used for repository access.
+    /// </remarks>
     public Func<string, string>? RepositoryNameNormalizer { get; set; }
         = static name => name;
 
@@ -50,6 +54,10 @@ public sealed class GitSmartHttpOptions
     /// Host applications can override this to allow additional characters if needed.
     /// Returns true if the name is valid, false otherwise.
     /// </summary>
+    /// <remarks>
+    /// The validator is called after the repository name has been normalized. If the normalizer modifies the name,
+    /// the modified name is what gets validated.
+    /// </remarks>
     public Func<string, bool>? RepositoryNameValidator { get; set; } = RepositoryNameHelper.DefaultRepositoryNameValidator;
 
     /// <summary>

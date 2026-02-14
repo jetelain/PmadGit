@@ -260,7 +260,7 @@ public sealed class RepositoryNameValidationTest : IDisposable
     [Fact]
     public async Task HandleInfoRefsAsync_ValidatorAndNormalizer_ShouldApplyBothInOrder()
     {
-        // Arrange - Validator runs BEFORE normalizer, so it sees the original name
+        // Arrange - Validator runs AFTER normalizer, so it sees the normalized name
         CreateBareRepository(Path.Combine(_serverRepoRoot, "normalized.git"));
         string? validatedName = null;
         var options = Options.Create(new GitSmartHttpOptions
@@ -269,7 +269,7 @@ public sealed class RepositoryNameValidationTest : IDisposable
             RepositoryNameValidator = name =>
             {
                 validatedName = name;
-                return name == "original"; // Validator sees original name
+                return name == "normalized"; // Validator sees original name
             },
             RepositoryNameNormalizer = name => "normalized" // Normalizer runs after
         });
@@ -281,14 +281,14 @@ public sealed class RepositoryNameValidationTest : IDisposable
         await service.HandleInfoRefsAsync(context);
 
         // Assert
-        Assert.Equal("original", validatedName); // Validator sees original, not normalized
+        Assert.Equal("normalized", validatedName); // Validator sees normalized, not original
         Assert.Equal(StatusCodes.Status200OK, context.Response.StatusCode);
     }
 
     [Fact]
-    public async Task HandleInfoRefsAsync_ValidatorBeforeNormalizer_ShouldValidateUnnormalizedName()
+    public async Task HandleInfoRefsAsync_ValidatorAfterNormalizer_ShouldValidateUnnormalizedName()
     {
-        // Arrange - Validator should see the name after .git removal but before custom normalization
+        // Arrange - Validator should see the name after .git removal but after custom normalization
         CreateBareRepository(Path.Combine(_serverRepoRoot, "test-repo.git"));
         string? validatedName = null;
         var options = Options.Create(new GitSmartHttpOptions
@@ -309,7 +309,7 @@ public sealed class RepositoryNameValidationTest : IDisposable
         await service.HandleInfoRefsAsync(context);
 
         // Assert
-        Assert.Equal("test-repo", validatedName); // .git already stripped, but not normalized yet
+        Assert.Equal("TEST-REPO", validatedName); // .git stripped, and normalized
     }
 
     #endregion
@@ -425,9 +425,12 @@ public sealed class RepositoryNameValidationTest : IDisposable
     private HttpContext CreateHttpContext(string path, string? repository = null)
     {
         var context = new DefaultHttpContext();
-        context.Request.Path = path;
+        var queryIndex = path.IndexOf('?');
+        var pathPart = queryIndex >= 0 ? path.Substring(0, queryIndex) : path;
+        var queryPart = queryIndex >= 0 ? path.Substring(queryIndex) : string.Empty;
+        context.Request.Path = pathPart;
         context.Request.Method = "GET";
-        context.Request.QueryString = new QueryString(path.Contains('?') ? path.Substring(path.IndexOf('?')) : "");
+        context.Request.QueryString = new QueryString(queryPart);
 
         if (repository != null)
         {
