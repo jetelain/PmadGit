@@ -236,7 +236,7 @@ public sealed class RepositoryNameValidationTest : IDisposable
     [Fact]
     public async Task HandleInfoRefsAsync_WithValidatorThrowingException_ShouldReturn400()
     {
-        // Arrange - Validator that throws a non-InvalidOperationException
+        // Arrange - Validator that throws an exception
         var options = Options.Create(new GitSmartHttpOptions
         {
             RepositoryRoot = _serverRepoRoot,
@@ -269,9 +269,9 @@ public sealed class RepositoryNameValidationTest : IDisposable
             RepositoryNameValidator = name =>
             {
                 validatedName = name;
-                return name == "normalized"; // Validator sees original name
+                return name == "normalized"; // Validator sees normalized name
             },
-            RepositoryNameNormalizer = name => "normalized" // Normalizer runs after
+            RepositoryNameNormalizer = name => "normalized" // Normalizer runs before validator
         });
         var repositoryService = new GitRepositoryService();
         var service = new GitSmartHttpService(options, repositoryService);
@@ -286,9 +286,9 @@ public sealed class RepositoryNameValidationTest : IDisposable
     }
 
     [Fact]
-    public async Task HandleInfoRefsAsync_ValidatorAfterNormalizer_ShouldValidateUnnormalizedName()
+    public async Task HandleInfoRefsAsync_ValidatorAfterNormalizer_ShouldValidateNormalizedName()
     {
-        // Arrange - Validator should see the name after .git removal but after custom normalization
+        // Arrange - Validator should see the normalized name (after .git removal and custom normalization)
         CreateBareRepository(Path.Combine(_serverRepoRoot, "test-repo.git"));
         string? validatedName = null;
         var options = Options.Create(new GitSmartHttpOptions
