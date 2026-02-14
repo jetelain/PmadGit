@@ -279,7 +279,7 @@ public sealed class GitSmartHttpService
         try
         {
             var repositoryPath = ResolveRepositoryPath(repositoryName);
-            var repository = _repositoryService.GetRepository(repositoryPath);
+            var repository = _repositoryService.GetRepositoryByPath(repositoryPath);
             return (repository, repositoryName);
         }
         catch

@@ -13,7 +13,7 @@ public interface IGitRepositoryService
     /// <param name="repositoryPath">The path to the Git repository.</param>
     /// <returns>A <see cref="IGitRepository"/> instance.</returns>
     /// <exception cref="DirectoryNotFoundException">Thrown when the repository path does not exist.</exception>
-    IGitRepository GetRepository(string repositoryPath);
+    IGitRepository GetRepositoryByPath(string repositoryPath);
 
     /// <summary>
     /// Invalidates the cache for all repositories, forcing them to be reopened on next access.
