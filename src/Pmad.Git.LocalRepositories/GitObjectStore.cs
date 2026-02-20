@@ -1,5 +1,4 @@
 using System.IO.Compression;
-using System.Security.Cryptography;
 using System.Text;
 using Pmad.Git.LocalRepositories.Pack;
 using Pmad.Git.LocalRepositories.Utilities;
@@ -268,7 +267,7 @@ internal sealed class GitObjectStore : IGitObjectStore
         Buffer.BlockCopy(header, 0, buffer, 0, header.Length);
         content.Span.CopyTo(buffer.AsSpan(header.Length));
 
-        using var algorithm = CreateHashAlgorithm();
+        using var algorithm = GitHashHelper.CreateHashAlgorithm(_hashLengthBytes);
         var hashBytes = algorithm.ComputeHash(buffer);
         var hash = GitHash.FromBytes(hashBytes);
 
@@ -331,7 +330,7 @@ internal sealed class GitObjectStore : IGitObjectStore
                 var contentLength = stream.Length - stream.Position;
 
                 using var zlib = new ZLibStream(tempFileStream, CompressionLevel.Optimal, leaveOpen: true);
-                using var hashing = new HashingWriteStream(zlib, GetHashAlgorithmName(), leaveOpen: true);
+                using var hashing = new HashingWriteStream(zlib, GitHashHelper.GetAlgorithmName(_hashLengthBytes), leaveOpen: true);
                 var header = CreateHeader(type, contentLength);
                 await hashing.WriteAsync(header, cancellationToken).ConfigureAwait(false);
                 await stream.CopyToAsync(hashing, cancellationToken).ConfigureAwait(false);
@@ -367,19 +366,4 @@ internal sealed class GitObjectStore : IGitObjectStore
             }
         }
     }
-
-    private HashAlgorithm CreateHashAlgorithm() => _hashLengthBytes switch
-    {
-        GitHash.Sha1ByteLength => SHA1.Create(),
-        GitHash.Sha256ByteLength => SHA256.Create(),
-        _ => throw new NotSupportedException("Unsupported git object hash length.")
-    };
-
-    private HashAlgorithmName GetHashAlgorithmName() => _hashLengthBytes switch
-    {
-        GitHash.Sha1ByteLength => HashAlgorithmName.SHA1,
-        GitHash.Sha256ByteLength => HashAlgorithmName.SHA256,
-        _ => throw new NotSupportedException("Unsupported git hash length")
-    };
-
 }
