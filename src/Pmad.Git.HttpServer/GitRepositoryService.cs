@@ -12,7 +12,7 @@ internal sealed class GitRepositoryService : IGitRepositoryService
 {
     private readonly ConcurrentDictionary<string, IGitRepository> _repositories = new(StringComparer.OrdinalIgnoreCase);
 
-    public IGitRepository GetRepository(string repositoryPath)
+    public IGitRepository GetRepositoryByPath(string repositoryPath)
     {
         if (string.IsNullOrWhiteSpace(repositoryPath))
         {

@@ -19,12 +19,7 @@ internal sealed class GitPackBuilder
             throw new ArgumentNullException(nameof(objects));
         }
 
-        var algorithm = repository.HashLengthBytes switch
-        {
-            GitHash.Sha1ByteLength => HashAlgorithmName.SHA1,
-            GitHash.Sha256ByteLength => HashAlgorithmName.SHA256,
-            _ => throw new NotSupportedException("Unsupported git hash length")
-        };
+        var algorithm = GitHashHelper.GetAlgorithmName(repository.HashLengthBytes);
 
         await using var hashingStream = new HashingWriteStream(destination, algorithm, leaveOpen: true);
         await WriteHeaderAsync(hashingStream, objects.Count, cancellationToken).ConfigureAwait(false);

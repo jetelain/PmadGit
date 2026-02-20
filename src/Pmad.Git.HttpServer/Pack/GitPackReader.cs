@@ -1,7 +1,6 @@
-using System.Security.Cryptography;
-using Pmad.Git.LocalRepositories.Utilities;
 using Pmad.Git.LocalRepositories;
 using Pmad.Git.LocalRepositories.Pack;
+using Pmad.Git.LocalRepositories.Utilities;
 
 namespace Pmad.Git.HttpServer.Pack;
 
@@ -26,18 +25,16 @@ internal sealed class GitPackReader
             return await ReadAsync(repository, fileStream, cancellationToken).ConfigureAwait(false);
         }
 
-        var temp = Path.GetTempFileName();
-        try
-        {
-            using var tempStream = File.Open(temp, FileMode.Create, FileAccess.ReadWrite, FileShare.None);
-            await source.CopyToAsync(tempStream, cancellationToken).ConfigureAwait(false);
-            tempStream.Seek(0, SeekOrigin.Begin);
-            return await ReadAsync(repository, tempStream, cancellationToken).ConfigureAwait(false);
-        }
-        finally
-        {
-            File.Delete(temp);
-        }       
+        using var tempStream = new FileStream(
+                            Path.Combine(Path.GetTempPath(), Path.GetRandomFileName()),
+                            FileMode.CreateNew,
+                            FileAccess.ReadWrite,
+                            FileShare.Read,
+                            bufferSize: 4096,
+                            FileOptions.DeleteOnClose);
+        await source.CopyToAsync(tempStream, cancellationToken).ConfigureAwait(false);
+        tempStream.Seek(0, SeekOrigin.Begin);
+        return await ReadAsync(repository, tempStream, cancellationToken).ConfigureAwait(false);
     }
 
     internal async Task<IReadOnlyList<GitHash>> ReadAsync(IGitRepository repository, FileStream fileStream, CancellationToken cancellationToken)
@@ -94,12 +91,7 @@ internal sealed class GitPackReader
     {
         var header = new byte[HeaderLength];
 
-        var algorithm = repository.HashLengthBytes switch
-        {
-            GitHash.Sha1ByteLength => HashAlgorithmName.SHA1,
-            GitHash.Sha256ByteLength => HashAlgorithmName.SHA256,
-            _ => throw new NotSupportedException("Unsupported git hash length")
-        };
+        var algorithm = GitHashHelper.GetAlgorithmName(repository.HashLengthBytes);
 
         using var hashingStream = new HashingReadStream(fileStream, algorithm, leaveOpen: true);
         

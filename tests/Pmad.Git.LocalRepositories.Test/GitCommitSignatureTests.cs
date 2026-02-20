@@ -1,7 +1,3 @@
-using System;
-using Pmad.Git.LocalRepositories;
-using Xunit;
-
 namespace Pmad.Git.LocalRepositories.Test;
 
 public sealed class GitCommitSignatureTests
@@ -22,6 +18,62 @@ public sealed class GitCommitSignatureTests
     public void Constructor_InvalidEmail_Throws(string? email)
     {
         Assert.Throws<ArgumentException>(() => new GitCommitSignature("User", email!, DateTimeOffset.UnixEpoch));
+    }
+
+    [Theory]
+    [InlineData("John<Doe")]
+    [InlineData("John>Doe")]
+    [InlineData("<JohnDoe")]
+    [InlineData("JohnDoe>")]
+    [InlineData("John<>Doe")]
+    [InlineData("<>")]
+    public void Constructor_NameWithAngleBrackets_Throws(string name)
+    {
+        var exception = Assert.Throws<ArgumentException>(() => new GitCommitSignature(name, "user@example.com", DateTimeOffset.UnixEpoch));
+        Assert.Contains("'<'", exception.Message);
+        Assert.Equal("name", exception.ParamName);
+    }
+
+    [Theory]
+    [InlineData("user<@example.com")]
+    [InlineData("user>@example.com")]
+    [InlineData("<user@example.com")]
+    [InlineData("user@example.com>")]
+    [InlineData("user<>@example.com")]
+    [InlineData("<>")]
+    public void Constructor_EmailWithAngleBrackets_Throws(string email)
+    {
+        var exception = Assert.Throws<ArgumentException>(() => new GitCommitSignature("User", email, DateTimeOffset.UnixEpoch));
+        Assert.Contains("'<'", exception.Message);
+        Assert.Equal("email", exception.ParamName);
+    }
+
+    [Theory]
+    [InlineData("John\nDoe")]
+    [InlineData("John\rDoe")]
+    [InlineData("John\r\nDoe")]
+    [InlineData("John\0Doe")]
+    [InlineData("\nJohnDoe")]
+    [InlineData("JohnDoe\n")]
+    public void Constructor_NameWithControlCharacters_Throws(string name)
+    {
+        var exception = Assert.Throws<ArgumentException>(() => new GitCommitSignature(name, "user@example.com", DateTimeOffset.UnixEpoch));
+        Assert.Contains("newline", exception.Message);
+        Assert.Equal("name", exception.ParamName);
+    }
+
+    [Theory]
+    [InlineData("user\n@example.com")]
+    [InlineData("user\r@example.com")]
+    [InlineData("user\r\n@example.com")]
+    [InlineData("user\0@example.com")]
+    [InlineData("\nuser@example.com")]
+    [InlineData("user@example.com\n")]
+    public void Constructor_EmailWithControlCharacters_Throws(string email)
+    {
+        var exception = Assert.Throws<ArgumentException>(() => new GitCommitSignature("User", email, DateTimeOffset.UnixEpoch));
+        Assert.Contains("newline", exception.Message);
+        Assert.Equal("email", exception.ParamName);
     }
 
     [Fact]
@@ -123,5 +175,67 @@ public sealed class GitCommitSignatureTests
         Assert.Equal(original.Name, parsed.Name);
         Assert.Equal(original.Email, parsed.Email);
         Assert.Equal(original.Timestamp, parsed.Timestamp);
+    }
+
+    [Fact]
+    public void Constructor_ValidNameWithSpecialCharacters_Succeeds()
+    {
+        // Other special characters should be allowed (though they may not be common)
+        var signature = new GitCommitSignature("John O'Doe-Smith", "user@example.com", DateTimeOffset.UnixEpoch);
+        Assert.Equal("John O'Doe-Smith", signature.Name);
+    }
+
+    [Fact]
+    public void Constructor_ValidEmailWithSpecialCharacters_Succeeds()
+    {
+        // Other special characters should be allowed in email
+        var signature = new GitCommitSignature("User", "user+tag@example.co.uk", DateTimeOffset.UnixEpoch);
+        Assert.Equal("user+tag@example.co.uk", signature.Email);
+    }
+
+    [Fact]
+    public void Constructor_NameWithAngleBrackets_PreventsFormatCorruption()
+    {
+        // Verify that if we somehow allowed angle brackets, it would corrupt the format
+        // This test documents WHY we validate for angle brackets
+        var validSignature = new GitCommitSignature("John Doe", "john@example.com", DateTimeOffset.UnixEpoch);
+        var header = validSignature.ToHeaderValue();
+        
+        // Header should be parseable
+        var parsed = GitCommitSignature.Parse(header);
+        Assert.Equal("John Doe", parsed.Name);
+        Assert.Equal("john@example.com", parsed.Email);
+        
+        // If we had a name with angle brackets, parsing would fail or produce wrong results
+        // This is prevented by our validation
+        Assert.Throws<ArgumentException>(() => new GitCommitSignature("John<Fake>", "john@example.com", DateTimeOffset.UnixEpoch));
+    }
+
+    [Fact]
+    public void GetInvalidCharacters_ReturnsExpectedCharacters()
+    {
+        // Act
+        var invalidChars = GitCommitSignature.GetInvalidCharacters();
+
+        // Assert
+        Assert.Equal(5, invalidChars.Length);
+        Assert.True(invalidChars.Contains('<'));
+        Assert.True(invalidChars.Contains('>'));
+        Assert.True(invalidChars.Contains('\n'));
+        Assert.True(invalidChars.Contains('\r'));
+        Assert.True(invalidChars.Contains('\0'));
+    }
+
+    [Fact]
+    public void GetInvalidCharacters_CanBeUsedForValidation()
+    {
+        // Arrange
+        var invalidChars = GitCommitSignature.GetInvalidCharacters();
+        var validName = "John Doe";
+        var invalidName = "John<Doe";
+
+        // Act & Assert
+        Assert.Equal(-1, validName.AsSpan().IndexOfAny(invalidChars));
+        Assert.True(invalidName.AsSpan().IndexOfAny(invalidChars) >= 0);
     }
 }

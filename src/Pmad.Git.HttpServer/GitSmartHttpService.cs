@@ -279,7 +279,7 @@ public sealed class GitSmartHttpService
         try
         {
             var repositoryPath = ResolveRepositoryPath(repositoryName);
-            var repository = _repositoryService.GetRepository(repositoryPath);
+            var repository = _repositoryService.GetRepositoryByPath(repositoryPath);
             return (repository, repositoryName);
         }
         catch
@@ -340,6 +340,24 @@ public sealed class GitSmartHttpService
         }
 
         var normalized = _options.RepositoryNameNormalizer?.Invoke(value) ?? value;
+
+        if (_options.RepositoryNameValidator is not null)
+        {
+            bool isValid;
+            try
+            {
+                isValid = _options.RepositoryNameValidator(normalized);
+            }
+            catch (Exception ex)
+            {
+                throw new InvalidOperationException("Repository name validation failed", ex);
+            }
+            if (!isValid)
+            {
+                throw new InvalidOperationException("Repository name contains invalid characters");
+            }
+        }
+
         return normalized;
     }
 

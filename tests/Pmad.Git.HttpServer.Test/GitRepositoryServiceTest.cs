@@ -1,4 +1,3 @@
-using Pmad.Git.HttpServer;
 using Pmad.Git.LocalRepositories;
 
 namespace Pmad.Git.HttpServer.Test;
@@ -14,14 +13,14 @@ public sealed class GitRepositoryServiceTest : IDisposable
     }
 
     [Fact]
-    public void GetRepository_WithValidPath_ShouldReturnRepository()
+    public void GetRepositoryByPath_WithValidPath_ShouldReturnRepository()
     {
         // Arrange
         var repoPath = CreateBareRepository();
         var service = new GitRepositoryService();
 
         // Act
-        var repository = service.GetRepository(repoPath);
+        var repository = service.GetRepositoryByPath(repoPath);
 
         // Assert
         Assert.NotNull(repository);
@@ -29,22 +28,22 @@ public sealed class GitRepositoryServiceTest : IDisposable
     }
 
     [Fact]
-    public void GetRepository_CalledTwice_ShouldReturnSameInstance()
+    public void GetRepositoryByPath_CalledTwice_ShouldReturnSameInstance()
     {
         // Arrange
         var repoPath = CreateBareRepository();
         var service = new GitRepositoryService();
 
         // Act
-        var repository1 = service.GetRepository(repoPath);
-        var repository2 = service.GetRepository(repoPath);
+        var repository1 = service.GetRepositoryByPath(repoPath);
+        var repository2 = service.GetRepositoryByPath(repoPath);
 
         // Assert
         Assert.Same(repository1, repository2);
     }
 
     [Fact]
-    public void GetRepository_WithDifferentPaths_ShouldReturnDifferentInstances()
+    public void GetRepositoryByPath_WithDifferentPaths_ShouldReturnDifferentInstances()
     {
         // Arrange
         var repoPath1 = CreateBareRepository("repo1");
@@ -52,56 +51,56 @@ public sealed class GitRepositoryServiceTest : IDisposable
         var service = new GitRepositoryService();
 
         // Act
-        var repository1 = service.GetRepository(repoPath1);
-        var repository2 = service.GetRepository(repoPath2);
+        var repository1 = service.GetRepositoryByPath(repoPath1);
+        var repository2 = service.GetRepositoryByPath(repoPath2);
 
         // Assert
         Assert.NotSame(repository1, repository2);
     }
 
     [Fact]
-    public void GetRepository_WithNullPath_ShouldThrowArgumentException()
+    public void GetRepositoryByPath_WithNullPath_ShouldThrowArgumentException()
     {
         // Arrange
         var service = new GitRepositoryService();
 
         // Act & Assert
-        Assert.Throws<ArgumentException>(() => service.GetRepository(null!));
+        Assert.Throws<ArgumentException>(() => service.GetRepositoryByPath(null!));
     }
 
     [Fact]
-    public void GetRepository_WithEmptyPath_ShouldThrowArgumentException()
+    public void GetRepositoryByPath_WithEmptyPath_ShouldThrowArgumentException()
     {
         // Arrange
         var service = new GitRepositoryService();
 
         // Act & Assert
-        Assert.Throws<ArgumentException>(() => service.GetRepository(""));
+        Assert.Throws<ArgumentException>(() => service.GetRepositoryByPath(""));
     }
 
     [Fact]
-    public void GetRepository_WithWhitespacePath_ShouldThrowArgumentException()
+    public void GetRepositoryByPath_WithWhitespacePath_ShouldThrowArgumentException()
     {
         // Arrange
         var service = new GitRepositoryService();
 
         // Act & Assert
-        Assert.Throws<ArgumentException>(() => service.GetRepository("   "));
+        Assert.Throws<ArgumentException>(() => service.GetRepositoryByPath("   "));
     }
 
     [Fact]
-    public void GetRepository_WithNonExistentPath_ShouldThrowDirectoryNotFoundException()
+    public void GetRepositoryByPath_WithNonExistentPath_ShouldThrowDirectoryNotFoundException()
     {
         // Arrange
         var service = new GitRepositoryService();
         var nonExistentPath = Path.Combine(_testRoot, "non-existent");
 
         // Act & Assert
-        Assert.Throws<DirectoryNotFoundException>(() => service.GetRepository(nonExistentPath));
+        Assert.Throws<DirectoryNotFoundException>(() => service.GetRepositoryByPath(nonExistentPath));
     }
 
     [Fact]
-    public void GetRepository_WithNormalizedPaths_ShouldReturnSameInstance()
+    public void GetRepositoryByPath_WithNormalizedPaths_ShouldReturnSameInstance()
     {
         // Arrange
         var repoPath = CreateBareRepository();
@@ -113,9 +112,9 @@ public sealed class GitRepositoryServiceTest : IDisposable
         var path3 = Path.GetFullPath(repoPath);
 
         // Act
-        var repository1 = service.GetRepository(path1);
-        var repository2 = service.GetRepository(path2);
-        var repository3 = service.GetRepository(path3);
+        var repository1 = service.GetRepositoryByPath(path1);
+        var repository2 = service.GetRepositoryByPath(path2);
+        var repository3 = service.GetRepositoryByPath(path3);
 
         // Assert - All should be the same instance
         Assert.Same(repository1, repository2);
@@ -128,11 +127,11 @@ public sealed class GitRepositoryServiceTest : IDisposable
         // Arrange
         var repoPath = CreateBareRepository();
         var service = new GitRepositoryService();
-        var repository1 = service.GetRepository(repoPath);
+        var repository1 = service.GetRepositoryByPath(repoPath);
 
         // Act
         service.InvalidateCache();
-        var repository2 = service.GetRepository(repoPath);
+        var repository2 = service.GetRepositoryByPath(repoPath);
 
         // Assert - Should be different instances after cache invalidation
         Assert.NotSame(repository1, repository2);
@@ -144,11 +143,11 @@ public sealed class GitRepositoryServiceTest : IDisposable
         // Arrange
         var repoPath = CreateBareRepository();
         var service = new GitRepositoryService();
-        var repository1 = service.GetRepository(repoPath);
+        var repository1 = service.GetRepositoryByPath(repoPath);
 
         // Act
         service.InvalidateRepository(repoPath);
-        var repository2 = service.GetRepository(repoPath);
+        var repository2 = service.GetRepositoryByPath(repoPath);
 
         // Assert - Should be different instances after invalidation
         Assert.NotSame(repository1, repository2);
@@ -193,14 +192,14 @@ public sealed class GitRepositoryServiceTest : IDisposable
         var repoPath2 = CreateBareRepository("repo2");
         var service = new GitRepositoryService();
         
-        var repository1a = service.GetRepository(repoPath1);
-        var repository2a = service.GetRepository(repoPath2);
+        var repository1a = service.GetRepositoryByPath(repoPath1);
+        var repository2a = service.GetRepositoryByPath(repoPath2);
 
         // Act
         service.InvalidateRepository(repoPath1);
         
-        var repository1b = service.GetRepository(repoPath1);
-        var repository2b = service.GetRepository(repoPath2);
+        var repository1b = service.GetRepositoryByPath(repoPath1);
+        var repository2b = service.GetRepositoryByPath(repoPath2);
 
         // Assert
         Assert.NotSame(repository1a, repository1b); // repo1 invalidated
@@ -208,7 +207,7 @@ public sealed class GitRepositoryServiceTest : IDisposable
     }
 
     [Fact]
-    public void GetRepository_IsThreadSafe()
+    public void GetRepositoryByPath_IsThreadSafe()
     {
         // Arrange
         var repoPath = CreateBareRepository();
@@ -218,7 +217,7 @@ public sealed class GitRepositoryServiceTest : IDisposable
         // Act - Access from multiple threads
         Parallel.For(0, 10, _ =>
         {
-            var repo = service.GetRepository(repoPath);
+            var repo = service.GetRepositoryByPath(repoPath);
             repositories.Add(repo);
         });
 
@@ -228,7 +227,7 @@ public sealed class GitRepositoryServiceTest : IDisposable
     }
 
     [Fact]
-    public void GetRepository_WithRelativePath_ShouldNormalizeToAbsolute()
+    public void GetRepositoryByPath_WithRelativePath_ShouldNormalizeToAbsolute()
     {
         // Arrange
         var repoPath = CreateBareRepository();
@@ -241,8 +240,8 @@ public sealed class GitRepositoryServiceTest : IDisposable
             var relativePath = Path.GetRelativePath(_testRoot, repoPath);
             
             // Act
-            var repository1 = service.GetRepository(repoPath);
-            var repository2 = service.GetRepository(relativePath);
+            var repository1 = service.GetRepositoryByPath(repoPath);
+            var repository2 = service.GetRepositoryByPath(relativePath);
 
             // Assert - Should be same instance despite different path formats
             Assert.Same(repository1, repository2);
