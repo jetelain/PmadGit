@@ -498,8 +498,7 @@ public sealed class GitObjectStoreTests
         await objectStream.Content.CopyToAsync(ms);
         var streamContent = ms.ToArray();
 
-        Assert.NotNull(objectStream.Length);
-        Assert.Equal(content.Length, objectStream.Length.Value);
+        Assert.Equal(content.Length, objectStream.Length);
         Assert.Equal(content.Length, streamContent.Length);
     }
 

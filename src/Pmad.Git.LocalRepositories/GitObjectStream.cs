@@ -6,7 +6,7 @@ namespace Pmad.Git.LocalRepositories;
 /// <param name="Type">The decoded type stored in the object header.</param>
 /// <param name="Content">The decompressed object content as a stream.</param>
 /// <param name="Length">The length of the content in bytes, or null if unknown.</param>
-public sealed record GitObjectStream(GitObjectType Type, Stream Content, long? Length) : IDisposable, IAsyncDisposable
+public sealed record GitObjectStream(GitObjectType Type, Stream Content, long Length) : IDisposable, IAsyncDisposable
 {
     /// <summary>
     /// Disposes the content stream.

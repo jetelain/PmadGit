@@ -8,5 +8,7 @@ internal interface IGitObjectStore
 
     Task<GitHash> WriteObjectAsync(GitObjectType type, ReadOnlyMemory<byte> content, CancellationToken cancellationToken);
 
+    Task<GitHash> WriteObjectAsync(GitObjectType type, Stream content, long contentLength, CancellationToken cancellationToken);
+
     Task<GitHash> WriteObjectAsync(GitObjectType type, Stream content, CancellationToken cancellationToken);
 }

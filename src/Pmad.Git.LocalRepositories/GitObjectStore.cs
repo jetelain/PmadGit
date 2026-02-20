@@ -105,16 +105,11 @@ internal sealed class GitObjectStore : IGitObjectStore
             throw new InvalidDataException("Invalid loose object: missing header");
         }
 
-        var header = System.Text.Encoding.ASCII.GetString(content, 0, separator);
-        var spaceIndex = header.IndexOf(' ');
-        if (spaceIndex < 0)
-        {
-            throw new InvalidDataException("Invalid loose object header");
-        }
+        ParseHeader(content.AsSpan(0, separator), out var objectType, out _);
 
-        var typeString = header[..spaceIndex];
         var payload = content[(separator + 1)..];
-        return new GitObjectData(GitObjectTypeHelper.ParseType(typeString), payload);
+
+        return new GitObjectData(objectType, payload);
     }
 
     private async Task<GitObjectStream?> TryReadLooseObjectStreamAsync(GitHash hash, CancellationToken cancellationToken)
@@ -136,31 +131,36 @@ internal sealed class GitObjectStore : IGitObjectStore
         var fileStream = new FileStream(path, options);
         try
         {
+            int headerSize;
+            var headerBuffer = new byte[20];
+
+            // First pass: read just the header (header is ~15 bytes max)
+            using (var firstZlib = new ZLibStream(fileStream, CompressionMode.Decompress, leaveOpen: true))
+            {
+                var position = 0;
+                do
+                {
+                    var read = await firstZlib.ReadAsync(headerBuffer.AsMemory().Slice(position), cancellationToken).ConfigureAwait(false);
+                    position += read;
+                    headerSize = Array.IndexOf(headerBuffer, (byte)0, 0, position);
+                    if (headerSize < 0 && (position == 20 || read == 0))
+                    {
+                        throw new InvalidDataException("Invalid loose object: missing header");
+                    }
+                }
+                while (headerSize < 0);
+            }
+
+            ParseHeader(headerBuffer.AsSpan(0, headerSize), out var objectType, out var length);
+
+            // Reset the compressed stream and open a fresh decompressor,
+            // then skip past the header (headerSize + 1 for the null terminator)
+            fileStream.Position = 0;
             var zlib = new ZLibStream(fileStream, CompressionMode.Decompress, leaveOpen: false);
             try
             {
-                var stream = new EfficientAsyncReadStream(zlib);
-
-                var headerBytes = await stream.ReadUntilAsync(0, cancellationToken);
-
-                var header = System.Text.Encoding.ASCII.GetString(headerBytes);
-                var spaceIndex = header.IndexOf(' ');
-                if (spaceIndex < 0)
-                {
-                    throw new InvalidDataException("Invalid loose object header");
-                }
-
-                var typeString = header[..spaceIndex];
-                var sizeString = header[(spaceIndex + 1)..];
-
-                if (!long.TryParse(sizeString, out var length))
-                {
-                    throw new InvalidDataException("Invalid loose object header: invalid size");
-                }
-
-                var objectType = GitObjectTypeHelper.ParseType(typeString);
-
-                return new GitObjectStream(objectType, new SliceReadStream(stream, length), length);
+                await zlib.ReadExactlyAsync(headerBuffer, 0, headerSize + 1, cancellationToken).ConfigureAwait(false);
+                return new GitObjectStream(objectType, zlib, length);
             }
             catch
             {
@@ -172,6 +172,23 @@ internal sealed class GitObjectStore : IGitObjectStore
         {
             await fileStream.DisposeAsync().ConfigureAwait(false);
             throw;
+        }
+    }
+
+    private static void ParseHeader(ReadOnlySpan<byte> headerBytes, out GitObjectType objectType, out long length)
+    {
+        var header = Encoding.ASCII.GetString(headerBytes);
+        var spaceIndex = header.IndexOf(' ');
+        if (spaceIndex < 0)
+        {
+            throw new InvalidDataException("Invalid loose object header");
+        }
+
+        objectType = GitObjectTypeHelper.ParseType(header[..spaceIndex]);
+
+        if (!long.TryParse(header.AsSpan(spaceIndex + 1), out length))
+        {
+            throw new InvalidDataException("Invalid loose object header: invalid size.");
         }
     }
 
@@ -303,13 +320,17 @@ internal sealed class GitObjectStore : IGitObjectStore
         return Encoding.ASCII.GetBytes($"{GitObjectTypeHelper.GetObjectTypeName(type)} {length}\0");
     }
 
-    public async Task<GitHash> WriteObjectAsync(GitObjectType type, Stream stream, CancellationToken cancellationToken)
+    public Task<GitHash> WriteObjectAsync(GitObjectType type, Stream stream, CancellationToken cancellationToken)
     {
         if (!stream.CanSeek)
         {
             throw new ArgumentException("Stream must be seekable", nameof(stream));
         }
+        return WriteObjectAsync(type, stream, stream.Length - stream.Position, cancellationToken);
+    }
 
+    public async Task<GitHash> WriteObjectAsync(GitObjectType type, Stream stream, long contentLength, CancellationToken cancellationToken)
+    {
         // Create a temporary file in the same directory to ensure move operation will be atomic
         var tempFile = Path.Combine(_gitDirectory, "objects", Guid.NewGuid().ToString("N") + ".tmp");
         try
@@ -327,8 +348,6 @@ internal sealed class GitObjectStore : IGitObjectStore
             // Write object to a temp file to compute hash
             using (var tempFileStream = new FileStream(tempFile, options))
             {
-                var contentLength = stream.Length - stream.Position;
-
                 using var zlib = new ZLibStream(tempFileStream, CompressionLevel.Optimal, leaveOpen: true);
                 using var hashing = new HashingWriteStream(zlib, GitHashHelper.GetAlgorithmName(_hashLengthBytes), leaveOpen: true);
                 var header = CreateHeader(type, contentLength);
