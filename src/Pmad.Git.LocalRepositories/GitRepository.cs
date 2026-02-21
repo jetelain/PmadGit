@@ -563,10 +563,10 @@ public sealed class GitRepository : IGitRepository
                         {
                             if (initialBlobPerFile.TryGetValue(item.Path, out var previousHash))
                             {
-                                // File has interrest
+                                // File has interest
                                 if (!previousHash.Equals(item.Entry.Hash))
                                 {
-                                    // File no more exists or has changed content compared to the previous (newer) commit
+                                    // File has changed content compared to the previous (newer) commit
                                     // newer commit is the last one that changed it, so we can finalise the result for this file and stop tracking it
                                     done.Add(item.Path);
                                 }
@@ -580,7 +580,7 @@ public sealed class GitRepository : IGitRepository
                         }
                     }
 
-                    foreach(var missingPath in initialBlobPerFile.Keys.Where(p => !seen.Contains(p) && !done.Contains(p)))
+                    foreach (var missingPath in initialBlobPerFile.Keys.Where(p => !seen.Contains(p) && !done.Contains(p)))
                     {
                         // File that existed in the previous (newer) commit is now missing, meaning it was removed in the current (older) commit
                         // newer commit is the last one that changed it, so we can finalise the result for this file and stop tracking it
@@ -593,7 +593,7 @@ public sealed class GitRepository : IGitRepository
                     return result;
                 }
 
-                // All known files are finalised — no older commit can affect the result.
+                // All known files are finalised Â— no older commit can affect the result.
                 if (done.Count == initialBlobPerFile.Count)
                 {
                     break;
