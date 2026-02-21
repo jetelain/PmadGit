@@ -46,7 +46,7 @@ public sealed class GitObjectWalkerTest : IDisposable
         var objectTypes = new Dictionary<GitObjectType, int>();
         foreach (var hash in objects)
         {
-            var obj = await repository.ReadObjectAsync(hash);
+            var obj = await repository.ObjectStore.ReadObjectAsync(hash);
             objectTypes.TryGetValue(obj.Type, out var count);
             objectTypes[obj.Type] = count + 1;
         }
@@ -80,7 +80,7 @@ public sealed class GitObjectWalkerTest : IDisposable
         var blobCount = 0;
         foreach (var hash in objects)
         {
-            var obj = await repository.ReadObjectAsync(hash);
+            var obj = await repository.ObjectStore.ReadObjectAsync(hash);
             if (obj.Type == GitObjectType.Blob)
             {
                 blobCount++;
@@ -111,7 +111,7 @@ public sealed class GitObjectWalkerTest : IDisposable
         var treeCount = 0;
         foreach (var hash in objects)
         {
-            var obj = await repository.ReadObjectAsync(hash);
+            var obj = await repository.ObjectStore.ReadObjectAsync(hash);
             if (obj.Type == GitObjectType.Tree)
             {
                 treeCount++;
@@ -149,7 +149,7 @@ public sealed class GitObjectWalkerTest : IDisposable
         var commitCount = 0;
         foreach (var hash in objects)
         {
-            var obj = await repository.ReadObjectAsync(hash);
+            var obj = await repository.ObjectStore.ReadObjectAsync(hash);
             if (obj.Type == GitObjectType.Commit)
             {
                 commitCount++;
@@ -180,7 +180,7 @@ public sealed class GitObjectWalkerTest : IDisposable
         var objectTypes = new HashSet<GitObjectType>();
         foreach (var hash in objects)
         {
-            var obj = await repository.ReadObjectAsync(hash);
+            var obj = await repository.ObjectStore.ReadObjectAsync(hash);
             objectTypes.Add(obj.Type);
         }
 
@@ -263,7 +263,7 @@ public sealed class GitObjectWalkerTest : IDisposable
         var blobHashes = new Dictionary<string, int>();
         foreach (var hash in objects)
         {
-            var obj = await repository.ReadObjectAsync(hash);
+            var obj = await repository.ObjectStore.ReadObjectAsync(hash);
             if (obj.Type == GitObjectType.Blob)
             {
                 blobHashes.TryGetValue(hash.Value, out var count);
@@ -404,7 +404,7 @@ public sealed class GitObjectWalkerTest : IDisposable
         var blobContents = new List<string>();
         foreach (var hash in objects)
         {
-            var obj = await repository.ReadObjectAsync(hash);
+            var obj = await repository.ObjectStore.ReadObjectAsync(hash);
             if (obj.Type == GitObjectType.Blob)
             {
                 blobContents.Add(System.Text.Encoding.UTF8.GetString(obj.Content));
@@ -446,7 +446,7 @@ public sealed class GitObjectWalkerTest : IDisposable
         var blobCount = 0;
         foreach (var hash in objects)
         {
-            var obj = await repository.ReadObjectAsync(hash);
+            var obj = await repository.ObjectStore.ReadObjectAsync(hash);
             if (obj.Type == GitObjectType.Blob)
             {
                 blobCount++;

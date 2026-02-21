@@ -56,7 +56,7 @@ public sealed class GitPackReaderStreamTests : IDisposable
             Assert.NotEmpty(created);
             foreach (var hash in created)
             {
-                var obj = await repository.ReadObjectAsync(hash, CancellationToken.None);
+                var obj = await repository.ObjectStore.ReadObjectAsync(hash, CancellationToken.None);
                 Assert.NotNull(obj);
             }
         }
@@ -318,7 +318,7 @@ public sealed class GitPackReaderStreamTests : IDisposable
             Assert.NotEmpty(created);
             foreach (var hash in created)
             {
-                var obj = await repository.ReadObjectAsync(hash, CancellationToken.None);
+                var obj = await repository.ObjectStore.ReadObjectAsync(hash, CancellationToken.None);
                 Assert.NotNull(obj);
             }
         }

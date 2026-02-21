@@ -156,23 +156,6 @@ public interface IGitRepository
     void InvalidateCaches(bool clearAllData = false);
 
     /// <summary>
-    /// Reads a raw git object from the repository object database.
-    /// </summary>
-    /// <param name="hash">Identifier of the object to retrieve.</param>
-    /// <param name="cancellationToken">Token used to cancel the async operation.</param>
-    /// <returns>The decoded object payload.</returns>
-    Task<GitObjectData> ReadObjectAsync(GitHash hash, CancellationToken cancellationToken = default);
-
-    /// <summary>
-    /// Writes a raw git object to the repository object database.
-    /// </summary>
-    /// <param name="type">Object kind to persist.</param>
-    /// <param name="content">Raw payload without headers.</param>
-    /// <param name="cancellationToken">Token used to cancel the async operation.</param>
-    /// <returns>The hash assigned to the stored object.</returns>
-    Task<GitHash> WriteObjectAsync(GitObjectType type, ReadOnlyMemory<byte> content, CancellationToken cancellationToken = default);
-
-    /// <summary>
     /// Returns a snapshot of all references stored in the repository.
     /// </summary>
     /// <param name="cancellationToken">Token used to cancel the async operation.</param>

@@ -28,7 +28,7 @@ internal sealed class GitObjectWalker
             }
 
             ordered.Add(current);
-            var data = await _repository.ReadObjectAsync(current, cancellationToken).ConfigureAwait(false);
+            var data = await _repository.ObjectStore.ReadObjectAsync(current, cancellationToken).ConfigureAwait(false);
             switch (data.Type)
             {
                 case GitObjectType.Commit:

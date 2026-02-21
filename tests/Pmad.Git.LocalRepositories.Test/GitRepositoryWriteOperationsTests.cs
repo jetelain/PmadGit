@@ -787,9 +787,9 @@ public sealed class GitRepositoryWriteOperationsTests
 		var gitRepository = GitRepository.Open(repo.WorkingDirectory);
 		var content = Encoding.UTF8.GetBytes("test content");
 
-		var hash = await gitRepository.WriteObjectAsync(GitObjectType.Blob, content);
+		var hash = await gitRepository.ObjectStore.WriteObjectAsync(GitObjectType.Blob, content);
 
-		var obj = await gitRepository.ReadObjectAsync(hash);
+		var obj = await gitRepository.ObjectStore.ReadObjectAsync(hash);
 		Assert.Equal(GitObjectType.Blob, obj.Type);
 		Assert.Equal("test content", Encoding.UTF8.GetString(obj.Content));
 	}
@@ -801,7 +801,7 @@ public sealed class GitRepositoryWriteOperationsTests
 		var gitRepository = GitRepository.Open(repo.WorkingDirectory);
 		var content = Encoding.UTF8.GetBytes("test content for hashing");
 
-		var hash = await gitRepository.WriteObjectAsync(GitObjectType.Blob, content);
+		var hash = await gitRepository.ObjectStore.WriteObjectAsync(GitObjectType.Blob, content);
 
 		var catFile = repo.RunGit($"cat-file -t {hash.Value}");
 		Assert.Equal("blob", catFile.Trim());
@@ -818,7 +818,7 @@ public sealed class GitRepositoryWriteOperationsTests
 		var blobHash = new GitHash(repo.RunGit("rev-parse HEAD:test.txt").Trim());
 		var gitRepository = GitRepository.Open(repo.WorkingDirectory);
 
-		var obj = await gitRepository.ReadObjectAsync(blobHash);
+		var obj = await gitRepository.ObjectStore.ReadObjectAsync(blobHash);
 
 		Assert.Equal(GitObjectType.Blob, obj.Type);
 		Assert.Equal("file content", Encoding.UTF8.GetString(obj.Content));
@@ -831,7 +831,7 @@ public sealed class GitRepositoryWriteOperationsTests
 		var commitHash = repo.Commit("Test commit", ("file.txt", "content"));
 		var gitRepository = GitRepository.Open(repo.WorkingDirectory);
 
-		var obj = await gitRepository.ReadObjectAsync(commitHash);
+		var obj = await gitRepository.ObjectStore.ReadObjectAsync(commitHash);
 
 		Assert.Equal(GitObjectType.Commit, obj.Type);
 		var content = Encoding.UTF8.GetString(obj.Content);
@@ -846,7 +846,7 @@ public sealed class GitRepositoryWriteOperationsTests
 		var treeHash = new GitHash(repo.RunGit("rev-parse HEAD^{tree}").Trim());
 		var gitRepository = GitRepository.Open(repo.WorkingDirectory);
 
-		var obj = await gitRepository.ReadObjectAsync(treeHash);
+		var obj = await gitRepository.ObjectStore.ReadObjectAsync(treeHash);
 
 		Assert.Equal(GitObjectType.Tree, obj.Type);
 	}
@@ -859,7 +859,7 @@ public sealed class GitRepositoryWriteOperationsTests
 		var fakeHash = new GitHash("1234567890123456789012345678901234567890");
 
 		await Assert.ThrowsAsync<FileNotFoundException>(() =>
-			gitRepository.ReadObjectAsync(fakeHash));
+			gitRepository.ObjectStore.ReadObjectAsync(fakeHash));
 	}
 
 	#endregion

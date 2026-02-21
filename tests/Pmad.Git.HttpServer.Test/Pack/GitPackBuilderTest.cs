@@ -233,7 +233,7 @@ public sealed class GitPackBuilderTest : IDisposable
         var refs = await repository.GetReferencesAsync();
         if (refs.TryGetValue("refs/tags/v1.0", out var tagHash))
         {
-            var tagData = await repository.ReadObjectAsync(tagHash);
+            var tagData = await repository.ObjectStore.ReadObjectAsync(tagHash);
             if (tagData.Type == GitObjectType.Tag)
             {
                 objects = objects.Append(tagHash).ToList();
@@ -294,8 +294,8 @@ public sealed class GitPackBuilderTest : IDisposable
             // Verify each object's content matches
             foreach (var hash in objects)
             {
-                var original = await repository.ReadObjectAsync(hash);
-                var restored = await targetRepo.ReadObjectAsync(hash);
+                var original = await repository.ObjectStore.ReadObjectAsync(hash);
+                var restored = await targetRepo.ObjectStore.ReadObjectAsync(hash);
                 
                 Assert.Equal(original.Type, restored.Type);
                 Assert.Equal(original.Content, restored.Content);
@@ -457,7 +457,7 @@ public sealed class GitPackBuilderTest : IDisposable
             
             foreach (var hash in created)
             {
-                var obj = await repository.ReadObjectAsync(hash);
+                var obj = await repository.ObjectStore.ReadObjectAsync(hash);
                 Assert.NotNull(obj);
             }
         }

@@ -595,7 +595,7 @@ public sealed class GitRepository : IGitRepository
             }
 
             var commitPayload = BuildCommitPayload(newTreeHash, parentHash, metadata);
-            var commitHash = await WriteObjectAsync(GitObjectType.Commit, commitPayload, cancellationToken).ConfigureAwait(false);
+            var commitHash = await _objectStore.WriteObjectAsync(GitObjectType.Commit, commitPayload, cancellationToken).ConfigureAwait(false);
 
             var parsedCommit = GitCommit.Parse(commitHash, commitPayload);
             lock (_commitLock)
@@ -632,25 +632,6 @@ public sealed class GitRepository : IGitRepository
 
         Interlocked.Exchange(ref _references, CreateReferenceCache());
     }
-
-    /// <summary>
-    /// Reads a raw git object from the repository object database.
-    /// </summary>
-    /// <param name="hash">Identifier of the object to retrieve.</param>
-    /// <param name="cancellationToken">Token used to cancel the async operation.</param>
-    /// <returns>The decoded object payload.</returns>
-    public Task<GitObjectData> ReadObjectAsync(GitHash hash, CancellationToken cancellationToken = default)
-        => _objectStore.ReadObjectAsync(hash, cancellationToken);
-
-    /// <summary>
-    /// Writes a raw git object to the repository object database.
-    /// </summary>
-    /// <param name="type">Object kind to persist.</param>
-    /// <param name="content">Raw payload without headers.</param>
-    /// <param name="cancellationToken">Token used to cancel the async operation.</param>
-    /// <returns>The hash assigned to the stored object.</returns>
-    public Task<GitHash> WriteObjectAsync(GitObjectType type, ReadOnlyMemory<byte> content, CancellationToken cancellationToken = default)
-        => _objectStore.WriteObjectAsync(type, content, cancellationToken);
 
     /// <summary>
     /// Returns a snapshot of all references stored in the repository.
@@ -1067,7 +1048,7 @@ public sealed class GitRepository : IGitRepository
 
         ValidatePathDoesNotConflictWithDirectories(entries, path);
 
-        var blobHash = await WriteObjectAsync(GitObjectType.Blob, content, cancellationToken).ConfigureAwait(false);
+        var blobHash = await _objectStore.WriteObjectAsync(GitObjectType.Blob, content, cancellationToken).ConfigureAwait(false);
         entries[path] = new TreeLeaf(RegularFileMode, blobHash);
         return true;
     }
@@ -1084,7 +1065,7 @@ public sealed class GitRepository : IGitRepository
             throw new GitFileConflictException($"File '{path}' has hash '{existing.Hash.Value}' but expected '{expectedPreviousHash.Value.Value}'.", path);
         }
 
-        var blobHash = await WriteObjectAsync(GitObjectType.Blob, content, cancellationToken).ConfigureAwait(false);
+        var blobHash = await _objectStore.WriteObjectAsync(GitObjectType.Blob, content, cancellationToken).ConfigureAwait(false);
         if (existing.Hash.Equals(blobHash))
         {
             return false;
@@ -1222,7 +1203,7 @@ public sealed class GitRepository : IGitRepository
             buffer.Write(hashBytes, 0, hashBytes.Length);
         }
 
-        return await WriteObjectAsync(GitObjectType.Tree, buffer.ToArray(), cancellationToken).ConfigureAwait(false);
+        return await _objectStore.WriteObjectAsync(GitObjectType.Tree, buffer.ToArray(), cancellationToken).ConfigureAwait(false);
     }
 
     private static byte[] BuildCommitPayload(GitHash treeHash, GitHash? parentHash, GitCommitMetadata metadata)
