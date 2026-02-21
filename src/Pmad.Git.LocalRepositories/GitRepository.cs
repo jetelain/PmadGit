@@ -43,6 +43,9 @@ public sealed class GitRepository : IGitRepository
     /// </summary>
     public int HashLengthBytes => _objectStore.HashLengthBytes;
 
+    /// <inheritdoc />
+    public IGitObjectStore ObjectStore => _objectStore;
+
     /// <summary>
     /// Creates a new empty git repository at the specified path.
     /// </summary>
@@ -394,6 +397,38 @@ public sealed class GitRepository : IGitRepository
     }
 
     /// <summary>
+    /// Reads the blob content at <paramref name="filePath"/> from the specified <paramref name="reference"/> as a stream.
+    /// For loose objects, the stream reads directly from disk without buffering the entire content.
+    /// For pack objects, the stream is backed by a <see cref="MemoryStream"/>.
+    /// The caller is responsible for disposing the returned <see cref="GitObjectStream"/>.
+    /// </summary>
+    /// <param name="filePath">Repository-relative file path using / separators.</param>
+    /// <param name="reference">Commit hash or ref to read from; defaults to HEAD.</param>
+    /// <param name="cancellationToken">Token used to cancel the async operation.</param>
+    /// <returns>A <see cref="GitObjectStream"/> whose <see cref="GitObjectStream.Content"/> exposes the blob payload.</returns>
+    public async Task<GitObjectStream> ReadFileStreamAsync(string filePath, string? reference = null, CancellationToken cancellationToken = default)
+    {
+        var commit = await GetCommitAsync(reference, cancellationToken).ConfigureAwait(false);
+        var normalized = NormalizePath(filePath);
+        if (string.IsNullOrEmpty(normalized))
+        {
+            throw new ArgumentException("File path must reference a file", nameof(filePath));
+        }
+
+        var blobHash = await GetBlobHashAsync(commit.Tree, normalized, cancellationToken).ConfigureAwait(false)
+            ?? throw new FileNotFoundException($"File '{filePath}' not found in commit {commit.Id}");
+
+        var stream = await _objectStore.ReadObjectStreamAsync(blobHash, cancellationToken).ConfigureAwait(false);
+        if (stream.Type != GitObjectType.Blob)
+        {
+            stream.Dispose();
+            throw new InvalidOperationException($"Object {blobHash} is not a blob");
+        }
+
+        return stream;
+    }
+
+    /// <summary>
     /// Streams commits where <paramref name="filePath"/> changed, newest first.
     /// </summary>
     /// <param name="filePath">Repository-relative file path to inspect.</param>
@@ -537,6 +572,12 @@ public sealed class GitRepository : IGitRepository
                     case MoveFileOperation move:
                         changed |= ApplyMoveFile(entries, normalizedPath, NormalizePath(move.DestinationPath));
                         break;
+                    case AddFileStreamOperation addStream:
+                        changed |= await ApplyAddFileStreamAsync(entries, normalizedPath, addStream.Content, cancellationToken).ConfigureAwait(false);
+                        break;
+                    case UpdateFileStreamOperation updateStream:
+                        changed |= await ApplyUpdateFileStreamAsync(entries, normalizedPath, updateStream.Content, updateStream.ExpectedPreviousHash, cancellationToken).ConfigureAwait(false);
+                        break;
                     default:
                         throw new NotSupportedException($"Unsupported operation type '{operation.GetType().Name}'.");
                 }
@@ -600,17 +641,6 @@ public sealed class GitRepository : IGitRepository
     /// <returns>The decoded object payload.</returns>
     public Task<GitObjectData> ReadObjectAsync(GitHash hash, CancellationToken cancellationToken = default)
         => _objectStore.ReadObjectAsync(hash, cancellationToken);
-
-    /// <summary>
-    /// Reads a raw git object from the repository object database as a stream.
-    /// For loose objects, this returns a stream that reads directly from disk without buffering the entire content.
-    /// For pack objects, this returns a MemoryStream with the decompressed content.
-    /// </summary>
-    /// <param name="hash">Identifier of the object to retrieve.</param>
-    /// <param name="cancellationToken">Token used to cancel the async operation.</param>
-    /// <returns>The decoded object as a stream. The caller is responsible for disposing the stream.</returns>
-    public Task<GitObjectStream> ReadObjectStreamAsync(GitHash hash, CancellationToken cancellationToken = default)
-        => _objectStore.ReadObjectStreamAsync(hash, cancellationToken);
 
     /// <summary>
     /// Writes a raw git object to the repository object database.
@@ -990,6 +1020,42 @@ public sealed class GitRepository : IGitRepository
         }
 
         return entries;
+    }
+
+    private async Task<bool> ApplyAddFileStreamAsync(Dictionary<string, TreeLeaf> entries, string path, Stream content, CancellationToken cancellationToken)
+    {
+        if (entries.ContainsKey(path))
+        {
+            throw new InvalidOperationException($"File '{path}' already exists.");
+        }
+
+        ValidatePathDoesNotConflictWithDirectories(entries, path);
+
+        var blobHash = await _objectStore.WriteObjectAsync(GitObjectType.Blob, content, cancellationToken);
+        entries[path] = new TreeLeaf(RegularFileMode, blobHash);
+        return true;
+    }
+
+    private async Task<bool> ApplyUpdateFileStreamAsync(Dictionary<string, TreeLeaf> entries, string path, Stream content, GitHash? expectedPreviousHash, CancellationToken cancellationToken)
+    {
+        if (!entries.TryGetValue(path, out var existing))
+        {
+            throw new FileNotFoundException($"File '{path}' does not exist.");
+        }
+
+        if (expectedPreviousHash != null && !existing.Hash.Equals(expectedPreviousHash.Value))
+        {
+            throw new GitFileConflictException($"File '{path}' has hash '{existing.Hash.Value}' but expected '{expectedPreviousHash.Value.Value}'.", path);
+        }
+
+        var blobHash = await _objectStore.WriteObjectAsync(GitObjectType.Blob, content, cancellationToken);
+        if (existing.Hash.Equals(blobHash))
+        {
+            return false;
+        }
+
+        entries[path] = existing with { Hash = blobHash };
+        return true;
     }
 
     private async Task<bool> ApplyAddFileAsync(Dictionary<string, TreeLeaf> entries, string path, byte[] content, CancellationToken cancellationToken)

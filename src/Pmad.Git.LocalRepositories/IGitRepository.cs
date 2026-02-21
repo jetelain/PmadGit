@@ -21,6 +21,14 @@ public interface IGitRepository
     int HashLengthBytes { get; }
 
     /// <summary>
+    /// Gets the underlying object store used to access Git objects.
+    /// </summary>
+    /// <remarks>The object store provides low-level access to Git objects such as commits, trees, blobs, and
+    /// tags. Use this property to perform advanced operations that require direct interaction with the Git object
+    /// database.</remarks>
+    IGitObjectStore ObjectStore { get; }
+
+    /// <summary>
     /// Resolves <paramref name="reference"/> (defaults to HEAD) and returns the corresponding commit.
     /// </summary>
     /// <param name="reference">Commit hash or reference name; HEAD if omitted.</param>
@@ -103,6 +111,18 @@ public interface IGitRepository
     Task<GitFileContentAndHash> ReadFileAndHashAsync(string filePath, string? reference = null, CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Reads the blob content at <paramref name="filePath"/> from the specified <paramref name="reference"/> as a stream.
+    /// For loose objects, the stream reads directly from disk without buffering the entire content.
+    /// For pack objects, the stream is backed by a <see cref="System.IO.MemoryStream"/>.
+    /// The caller is responsible for disposing the returned <see cref="GitObjectStream"/>.
+    /// </summary>
+    /// <param name="filePath">Repository-relative file path using / separators.</param>
+    /// <param name="reference">Commit hash or ref to read from; defaults to HEAD.</param>
+    /// <param name="cancellationToken">Token used to cancel the async operation.</param>
+    /// <returns>A <see cref="GitObjectStream"/> whose <see cref="GitObjectStream.Content"/> exposes the blob payload.</returns>
+    Task<GitObjectStream> ReadFileStreamAsync(string filePath, string? reference = null, CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// Streams commits where <paramref name="filePath"/> changed, newest first.
     /// </summary>
     /// <param name="filePath">Repository-relative file path to inspect.</param>
@@ -142,16 +162,6 @@ public interface IGitRepository
     /// <param name="cancellationToken">Token used to cancel the async operation.</param>
     /// <returns>The decoded object payload.</returns>
     Task<GitObjectData> ReadObjectAsync(GitHash hash, CancellationToken cancellationToken = default);
-
-    /// <summary>
-    /// Reads a raw git object from the repository object database as a stream.
-    /// For loose objects, this returns a stream that reads directly from disk without buffering the entire content.
-    /// For pack objects, this returns a MemoryStream with the decompressed content.
-    /// </summary>
-    /// <param name="hash">Identifier of the object to retrieve.</param>
-    /// <param name="cancellationToken">Token used to cancel the async operation.</param>
-    /// <returns>The decoded object as a stream. The caller is responsible for disposing the stream.</returns>
-    Task<GitObjectStream> ReadObjectStreamAsync(GitHash hash, CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Writes a raw git object to the repository object database.

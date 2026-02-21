@@ -5,6 +5,10 @@ using Pmad.Git.LocalRepositories.Utilities;
 
 namespace Pmad.Git.LocalRepositories;
 
+/// <summary>
+/// Provides low-level read and write access to a local git object database,
+/// supporting both loose objects and pack files.
+/// </summary>
 internal sealed class GitObjectStore : IGitObjectStore
 {
     private readonly string _gitDirectory;
@@ -23,11 +27,16 @@ internal sealed class GitObjectStore : IGitObjectStore
     /// </summary>
     public int HashLengthBytes => _hashLengthBytes;
 
+    /// <summary>
+    /// Discards the cached pack-file index so that subsequent reads reflect the current state of the
+    /// <c>objects/pack</c> directory.
+    /// </summary>
     public void InvalidateCaches()
     {
         Interlocked.Exchange(ref _packsTask, LoadPackEntriesAsync());
     }
 
+    /// <inheritdoc/>
     public async Task<GitObjectData> ReadObjectAsync(GitHash hash, CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
@@ -52,6 +61,7 @@ internal sealed class GitObjectStore : IGitObjectStore
         throw new FileNotFoundException($"Git object {hash} could not be found");
     }
 
+    /// <inheritdoc/>
     public async Task<GitObjectStream> ReadObjectStreamAsync(GitHash hash, CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
@@ -276,6 +286,7 @@ internal sealed class GitObjectStore : IGitObjectStore
 
 
 
+    /// <inheritdoc/>
     public async Task<GitHash> WriteObjectAsync(GitObjectType type, ReadOnlyMemory<byte> content, CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
@@ -320,6 +331,7 @@ internal sealed class GitObjectStore : IGitObjectStore
         return Encoding.ASCII.GetBytes($"{GitObjectTypeHelper.GetObjectTypeName(type)} {length}\0");
     }
 
+    /// <inheritdoc/>
     public Task<GitHash> WriteObjectAsync(GitObjectType type, Stream stream, CancellationToken cancellationToken)
     {
         if (!stream.CanSeek)
@@ -329,6 +341,7 @@ internal sealed class GitObjectStore : IGitObjectStore
         return WriteObjectAsync(type, stream, stream.Length - stream.Position, cancellationToken);
     }
 
+    /// <inheritdoc/>
     public async Task<GitHash> WriteObjectAsync(GitObjectType type, Stream stream, long contentLength, CancellationToken cancellationToken)
     {
         // Create a temporary file in the same directory to ensure move operation will be atomic
@@ -352,14 +365,9 @@ internal sealed class GitObjectStore : IGitObjectStore
                 using var hashing = new HashingWriteStream(zlib, GitHashHelper.GetAlgorithmName(_hashLengthBytes), leaveOpen: true);
                 var header = CreateHeader(type, contentLength);
                 await hashing.WriteAsync(header, cancellationToken).ConfigureAwait(false);
-                await stream.CopyToAsync(hashing, cancellationToken).ConfigureAwait(false);
+                await stream.CopyToExactlyAsync(hashing, contentLength, cancellationToken).ConfigureAwait(false);
                 await hashing.FlushAsync(cancellationToken).ConfigureAwait(false);
                 await zlib.FlushAsync(cancellationToken).ConfigureAwait(false);
-
-                if (hashing.BytesWritten != header.Length + contentLength)
-                {
-                    throw new InvalidDataException("Stream length changed during write");
-                }
                 hash = GitHash.FromBytes(hashing.CompleteHash());
             }
 
@@ -367,13 +375,13 @@ internal sealed class GitObjectStore : IGitObjectStore
             var objectPath = GetPath(hash);
             Directory.CreateDirectory(Path.GetDirectoryName(objectPath)!);
 
-            if (File.Exists(objectPath) && new FileInfo(tempFile).Length == new FileInfo(objectPath).Length)
+            if (File.Exists(objectPath))
             {
                 // Object already exists; reuse it.
                 return hash;
             }
 
-            File.Move(tempFile, objectPath, overwrite: true);
+            File.Move(tempFile, objectPath, overwrite: false);
 
             return hash;
         }
