@@ -1,6 +1,6 @@
 using System.Security.Cryptography;
 
-namespace Pmad.Git.HttpServer.Utilities;
+namespace Pmad.Git.LocalRepositories.Utilities;
 
 internal sealed class HashingWriteStream : Stream
 {

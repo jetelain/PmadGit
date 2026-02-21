@@ -1,8 +1,7 @@
 using System.Security.Cryptography;
-using System.Text;
-using Pmad.Git.HttpServer.Utilities;
+using Pmad.Git.LocalRepositories.Utilities;
 
-namespace Pmad.Git.HttpServer.Test.Utilities;
+namespace Pmad.Git.LocalRepositories.Test.Utilities;
 
 public sealed class HashingWriteStreamTest
 {
