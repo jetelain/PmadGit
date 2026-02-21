@@ -34,7 +34,7 @@ public interface IGitObjectStore
     /// <param name="content">Raw payload without headers.</param>
     /// <param name="cancellationToken">Token used to cancel the async operation.</param>
     /// <returns>The hash assigned to the stored object.</returns>
-    Task<GitHash> WriteObjectAsync(GitObjectType type, ReadOnlyMemory<byte> content, CancellationToken cancellationToken);
+    Task<GitHash> WriteObjectAsync(GitObjectType type, ReadOnlyMemory<byte> content, CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Writes a raw git object to the object database by reading exactly <paramref name="contentLength"/> bytes from
@@ -47,7 +47,7 @@ public interface IGitObjectStore
     /// <param name="cancellationToken">Token used to cancel the async operation.</param>
     /// <returns>The hash assigned to the stored object.</returns>
     /// <exception cref="System.IO.EndOfStreamException">Thrown when the stream yields fewer bytes than <paramref name="contentLength"/>.</exception>
-    Task<GitHash> WriteObjectAsync(GitObjectType type, Stream content, long contentLength, CancellationToken cancellationToken);
+    Task<GitHash> WriteObjectAsync(GitObjectType type, Stream content, long contentLength, CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Writes a raw git object to the object database from a seekable stream.
@@ -59,5 +59,5 @@ public interface IGitObjectStore
     /// <param name="cancellationToken">Token used to cancel the async operation.</param>
     /// <returns>The hash assigned to the stored object.</returns>
     /// <exception cref="System.ArgumentException">Thrown when <paramref name="content"/> does not support seeking.</exception>
-    Task<GitHash> WriteObjectAsync(GitObjectType type, Stream content, CancellationToken cancellationToken);
+    Task<GitHash> WriteObjectAsync(GitObjectType type, Stream content, CancellationToken cancellationToken = default);
 }

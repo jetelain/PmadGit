@@ -65,7 +65,7 @@ internal sealed class GitPackReader
                     {
                         return cached;
                     }
-                    return await repository.ReadObjectAsync(hash, ct).ConfigureAwait(false);
+                    return await repository.ObjectStore.ReadObjectAsync(hash, ct).ConfigureAwait(false);
                 },
                 async (offset, ct) =>
                 {
@@ -78,7 +78,7 @@ internal sealed class GitPackReader
                 },
                 cancellationToken).ConfigureAwait(false);
 
-            var storedHash = await repository.WriteObjectAsync(materialized.Type, materialized.Content, cancellationToken).ConfigureAwait(false);
+            var storedHash = await repository.ObjectStore.WriteObjectAsync(materialized.Type, materialized.Content, cancellationToken).ConfigureAwait(false);
             created.Add(storedHash);
             offsetCache[objectOffset] = materialized;
             hashCache[storedHash.Value] = materialized;

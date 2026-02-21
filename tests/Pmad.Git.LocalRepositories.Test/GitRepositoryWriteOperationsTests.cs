@@ -38,7 +38,7 @@ public sealed class GitRepositoryWriteOperationsTests
 			var appContent = await repository.ReadFileAsync("src/app.txt", commitHash.Value);
 			Assert.Equal("app content", Encoding.UTF8.GetString(appContent));
 
-			var refs = await repository.GetReferencesAsync();
+			var refs = await repository.ReferenceStore.GetReferencesAsync();
 			Assert.Contains(refs, r => r.Key == "refs/heads/main");
 			Assert.Equal(commitHash, refs["refs/heads/main"]);
 		}
@@ -102,7 +102,7 @@ public sealed class GitRepositoryWriteOperationsTests
 				},
 				metadata);
 
-			var refs = await repository.GetReferencesAsync();
+			var refs = await repository.ReferenceStore.GetReferencesAsync();
 			Assert.Contains(refs, r => r.Key == "refs/heads/develop");
 			Assert.Equal(commitHash, refs["refs/heads/develop"]);
 
@@ -787,9 +787,9 @@ public sealed class GitRepositoryWriteOperationsTests
 		var gitRepository = GitRepository.Open(repo.WorkingDirectory);
 		var content = Encoding.UTF8.GetBytes("test content");
 
-		var hash = await gitRepository.WriteObjectAsync(GitObjectType.Blob, content);
+		var hash = await gitRepository.ObjectStore.WriteObjectAsync(GitObjectType.Blob, content);
 
-		var obj = await gitRepository.ReadObjectAsync(hash);
+		var obj = await gitRepository.ObjectStore.ReadObjectAsync(hash);
 		Assert.Equal(GitObjectType.Blob, obj.Type);
 		Assert.Equal("test content", Encoding.UTF8.GetString(obj.Content));
 	}
@@ -801,7 +801,7 @@ public sealed class GitRepositoryWriteOperationsTests
 		var gitRepository = GitRepository.Open(repo.WorkingDirectory);
 		var content = Encoding.UTF8.GetBytes("test content for hashing");
 
-		var hash = await gitRepository.WriteObjectAsync(GitObjectType.Blob, content);
+		var hash = await gitRepository.ObjectStore.WriteObjectAsync(GitObjectType.Blob, content);
 
 		var catFile = repo.RunGit($"cat-file -t {hash.Value}");
 		Assert.Equal("blob", catFile.Trim());
@@ -818,7 +818,7 @@ public sealed class GitRepositoryWriteOperationsTests
 		var blobHash = new GitHash(repo.RunGit("rev-parse HEAD:test.txt").Trim());
 		var gitRepository = GitRepository.Open(repo.WorkingDirectory);
 
-		var obj = await gitRepository.ReadObjectAsync(blobHash);
+		var obj = await gitRepository.ObjectStore.ReadObjectAsync(blobHash);
 
 		Assert.Equal(GitObjectType.Blob, obj.Type);
 		Assert.Equal("file content", Encoding.UTF8.GetString(obj.Content));
@@ -831,7 +831,7 @@ public sealed class GitRepositoryWriteOperationsTests
 		var commitHash = repo.Commit("Test commit", ("file.txt", "content"));
 		var gitRepository = GitRepository.Open(repo.WorkingDirectory);
 
-		var obj = await gitRepository.ReadObjectAsync(commitHash);
+		var obj = await gitRepository.ObjectStore.ReadObjectAsync(commitHash);
 
 		Assert.Equal(GitObjectType.Commit, obj.Type);
 		var content = Encoding.UTF8.GetString(obj.Content);
@@ -846,7 +846,7 @@ public sealed class GitRepositoryWriteOperationsTests
 		var treeHash = new GitHash(repo.RunGit("rev-parse HEAD^{tree}").Trim());
 		var gitRepository = GitRepository.Open(repo.WorkingDirectory);
 
-		var obj = await gitRepository.ReadObjectAsync(treeHash);
+		var obj = await gitRepository.ObjectStore.ReadObjectAsync(treeHash);
 
 		Assert.Equal(GitObjectType.Tree, obj.Type);
 	}
@@ -859,7 +859,7 @@ public sealed class GitRepositoryWriteOperationsTests
 		var fakeHash = new GitHash("1234567890123456789012345678901234567890");
 
 		await Assert.ThrowsAsync<FileNotFoundException>(() =>
-			gitRepository.ReadObjectAsync(fakeHash));
+			gitRepository.ObjectStore.ReadObjectAsync(fakeHash));
 	}
 
 	#endregion
@@ -875,7 +875,7 @@ public sealed class GitRepositoryWriteOperationsTests
 		repo.RunGit("branch feature2");
 		var gitRepository = GitRepository.Open(repo.WorkingDirectory);
 
-		var references = await gitRepository.GetReferencesAsync();
+		var references = await gitRepository.ReferenceStore.GetReferencesAsync();
 
 		Assert.Contains(references, r => r.Key == $"refs/heads/{defaultBranch}");
 		Assert.Contains(references, r => r.Key == "refs/heads/feature1");
@@ -890,7 +890,7 @@ public sealed class GitRepositoryWriteOperationsTests
 		repo.RunGit("tag -a v2.0 -m \"Version 2.0\"");
 		var gitRepository = GitRepository.Open(repo.WorkingDirectory);
 
-		var references = await gitRepository.GetReferencesAsync();
+		var references = await gitRepository.ReferenceStore.GetReferencesAsync();
 
 		Assert.Contains(references, r => r.Key == "refs/tags/v1.0");
 		Assert.Contains(references, r => r.Key == "refs/tags/v2.0");
@@ -902,7 +902,7 @@ public sealed class GitRepositoryWriteOperationsTests
 		using var repo = GitTestRepository.Create();
 		var gitRepository = GitRepository.Open(repo.WorkingDirectory);
 
-		var references = await gitRepository.GetReferencesAsync();
+		var references = await gitRepository.ReferenceStore.GetReferencesAsync();
 
 		Assert.IsAssignableFrom<IReadOnlyDictionary<string, GitHash>>(references);
 	}
@@ -913,18 +913,18 @@ public sealed class GitRepositoryWriteOperationsTests
 		using var repo = GitTestRepository.Create();
 		var gitRepository = GitRepository.Open(repo.WorkingDirectory);
 
-		var refs1 = await gitRepository.GetReferencesAsync();
+		var refs1 = await gitRepository.ReferenceStore.GetReferencesAsync();
 		var countBefore = refs1.Count;
 
 		repo.RunGit("branch new-branch");
 
-		var refs2 = await gitRepository.GetReferencesAsync();
+		var refs2 = await gitRepository.ReferenceStore.GetReferencesAsync();
 
 		Assert.Equal(countBefore, refs1.Count);
 		Assert.Equal(countBefore, refs2.Count);
 
 		gitRepository.InvalidateCaches();
-		var refs3 = await gitRepository.GetReferencesAsync();
+		var refs3 = await gitRepository.ReferenceStore.GetReferencesAsync();
 
 		Assert.True(refs3.Count > countBefore);
 	}

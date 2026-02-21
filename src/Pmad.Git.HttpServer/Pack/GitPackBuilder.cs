@@ -27,7 +27,7 @@ internal sealed class GitPackBuilder
         foreach (var hash in objects)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            var data = await repository.ReadObjectAsync(hash, cancellationToken).ConfigureAwait(false);
+            var data = await repository.ObjectStore.ReadObjectAsync(hash, cancellationToken).ConfigureAwait(false);
             await WriteObjectAsync(hashingStream, data, cancellationToken).ConfigureAwait(false);
         }
 

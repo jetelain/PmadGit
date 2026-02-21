@@ -190,9 +190,9 @@ public sealed class GitSmartHttpService
         // Locks are acquired in sorted order to prevent deadlocks
         var referencePaths = updates.Select(u => NormalizeReferencePath(u.Name)).ToList();
         List<RefStatus> refStatuses;
-        using (var locks = await repository.AcquireMultipleReferenceLocksAsync(referencePaths, cancellationToken).ConfigureAwait(false))
+        using (var locks = await repository.ReferenceStore.AcquireMultipleReferenceLocksAsync(referencePaths, cancellationToken).ConfigureAwait(false))
         {
-            var refSnapshot = new Dictionary<string, GitHash>(await repository.GetReferencesAsync(cancellationToken).ConfigureAwait(false), StringComparer.Ordinal);
+            var refSnapshot = new Dictionary<string, GitHash>(await repository.ReferenceStore.GetReferencesAsync(cancellationToken).ConfigureAwait(false), StringComparer.Ordinal);
             refStatuses = new List<RefStatus>(updates.Count);
             foreach (var update in updates)
             {
@@ -371,7 +371,7 @@ public sealed class GitSmartHttpService
     /// <returns>A task representing the asynchronous operation.</returns>
     private async Task AdvertiseReferencesAsync(IGitRepository repository, GitServiceKind service, Stream destination, CancellationToken cancellationToken)
     {
-        var references = await repository.GetReferencesAsync(cancellationToken).ConfigureAwait(false);
+        var references = await repository.ReferenceStore.GetReferencesAsync(cancellationToken).ConfigureAwait(false);
         var headInfo = await ReadHeadInfoAsync(repository, cancellationToken).ConfigureAwait(false);
         var entries = new List<ReferenceLine>();
 
@@ -428,7 +428,7 @@ public sealed class GitSmartHttpService
         if (content.StartsWith("ref: ", StringComparison.Ordinal))
         {
             var target = content[5..].Trim();
-            var refs = await repository.GetReferencesAsync(cancellationToken).ConfigureAwait(false);
+            var refs = await repository.ReferenceStore.GetReferencesAsync(cancellationToken).ConfigureAwait(false);
             if (refs.TryGetValue(target, out var hash))
             {
                 return new HeadInfo(hash, target);

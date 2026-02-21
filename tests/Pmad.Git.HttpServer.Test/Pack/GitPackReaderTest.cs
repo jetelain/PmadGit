@@ -88,7 +88,7 @@ public sealed class GitPackReaderTest : IDisposable
             var repository = await CreateTargetRepositoryWithPackAsync(targetDir);
             foreach (var hash in created)
             {
-                var obj = await repository.ReadObjectAsync(hash, CancellationToken.None);
+                var obj = await repository.ObjectStore.ReadObjectAsync(hash, CancellationToken.None);
                 if (obj.Type == GitObjectType.Tree)
                 {
                     treeObjects.Add(hash);
@@ -315,7 +315,7 @@ public sealed class GitPackReaderTest : IDisposable
             var objectTypeCount = new Dictionary<GitObjectType, int>();
             foreach (var hash in created)
             {
-                var obj = await repository.ReadObjectAsync(hash, CancellationToken.None);
+                var obj = await repository.ObjectStore.ReadObjectAsync(hash, CancellationToken.None);
                 Assert.NotNull(obj);
                 objectTypeCount.TryGetValue(obj.Type, out var count);
                 objectTypeCount[obj.Type] = count + 1;
@@ -348,7 +348,7 @@ public sealed class GitPackReaderTest : IDisposable
             var objectTypes = new HashSet<GitObjectType>();
             foreach (var hash in created)
             {
-                var obj = await repository.ReadObjectAsync(hash, CancellationToken.None);
+                var obj = await repository.ObjectStore.ReadObjectAsync(hash, CancellationToken.None);
                 objectTypes.Add(obj.Type);
             }
 
@@ -392,7 +392,7 @@ public sealed class GitPackReaderTest : IDisposable
             Assert.NotEmpty(created);
             foreach (var hash in created)
             {
-                var obj = await repository.ReadObjectAsync(hash, CancellationToken.None);
+                var obj = await repository.ObjectStore.ReadObjectAsync(hash, CancellationToken.None);
                 Assert.NotNull(obj);
             }
 

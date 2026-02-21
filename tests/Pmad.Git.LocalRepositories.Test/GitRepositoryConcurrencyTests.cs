@@ -249,10 +249,10 @@ public sealed class GitRepositoryConcurrencyTests : IDisposable
         var headRef = GitTestHelper.GetHeadReference(repo);
 
         // Act & Assert - Should succeed
-        await gitRepository.WriteReferenceWithValidationAsync(headRef, commit2, commit1);
+        await gitRepository.ReferenceStore.WriteReferenceWithValidationAsync(headRef, commit2, commit1);
 
         gitRepository.InvalidateCaches();
-        var refs = await gitRepository.GetReferencesAsync();
+        var refs = await gitRepository.ReferenceStore.GetReferencesAsync();
         Assert.Equal(commit1, refs[headRef]);
     }
 
@@ -271,7 +271,7 @@ public sealed class GitRepositoryConcurrencyTests : IDisposable
 
         // Act & Assert
         await Assert.ThrowsAsync<InvalidOperationException>(async () =>
-            await gitRepository.WriteReferenceWithValidationAsync(headRef, fakeOldHash, commit1));
+            await gitRepository.ReferenceStore.WriteReferenceWithValidationAsync(headRef, fakeOldHash, commit1));
     }
 
     [Fact]
@@ -284,11 +284,11 @@ public sealed class GitRepositoryConcurrencyTests : IDisposable
         var newRefPath = "refs/heads/newbranch";
 
         // Act - Create new reference
-        await gitRepository.WriteReferenceWithValidationAsync(newRefPath, null, commit);
+        await gitRepository.ReferenceStore.WriteReferenceWithValidationAsync(newRefPath, null, commit);
 
         // Assert
         gitRepository.InvalidateCaches();
-        var refs = await gitRepository.GetReferencesAsync();
+        var refs = await gitRepository.ReferenceStore.GetReferencesAsync();
         Assert.True(refs.TryGetValue(newRefPath, out var actualCommit));
         Assert.Equal(commit, actualCommit);
     }
@@ -304,15 +304,15 @@ public sealed class GitRepositoryConcurrencyTests : IDisposable
         gitRepository.InvalidateCaches();
         var refPath = "refs/heads/deleteme";
         
-        var refs = await gitRepository.GetReferencesAsync();
+        var refs = await gitRepository.ReferenceStore.GetReferencesAsync();
         var currentValue = refs[refPath];
 
         // Act - Delete reference
-        await gitRepository.WriteReferenceWithValidationAsync(refPath, currentValue, null);
+        await gitRepository.ReferenceStore.WriteReferenceWithValidationAsync(refPath, currentValue, null);
 
         // Assert
         gitRepository.InvalidateCaches();
-        refs = await gitRepository.GetReferencesAsync();
+        refs = await gitRepository.ReferenceStore.GetReferencesAsync();
         Assert.False(refs.ContainsKey(refPath));
     }
 
@@ -332,7 +332,7 @@ public sealed class GitRepositoryConcurrencyTests : IDisposable
         var refs = new[] { "refs/heads/main", "refs/heads/feature1", "refs/heads/feature2" };
 
         // Act & Assert - Should acquire all locks successfully 
-        using (await gitRepository.AcquireMultipleReferenceLocksAsync(refs))
+        using (await gitRepository.ReferenceStore.AcquireMultipleReferenceLocksAsync(refs))
         {
             // Locks acquired, can perform batch operations
             Assert.True(true);
@@ -361,7 +361,7 @@ public sealed class GitRepositoryConcurrencyTests : IDisposable
         var task1 = Task.Run(async () =>
         {
             await startSignal.Task;
-            using (await gitRepository.AcquireMultipleReferenceLocksAsync(refs1))
+            using (await gitRepository.ReferenceStore.AcquireMultipleReferenceLocksAsync(refs1))
             {
                 await Task.Delay(50);
                 lock (lockObject) { completions.Add(1); }
@@ -372,7 +372,7 @@ public sealed class GitRepositoryConcurrencyTests : IDisposable
         {
             await startSignal.Task;
             await Task.Delay(10);
-            using (await gitRepository.AcquireMultipleReferenceLocksAsync(refs2))
+            using (await gitRepository.ReferenceStore.AcquireMultipleReferenceLocksAsync(refs2))
             {
                 await Task.Delay(50);
                 lock (lockObject) { completions.Add(2); }
@@ -408,7 +408,7 @@ public sealed class GitRepositoryConcurrencyTests : IDisposable
         var task1 = Task.Run(async () =>
         {
             await startSignal.Task;
-            using (await gitRepository.AcquireMultipleReferenceLocksAsync(refs))
+            using (await gitRepository.ReferenceStore.AcquireMultipleReferenceLocksAsync(refs))
             {
                 lock (lockObject) { operations.Add("batch1-start"); }
                 await Task.Delay(50);
@@ -420,7 +420,7 @@ public sealed class GitRepositoryConcurrencyTests : IDisposable
         {
             await startSignal.Task;
             await Task.Delay(10);
-            using (await gitRepository.AcquireMultipleReferenceLocksAsync(refs))
+            using (await gitRepository.ReferenceStore.AcquireMultipleReferenceLocksAsync(refs))
             {
                 lock (lockObject) { operations.Add("batch2-start"); }
                 await Task.Delay(50);
@@ -452,7 +452,7 @@ public sealed class GitRepositoryConcurrencyTests : IDisposable
         var gitRepository = GitRepository.Open(repo.WorkingDirectory);
 
         // Act & Assert - Should not throw
-        using (await gitRepository.AcquireMultipleReferenceLocksAsync(Array.Empty<string>()))
+        using (await gitRepository.ReferenceStore.AcquireMultipleReferenceLocksAsync(Array.Empty<string>()))
         {
             Assert.True(true);
         }
@@ -469,7 +469,7 @@ public sealed class GitRepositoryConcurrencyTests : IDisposable
 
         // Act - Should handle duplicates by deduplication (acquiring each lock only once)
         var startTime = DateTimeOffset.UtcNow;
-        using (await gitRepository.AcquireMultipleReferenceLocksAsync(refs))
+        using (await gitRepository.ReferenceStore.AcquireMultipleReferenceLocksAsync(refs))
         {
             Assert.True(true);
         }
@@ -497,7 +497,7 @@ public sealed class GitRepositoryConcurrencyTests : IDisposable
         var batchTask = Task.Run(async () =>
         {
             await startSignal.Task;
-            using (await gitRepository.AcquireMultipleReferenceLocksAsync(batchRefs))
+            using (await gitRepository.ReferenceStore.AcquireMultipleReferenceLocksAsync(batchRefs))
             {
                 lock (lockObject) { timestamps.Add(("batch-start", DateTimeOffset.UtcNow)); }
                 await Task.Delay(100);
@@ -509,7 +509,7 @@ public sealed class GitRepositoryConcurrencyTests : IDisposable
         {
             await startSignal.Task;
             await Task.Delay(20);
-            using (await gitRepository.AcquireMultipleReferenceLocksAsync(new[] { "refs/heads/feature" }))
+            using (await gitRepository.ReferenceStore.AcquireMultipleReferenceLocksAsync(new[] { "refs/heads/feature" }))
             {
                 lock (lockObject) { timestamps.Add(("single-start", DateTimeOffset.UtcNow)); }
                 await Task.Delay(50);
@@ -548,7 +548,7 @@ public sealed class GitRepositoryConcurrencyTests : IDisposable
 
         // Act & Assert - Should throw OperationCanceledException immediately
         await Assert.ThrowsAnyAsync<OperationCanceledException>(async () =>
-            await gitRepository.AcquireMultipleReferenceLocksAsync(refs, cts.Token));
+            await gitRepository.ReferenceStore.AcquireMultipleReferenceLocksAsync(refs, cts.Token));
     }
 
     [Fact]
@@ -560,7 +560,7 @@ public sealed class GitRepositoryConcurrencyTests : IDisposable
 
         // Act & Assert
         await Assert.ThrowsAsync<ArgumentNullException>(async () =>
-            await gitRepository.AcquireMultipleReferenceLocksAsync(null!));
+            await gitRepository.ReferenceStore.AcquireMultipleReferenceLocksAsync(null!));
     }
 
     [Fact]
@@ -573,7 +573,7 @@ public sealed class GitRepositoryConcurrencyTests : IDisposable
 
         // Act & Assert
         await Assert.ThrowsAsync<ArgumentException>(async () =>
-            await gitRepository.AcquireMultipleReferenceLocksAsync(refs));
+            await gitRepository.ReferenceStore.AcquireMultipleReferenceLocksAsync(refs));
     }
 
     [Fact]
@@ -586,7 +586,7 @@ public sealed class GitRepositoryConcurrencyTests : IDisposable
 
         // Act & Assert
         var exception = await Assert.ThrowsAsync<ArgumentException>(async () =>
-            await gitRepository.AcquireMultipleReferenceLocksAsync(refs));
+            await gitRepository.ReferenceStore.AcquireMultipleReferenceLocksAsync(refs));
         
         Assert.Contains("must start with 'refs/'", exception.Message);
     }
@@ -604,7 +604,7 @@ public sealed class GitRepositoryConcurrencyTests : IDisposable
         var refs = new[] { "refs/heads/main  ", "  refs\\heads\\feature", "refs/heads/main" };
 
         // Act - Should normalize and deduplicate without throwing
-        using (await gitRepository.AcquireMultipleReferenceLocksAsync(refs))
+        using (await gitRepository.ReferenceStore.AcquireMultipleReferenceLocksAsync(refs))
         {
             Assert.True(true);
         }

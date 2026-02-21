@@ -33,14 +33,14 @@ public sealed class GitMultipleReferenceLocksTests : IDisposable
         var refs = new[] { headRef };
 
         // Act
-        using (var locks = await gitRepository.AcquireMultipleReferenceLocksAsync(refs))
+        using (var locks = await gitRepository.ReferenceStore.AcquireMultipleReferenceLocksAsync(refs))
         {
             await locks.WriteReferenceWithValidationAsync(headRef, commit2, commit1);
         }
 
         // Assert
         gitRepository.InvalidateCaches();
-        var currentRefs = await gitRepository.GetReferencesAsync();
+        var currentRefs = await gitRepository.ReferenceStore.GetReferencesAsync();
         Assert.Equal(commit1, currentRefs[headRef]);
     }
 
@@ -58,7 +58,7 @@ public sealed class GitMultipleReferenceLocksTests : IDisposable
         var lockedRefs = new[] { headRef };
 
         // Act & Assert
-        using (var locks = await gitRepository.AcquireMultipleReferenceLocksAsync(lockedRefs))
+        using (var locks = await gitRepository.ReferenceStore.AcquireMultipleReferenceLocksAsync(lockedRefs))
         {
             var exception = await Assert.ThrowsAsync<InvalidOperationException>(async () =>
                 await locks.WriteReferenceWithValidationAsync(featureRef, null, commit));
@@ -77,7 +77,7 @@ public sealed class GitMultipleReferenceLocksTests : IDisposable
         var headRef = GitTestHelper.GetHeadReference(repo);
         var refs = new[] { headRef };
 
-        var locks = await gitRepository.AcquireMultipleReferenceLocksAsync(refs);
+        var locks = await gitRepository.ReferenceStore.AcquireMultipleReferenceLocksAsync(refs);
         locks.Dispose();
 
         // Act & Assert
@@ -99,12 +99,12 @@ public sealed class GitMultipleReferenceLocksTests : IDisposable
         gitRepository.InvalidateCaches();
 
         var refs = new[] { "refs/heads/branch-a", "refs/heads/branch-b" };
-        var currentRefs = await gitRepository.GetReferencesAsync();
+        var currentRefs = await gitRepository.ReferenceStore.GetReferencesAsync();
         var currentA = currentRefs["refs/heads/branch-a"];
         var currentB = currentRefs["refs/heads/branch-b"];
 
         // Act
-        using (var locks = await gitRepository.AcquireMultipleReferenceLocksAsync(refs))
+        using (var locks = await gitRepository.ReferenceStore.AcquireMultipleReferenceLocksAsync(refs))
         {
             await locks.WriteReferenceWithValidationAsync("refs/heads/branch-a", currentA, commit1);
             await locks.WriteReferenceWithValidationAsync("refs/heads/branch-b", currentB, commit1);
@@ -112,7 +112,7 @@ public sealed class GitMultipleReferenceLocksTests : IDisposable
 
         // Assert
         gitRepository.InvalidateCaches();
-        var updatedRefs = await gitRepository.GetReferencesAsync();
+        var updatedRefs = await gitRepository.ReferenceStore.GetReferencesAsync();
         Assert.Equal(commit1, updatedRefs["refs/heads/branch-a"]);
         Assert.Equal(commit1, updatedRefs["refs/heads/branch-b"]);
     }
@@ -128,14 +128,14 @@ public sealed class GitMultipleReferenceLocksTests : IDisposable
         var refs = new[] { newRef };
 
         // Act
-        using (var locks = await gitRepository.AcquireMultipleReferenceLocksAsync(refs))
+        using (var locks = await gitRepository.ReferenceStore.AcquireMultipleReferenceLocksAsync(refs))
         {
             await locks.WriteReferenceWithValidationAsync(newRef, null, commit);
         }
 
         // Assert
         gitRepository.InvalidateCaches();
-        var updatedRefs = await gitRepository.GetReferencesAsync();
+        var updatedRefs = await gitRepository.ReferenceStore.GetReferencesAsync();
         Assert.True(updatedRefs.TryGetValue(newRef, out var actualCommit));
         Assert.Equal(commit, actualCommit);
     }
@@ -154,18 +154,18 @@ public sealed class GitMultipleReferenceLocksTests : IDisposable
         var deleteRef = "refs/heads/todelete";
         var refs = new[] { deleteRef };
 
-        var currentRefs = await gitRepository.GetReferencesAsync();
+        var currentRefs = await gitRepository.ReferenceStore.GetReferencesAsync();
         var currentValue = currentRefs[deleteRef];
 
         // Act
-        using (var locks = await gitRepository.AcquireMultipleReferenceLocksAsync(refs))
+        using (var locks = await gitRepository.ReferenceStore.AcquireMultipleReferenceLocksAsync(refs))
         {
             await locks.WriteReferenceWithValidationAsync(deleteRef, currentValue, null);
         }
 
         // Assert
         gitRepository.InvalidateCaches();
-        var updatedRefs = await gitRepository.GetReferencesAsync();
+        var updatedRefs = await gitRepository.ReferenceStore.GetReferencesAsync();
         Assert.False(updatedRefs.ContainsKey(deleteRef));
     }
 
@@ -184,7 +184,7 @@ public sealed class GitMultipleReferenceLocksTests : IDisposable
         var fakeOldHash = new GitHash("1234567890123456789012345678901234567890");
 
         // Act & Assert
-        using (var locks = await gitRepository.AcquireMultipleReferenceLocksAsync(refs))
+        using (var locks = await gitRepository.ReferenceStore.AcquireMultipleReferenceLocksAsync(refs))
         {
             await Assert.ThrowsAsync<InvalidOperationException>(async () =>
                 await locks.WriteReferenceWithValidationAsync(headRef, fakeOldHash, commit1));
@@ -218,10 +218,10 @@ public sealed class GitMultipleReferenceLocksTests : IDisposable
             "refs/heads/feature-c"
         };
 
-        var currentRefs = await gitRepository.GetReferencesAsync();
+        var currentRefs = await gitRepository.ReferenceStore.GetReferencesAsync();
 
         // Act - Batch update all references
-        using (var locks = await gitRepository.AcquireMultipleReferenceLocksAsync(refs))
+        using (var locks = await gitRepository.ReferenceStore.AcquireMultipleReferenceLocksAsync(refs))
         {
             await locks.WriteReferenceWithValidationAsync("refs/heads/feature-a", currentRefs["refs/heads/feature-a"], commit1);
             await locks.WriteReferenceWithValidationAsync("refs/heads/feature-b", currentRefs["refs/heads/feature-b"], commit2);
@@ -230,7 +230,7 @@ public sealed class GitMultipleReferenceLocksTests : IDisposable
 
         // Assert
         gitRepository.InvalidateCaches();
-        var updatedRefs = await gitRepository.GetReferencesAsync();
+        var updatedRefs = await gitRepository.ReferenceStore.GetReferencesAsync();
         Assert.Equal(commit1, updatedRefs["refs/heads/feature-a"]);
         Assert.Equal(commit2, updatedRefs["refs/heads/feature-b"]);
         Assert.Equal(commit3, updatedRefs["refs/heads/feature-c"]);
@@ -257,10 +257,10 @@ public sealed class GitMultipleReferenceLocksTests : IDisposable
             "refs/heads/to-create"
         };
 
-        var currentRefs = await gitRepository.GetReferencesAsync();
+        var currentRefs = await gitRepository.ReferenceStore.GetReferencesAsync();
 
         // Act
-        using (var locks = await gitRepository.AcquireMultipleReferenceLocksAsync(refs))
+        using (var locks = await gitRepository.ReferenceStore.AcquireMultipleReferenceLocksAsync(refs))
         {
             // Update existing branch
             await locks.WriteReferenceWithValidationAsync("refs/heads/to-update", currentRefs["refs/heads/to-update"], commit1);
@@ -274,7 +274,7 @@ public sealed class GitMultipleReferenceLocksTests : IDisposable
 
         // Assert
         gitRepository.InvalidateCaches();
-        var updatedRefs = await gitRepository.GetReferencesAsync();
+        var updatedRefs = await gitRepository.ReferenceStore.GetReferencesAsync();
 
         Assert.Equal(commit1, updatedRefs["refs/heads/to-update"]);
         Assert.False(updatedRefs.ContainsKey("refs/heads/to-delete"));
@@ -296,12 +296,12 @@ public sealed class GitMultipleReferenceLocksTests : IDisposable
         gitRepository.InvalidateCaches();
 
         var refs = new[] { "refs/heads/branch-a", "refs/heads/branch-b" };
-        var currentRefs = await gitRepository.GetReferencesAsync();
+        var currentRefs = await gitRepository.ReferenceStore.GetReferencesAsync();
         var fakeOldHash = new GitHash("1234567890123456789012345678901234567890");
 
         // Act - First update succeeds, second fails
         Exception? caughtException = null;
-        using (var locks = await gitRepository.AcquireMultipleReferenceLocksAsync(refs))
+        using (var locks = await gitRepository.ReferenceStore.AcquireMultipleReferenceLocksAsync(refs))
         {
             // This should succeed
             await locks.WriteReferenceWithValidationAsync("refs/heads/branch-a", currentRefs["refs/heads/branch-a"], commit1);
@@ -321,7 +321,7 @@ public sealed class GitMultipleReferenceLocksTests : IDisposable
         Assert.NotNull(caughtException);
 
         gitRepository.InvalidateCaches();
-        var updatedRefs = await gitRepository.GetReferencesAsync();
+        var updatedRefs = await gitRepository.ReferenceStore.GetReferencesAsync();
 
         // First update should have been applied
         Assert.Equal(commit1, updatedRefs["refs/heads/branch-a"]);
@@ -359,7 +359,7 @@ public sealed class GitMultipleReferenceLocksTests : IDisposable
         var task1 = Task.Run(async () =>
         {
             await startSignal.Task;
-            using (await gitRepository.AcquireMultipleReferenceLocksAsync(group1Refs))
+            using (await gitRepository.ReferenceStore.AcquireMultipleReferenceLocksAsync(group1Refs))
             {
                 lock (lockObject) { results.Add("task1-start"); }
                 await Task.Delay(50);
@@ -370,7 +370,7 @@ public sealed class GitMultipleReferenceLocksTests : IDisposable
         var task2 = Task.Run(async () =>
         {
             await startSignal.Task;
-            using (await gitRepository.AcquireMultipleReferenceLocksAsync(group2Refs))
+            using (await gitRepository.ReferenceStore.AcquireMultipleReferenceLocksAsync(group2Refs))
             {
                 lock (lockObject) { results.Add("task2-start"); }
                 await Task.Delay(50);
@@ -408,7 +408,7 @@ public sealed class GitMultipleReferenceLocksTests : IDisposable
         var task1 = Task.Run(async () =>
         {
             await startSignal.Task;
-            using (await gitRepository.AcquireMultipleReferenceLocksAsync(batch1Refs))
+            using (await gitRepository.ReferenceStore.AcquireMultipleReferenceLocksAsync(batch1Refs))
             {
                 lock (lockObject) { operations.Add("batch1-start"); }
                 await Task.Delay(50);
@@ -420,7 +420,7 @@ public sealed class GitMultipleReferenceLocksTests : IDisposable
         {
             await startSignal.Task;
             await Task.Delay(10);
-            using (await gitRepository.AcquireMultipleReferenceLocksAsync(batch2Refs))
+            using (await gitRepository.ReferenceStore.AcquireMultipleReferenceLocksAsync(batch2Refs))
             {
                 lock (lockObject) { operations.Add("batch2-start"); }
                 await Task.Delay(50);
@@ -470,7 +470,7 @@ public sealed class GitMultipleReferenceLocksTests : IDisposable
                 // Each iteration locks a random subset of branches
                 var subset = allRefs.OrderBy(_ => Random.Shared.Next()).Take(3).ToArray();
 
-                using (await gitRepository.AcquireMultipleReferenceLocksAsync(subset))
+                using (await gitRepository.ReferenceStore.AcquireMultipleReferenceLocksAsync(subset))
                 {
                     // Simulate some work
                     await Task.Delay(1);
@@ -498,7 +498,7 @@ public sealed class GitMultipleReferenceLocksTests : IDisposable
         var headRef = GitTestHelper.GetHeadReference(repo);
         var refs = new[] { headRef };
 
-        var locks = await gitRepository.AcquireMultipleReferenceLocksAsync(refs);
+        var locks = await gitRepository.ReferenceStore.AcquireMultipleReferenceLocksAsync(refs);
 
         // Act & Assert - Multiple dispose should not throw
         locks.Dispose();
@@ -514,7 +514,7 @@ public sealed class GitMultipleReferenceLocksTests : IDisposable
         var gitRepository = GitRepository.Open(repo.WorkingDirectory);
 
         // Act & Assert - Should not throw
-        using (var locks = await gitRepository.AcquireMultipleReferenceLocksAsync(Array.Empty<string>()))
+        using (var locks = await gitRepository.ReferenceStore.AcquireMultipleReferenceLocksAsync(Array.Empty<string>()))
         {
             Assert.NotNull(locks);
         }
@@ -535,18 +535,18 @@ public sealed class GitMultipleReferenceLocksTests : IDisposable
         var normalizedRef = "refs/heads/feature";
         var refs = new[] { normalizedRef };
 
-        var currentRefs = await gitRepository.GetReferencesAsync();
+        var currentRefs = await gitRepository.ReferenceStore.GetReferencesAsync();
         var currentValue = currentRefs[normalizedRef];
 
         // Act - Write with path that has extra whitespace
-        using (var locks = await gitRepository.AcquireMultipleReferenceLocksAsync(refs))
+        using (var locks = await gitRepository.ReferenceStore.AcquireMultipleReferenceLocksAsync(refs))
         {
             await locks.WriteReferenceWithValidationAsync("  refs/heads/feature  ", currentValue, commit);
         }
 
         // Assert
         gitRepository.InvalidateCaches();
-        var updatedRefs = await gitRepository.GetReferencesAsync();
+        var updatedRefs = await gitRepository.ReferenceStore.GetReferencesAsync();
         Assert.Equal(commit, updatedRefs[normalizedRef]);
     }
 
@@ -561,7 +561,7 @@ public sealed class GitMultipleReferenceLocksTests : IDisposable
         var refs = new[] { headRef };
 
         // Act & Assert
-        using (var locks = await gitRepository.AcquireMultipleReferenceLocksAsync(refs))
+        using (var locks = await gitRepository.ReferenceStore.AcquireMultipleReferenceLocksAsync(refs))
         {
             await Assert.ThrowsAsync<ArgumentException>(async () =>
                 await locks.WriteReferenceWithValidationAsync("main", null, commit)); // Not a fully qualified ref
@@ -587,17 +587,17 @@ public sealed class GitMultipleReferenceLocksTests : IDisposable
         var refs = new[] { headRef };
 
         // Cache current references
-        var beforeRefs = await gitRepository.GetReferencesAsync();
+        var beforeRefs = await gitRepository.ReferenceStore.GetReferencesAsync();
         Assert.Equal(commit2, beforeRefs[headRef]);
 
         // Act
-        using (var locks = await gitRepository.AcquireMultipleReferenceLocksAsync(refs))
+        using (var locks = await gitRepository.ReferenceStore.AcquireMultipleReferenceLocksAsync(refs))
         {
             await locks.WriteReferenceWithValidationAsync(headRef, commit2, commit1);
         }
 
         // Assert - Should see updated value without manual invalidation
-        var afterRefs = await gitRepository.GetReferencesAsync();
+        var afterRefs = await gitRepository.ReferenceStore.GetReferencesAsync();
         Assert.Equal(commit1, afterRefs[headRef]);
     }
 
@@ -616,22 +616,22 @@ public sealed class GitMultipleReferenceLocksTests : IDisposable
         gitRepository.InvalidateCaches();
 
         var refs = new[] { "refs/heads/branch-a", "refs/heads/branch-b" };
-        var currentRefs = await gitRepository.GetReferencesAsync();
+        var currentRefs = await gitRepository.ReferenceStore.GetReferencesAsync();
 
         // Act
-        using (var locks = await gitRepository.AcquireMultipleReferenceLocksAsync(refs))
+        using (var locks = await gitRepository.ReferenceStore.AcquireMultipleReferenceLocksAsync(refs))
         {
             await locks.WriteReferenceWithValidationAsync("refs/heads/branch-a", currentRefs["refs/heads/branch-a"], commit1);
 
             // Read references after first update - should see the change
-            var midRefs = await gitRepository.GetReferencesAsync();
+            var midRefs = await gitRepository.ReferenceStore.GetReferencesAsync();
             Assert.Equal(commit1, midRefs["refs/heads/branch-a"]);
 
             await locks.WriteReferenceWithValidationAsync("refs/heads/branch-b", currentRefs["refs/heads/branch-b"], commit2);
         }
 
         // Assert - Final state
-        var finalRefs = await gitRepository.GetReferencesAsync();
+        var finalRefs = await gitRepository.ReferenceStore.GetReferencesAsync();
         Assert.Equal(commit1, finalRefs["refs/heads/branch-a"]);
         Assert.Equal(commit2, finalRefs["refs/heads/branch-b"]);
     }
