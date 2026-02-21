@@ -259,7 +259,7 @@ public sealed class GitRepositoryStreamOperationsTests
         var gitRepository = GitRepository.Open(repo.WorkingDirectory);
         var headRef = GitTestHelper.GetHeadReference(repo);
 
-        // Use content that differs from "same" but then update back — this ensures the blob already
+        // Use content that differs from "same" but then update back - this ensures the blob already
         // exists in the object store so the stream path exercises the no-effective-change guard.
         await gitRepository.CreateCommitAsync(
             headRef,

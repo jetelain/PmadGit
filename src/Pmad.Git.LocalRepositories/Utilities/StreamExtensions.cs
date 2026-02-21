@@ -19,11 +19,7 @@ internal static class StreamExtensions
                 var read = await source.ReadAsync(buffer.AsMemory(0, toRead), cancellationToken).ConfigureAwait(false);
                 if (read == 0)
                 {
-                    if (remaining > 0)
-                    {
-                        throw new EndOfStreamException($"Expected {length} bytes but stream ended after {length - remaining} bytes.");
-                    }
-                    break;
+                    throw new EndOfStreamException($"Expected {length} bytes but stream ended after {length - remaining} bytes.");
                 }
                 await destination.WriteAsync(buffer.AsMemory(0, read), cancellationToken).ConfigureAwait(false);
                 remaining -= read;

@@ -46,7 +46,7 @@ public interface IGitObjectStore
     /// <param name="contentLength">Number of bytes to read from <paramref name="content"/>.</param>
     /// <param name="cancellationToken">Token used to cancel the async operation.</param>
     /// <returns>The hash assigned to the stored object.</returns>
-    /// <exception cref="System.IO.InvalidDataException">Thrown when the stream yields fewer or more bytes than <paramref name="contentLength"/>.</exception>
+    /// <exception cref="System.IO.EndOfStreamException">Thrown when the stream yields fewer bytes than <paramref name="contentLength"/>.</exception>
     Task<GitHash> WriteObjectAsync(GitObjectType type, Stream content, long contentLength, CancellationToken cancellationToken);
 
     /// <summary>
