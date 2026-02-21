@@ -29,6 +29,11 @@ public interface IGitRepository
     IGitObjectStore ObjectStore { get; }
 
     /// <summary>
+    /// Gets the underlying reference store used to access and update Git references.
+    /// </summary>
+    IGitReferenceStore ReferenceStore { get; }
+
+    /// <summary>
     /// Resolves <paramref name="reference"/> (defaults to HEAD) and returns the corresponding commit.
     /// </summary>
     /// <param name="reference">Commit hash or reference name; HEAD if omitted.</param>
@@ -154,37 +159,6 @@ public interface IGitRepository
     /// </summary>
     /// <param name="clearAllData">Clears all cached data, including data that should not change on normal git operations</param>
     void InvalidateCaches(bool clearAllData = false);
-
-    /// <summary>
-    /// Returns a snapshot of all references stored in the repository.
-    /// </summary>
-    /// <param name="cancellationToken">Token used to cancel the async operation.</param>
-    /// <returns>A dictionary keyed by fully qualified reference names.</returns>
-    Task<IReadOnlyDictionary<string, GitHash>> GetReferencesAsync(CancellationToken cancellationToken = default);
-
-    /// <summary>
-    /// Writes or overwrites the value of a reference file with validation.
-    /// This method validates that the expected old value matches the current value before updating.
-    /// </summary>
-    /// <param name="referencePath">Fully qualified reference path (for example refs/heads/main).</param>
-    /// <param name="expectedOldValue">Expected current hash of the reference, or null if reference should not exist.</param>
-    /// <param name="newValue">New hash to persist, or null to delete the reference.</param>
-    /// <param name="cancellationToken">Token used to cancel the async operation.</param>
-    /// <exception cref="InvalidOperationException">Thrown when the expected old value doesn't match the current value.</exception>
-    Task WriteReferenceWithValidationAsync(
-        string referencePath,
-        GitHash? expectedOldValue,
-        GitHash? newValue,
-        CancellationToken cancellationToken = default);
-
-    /// <summary>
-    /// Acquires locks for multiple references in a consistent order to prevent deadlocks.
-    /// This is used for batch reference updates like git push.
-    /// </summary>
-    /// <param name="referencePaths">Fully qualified reference paths to lock.</param>
-    /// <param name="cancellationToken">Token used to cancel the async operation.</param>
-    /// <returns>A disposable lock that must be released after all operations complete.</returns>
-    Task<IGitMultipleReferenceLocks> AcquireMultipleReferenceLocksAsync(IEnumerable<string> referencePaths, CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Checks if a commit is reachable from another commit (for fast-forward validation).

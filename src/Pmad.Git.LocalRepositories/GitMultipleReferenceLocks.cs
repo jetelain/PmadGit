@@ -14,7 +14,7 @@
 /// </remarks>
 internal sealed class GitMultipleReferenceLocks : IGitMultipleReferenceLocks
 {
-    private readonly GitRepository _gitRepository;
+    private readonly GitReferenceStore _referenceStore;
     private readonly HashSet<string> _normalizedPaths;
     private readonly IDisposable _lockDisposable;
     private bool _disposed;
@@ -22,12 +22,12 @@ internal sealed class GitMultipleReferenceLocks : IGitMultipleReferenceLocks
     /// <summary>
     /// Initializes a new instance of the <see cref="GitMultipleReferenceLocks"/> class.
     /// </summary>
-    /// <param name="gitRepository">The repository on which operations will be performed.</param>
+    /// <param name="referenceStore">The reference store on which operations will be performed.</param>
     /// <param name="normalizedPaths">List of normalized reference paths that have been locked.</param>
     /// <param name="lockDisposable">The underlying lock handle that will be released on disposal.</param>
-    public GitMultipleReferenceLocks(GitRepository gitRepository, List<string> normalizedPaths, IDisposable lockDisposable)
+    public GitMultipleReferenceLocks(GitReferenceStore referenceStore, List<string> normalizedPaths, IDisposable lockDisposable)
     {
-        _gitRepository = gitRepository;
+        _referenceStore = referenceStore;
         _normalizedPaths = normalizedPaths.ToHashSet(StringComparer.Ordinal);
         _lockDisposable = lockDisposable;
     }
@@ -58,12 +58,12 @@ internal sealed class GitMultipleReferenceLocks : IGitMultipleReferenceLocks
             throw new ObjectDisposedException(nameof(GitMultipleReferenceLocks));
         }
 
-        var normalized = GitRepository.NormalizeAbsoluteReferencePath(referencePath);
+        var normalized = GitReferenceStore.NormalizeAbsoluteReferencePath(referencePath);
         if (!_normalizedPaths.Contains(normalized))
         {
             throw new InvalidOperationException($"The reference '{referencePath}' is not locked by this lock instance.");
         }
 
-        return _gitRepository.WriteReferenceWithValidationInternalAsync(normalized, expectedOldValue, newValue, cancellationToken);
+        return _referenceStore.WriteReferenceWithValidationInternalAsync(normalized, expectedOldValue, newValue, cancellationToken);
     }
 }

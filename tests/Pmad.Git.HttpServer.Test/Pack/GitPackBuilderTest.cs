@@ -230,7 +230,7 @@ public sealed class GitPackBuilderTest : IDisposable
         var objects = await CollectAllObjectsAsync(repository, commit.Id);
         
         // Add the tag object
-        var refs = await repository.GetReferencesAsync();
+        var refs = await repository.ReferenceStore.GetReferencesAsync();
         if (refs.TryGetValue("refs/tags/v1.0", out var tagHash))
         {
             var tagData = await repository.ObjectStore.ReadObjectAsync(tagHash);

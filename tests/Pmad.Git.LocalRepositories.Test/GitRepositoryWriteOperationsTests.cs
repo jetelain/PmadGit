@@ -38,7 +38,7 @@ public sealed class GitRepositoryWriteOperationsTests
 			var appContent = await repository.ReadFileAsync("src/app.txt", commitHash.Value);
 			Assert.Equal("app content", Encoding.UTF8.GetString(appContent));
 
-			var refs = await repository.GetReferencesAsync();
+			var refs = await repository.ReferenceStore.GetReferencesAsync();
 			Assert.Contains(refs, r => r.Key == "refs/heads/main");
 			Assert.Equal(commitHash, refs["refs/heads/main"]);
 		}
@@ -102,7 +102,7 @@ public sealed class GitRepositoryWriteOperationsTests
 				},
 				metadata);
 
-			var refs = await repository.GetReferencesAsync();
+			var refs = await repository.ReferenceStore.GetReferencesAsync();
 			Assert.Contains(refs, r => r.Key == "refs/heads/develop");
 			Assert.Equal(commitHash, refs["refs/heads/develop"]);
 
@@ -875,7 +875,7 @@ public sealed class GitRepositoryWriteOperationsTests
 		repo.RunGit("branch feature2");
 		var gitRepository = GitRepository.Open(repo.WorkingDirectory);
 
-		var references = await gitRepository.GetReferencesAsync();
+		var references = await gitRepository.ReferenceStore.GetReferencesAsync();
 
 		Assert.Contains(references, r => r.Key == $"refs/heads/{defaultBranch}");
 		Assert.Contains(references, r => r.Key == "refs/heads/feature1");
@@ -890,7 +890,7 @@ public sealed class GitRepositoryWriteOperationsTests
 		repo.RunGit("tag -a v2.0 -m \"Version 2.0\"");
 		var gitRepository = GitRepository.Open(repo.WorkingDirectory);
 
-		var references = await gitRepository.GetReferencesAsync();
+		var references = await gitRepository.ReferenceStore.GetReferencesAsync();
 
 		Assert.Contains(references, r => r.Key == "refs/tags/v1.0");
 		Assert.Contains(references, r => r.Key == "refs/tags/v2.0");
@@ -902,7 +902,7 @@ public sealed class GitRepositoryWriteOperationsTests
 		using var repo = GitTestRepository.Create();
 		var gitRepository = GitRepository.Open(repo.WorkingDirectory);
 
-		var references = await gitRepository.GetReferencesAsync();
+		var references = await gitRepository.ReferenceStore.GetReferencesAsync();
 
 		Assert.IsAssignableFrom<IReadOnlyDictionary<string, GitHash>>(references);
 	}
@@ -913,18 +913,18 @@ public sealed class GitRepositoryWriteOperationsTests
 		using var repo = GitTestRepository.Create();
 		var gitRepository = GitRepository.Open(repo.WorkingDirectory);
 
-		var refs1 = await gitRepository.GetReferencesAsync();
+		var refs1 = await gitRepository.ReferenceStore.GetReferencesAsync();
 		var countBefore = refs1.Count;
 
 		repo.RunGit("branch new-branch");
 
-		var refs2 = await gitRepository.GetReferencesAsync();
+		var refs2 = await gitRepository.ReferenceStore.GetReferencesAsync();
 
 		Assert.Equal(countBefore, refs1.Count);
 		Assert.Equal(countBefore, refs2.Count);
 
 		gitRepository.InvalidateCaches();
-		var refs3 = await gitRepository.GetReferencesAsync();
+		var refs3 = await gitRepository.ReferenceStore.GetReferencesAsync();
 
 		Assert.True(refs3.Count > countBefore);
 	}

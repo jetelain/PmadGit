@@ -169,7 +169,7 @@ public sealed class GitObjectWalkerTest : IDisposable
         RunGit("tag -a v1.0 -m \"Version 1.0\"");
 
         var repository = GitRepository.Open(_workingDirectory);
-        var refs = await repository.GetReferencesAsync();
+        var refs = await repository.ReferenceStore.GetReferencesAsync();
         var tagHash = refs["refs/tags/v1.0"];
         var walker = new GitObjectWalker(repository);
 

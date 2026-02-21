@@ -11,12 +11,11 @@ namespace Pmad.Git.LocalRepositories;
 public sealed class GitRepository : IGitRepository
 {
     private readonly GitObjectStore _objectStore;
+    private readonly GitReferenceStore _referenceStore;
     private readonly Dictionary<GitHash, GitCommit> _commitCache = new();
     private readonly Dictionary<GitHash, GitTree> _treeCache = new();
     private readonly object _commitLock = new();
     private readonly object _treeLock = new();
-    private readonly GitRepositoryLockManager _lockManager = new();
-    private Lazy<Task<Dictionary<string, GitHash>>> _references;
     private const int RegularFileMode = 33188; // 100644 in octal
     private const int DirectoryMode = 16384;   // 040000 in octal
 
@@ -25,7 +24,7 @@ public sealed class GitRepository : IGitRepository
         RootPath = rootPath;
         GitDirectory = gitDirectory;
         _objectStore = new GitObjectStore(gitDirectory);
-        _references = CreateReferenceCache();
+        _referenceStore = new GitReferenceStore(gitDirectory);
     }
 
     /// <summary>
@@ -45,6 +44,9 @@ public sealed class GitRepository : IGitRepository
 
     /// <inheritdoc />
     public IGitObjectStore ObjectStore => _objectStore;
+
+    /// <inheritdoc />
+    public IGitReferenceStore ReferenceStore => _referenceStore;
 
     /// <summary>
     /// Creates a new empty git repository at the specified path.
@@ -532,9 +534,9 @@ public sealed class GitRepository : IGitRepository
         var referencePath = NormalizeReference(branchName);
 
         // Acquire lock for this branch to prevent concurrent commits
-        using (await _lockManager.AcquireReferenceLockAsync(referencePath, cancellationToken).ConfigureAwait(false))
+        using (await _referenceStore.AcquireReferenceLockAsync(referencePath, cancellationToken).ConfigureAwait(false))
         {
-            var parentHash = await TryResolveReferencePathAsync(referencePath, cancellationToken).ConfigureAwait(false);
+            var parentHash = await _referenceStore.TryResolveReferenceAsync(referencePath, cancellationToken).ConfigureAwait(false);
             GitCommit? parentCommit = null;
 
             Dictionary<string, TreeLeaf> entries;
@@ -603,7 +605,7 @@ public sealed class GitRepository : IGitRepository
                 _commitCache[commitHash] = parsedCommit;
             }
 
-            await WriteReferenceWithValidationInternalAsync(referencePath, parentHash, commitHash, cancellationToken).ConfigureAwait(false);
+            await _referenceStore.WriteReferenceWithValidationInternalAsync(referencePath, parentHash, commitHash, cancellationToken).ConfigureAwait(false);
 
             return commitHash;
         }
@@ -616,6 +618,7 @@ public sealed class GitRepository : IGitRepository
     public void InvalidateCaches(bool clearAllData = false)
     {
         _objectStore.InvalidateCaches();
+        _referenceStore.InvalidateCaches();
 
         if (clearAllData)
         {
@@ -629,131 +632,6 @@ public sealed class GitRepository : IGitRepository
                 _treeCache.Clear();
             }
         }
-
-        Interlocked.Exchange(ref _references, CreateReferenceCache());
-    }
-
-    /// <summary>
-    /// Returns a snapshot of all references stored in the repository.
-    /// </summary>
-    /// <param name="cancellationToken">Token used to cancel the async operation.</param>
-    /// <returns>A dictionary keyed by fully qualified reference names.</returns>
-    public async Task<IReadOnlyDictionary<string, GitHash>> GetReferencesAsync(CancellationToken cancellationToken = default)
-    {
-        cancellationToken.ThrowIfCancellationRequested();
-        var snapshot = await _references.Value.ConfigureAwait(false);
-        return new Dictionary<string, GitHash>(snapshot, StringComparer.Ordinal);
-    }
-
-    /// <summary>
-    /// Writes or overwrites the value of a reference file with validation.
-    /// This method validates that the expected old value matches the current value before updating.
-    /// </summary>
-    /// <param name="referencePath">Fully qualified reference path (for example refs/heads/main).</param>
-    /// <param name="expectedOldValue">Expected current hash of the reference, or null if reference should not exist.</param>
-    /// <param name="newValue">New hash to persist, or null to delete the reference.</param>
-    /// <param name="cancellationToken">Token used to cancel the async operation.</param>
-    /// <exception cref="InvalidOperationException">Thrown when the expected old value doesn't match the current value.</exception>
-    public async Task WriteReferenceWithValidationAsync(
-        string referencePath,
-        GitHash? expectedOldValue,
-        GitHash? newValue,
-        CancellationToken cancellationToken = default)
-    {
-        var normalized = NormalizeAbsoluteReferencePath(referencePath);
-        using (await _lockManager.AcquireReferenceLockAsync(normalized, cancellationToken).ConfigureAwait(false))
-        {
-            await WriteReferenceWithValidationInternalAsync(normalized, expectedOldValue, newValue, cancellationToken).ConfigureAwait(false);
-        }
-    }
-
-    /// <summary>
-    /// Internal method to write a reference with validation without acquiring locks.
-    /// Locks must be acquired by the caller.
-    /// </summary>
-    /// <param name="normalized">The normalized form of the reference path used for resolution.</param>
-    /// <param name="expectedOldValue">Expected current hash of the reference, or null if reference should not exist.</param>
-    /// <param name="newValue">New hash to persist, or null to delete the reference.</param>
-    /// <param name="cancellationToken">Token used to cancel the async operation.</param>
-    /// <exception cref="InvalidOperationException">Thrown when the expected old value doesn't match the current value.</exception>
-    internal async Task WriteReferenceWithValidationInternalAsync(
-        string normalized,
-        GitHash? expectedOldValue,
-        GitHash? newValue,
-        CancellationToken cancellationToken)
-    {
-        await ValidateReferenceOldValue(normalized, expectedOldValue, cancellationToken).ConfigureAwait(false);
-
-        // Apply update
-        if (newValue.HasValue)
-        {
-            await UpdateReferenceAsync(normalized, newValue.Value, cancellationToken).ConfigureAwait(false);
-        }
-        else
-        {
-            await DeleteReferenceInternalAsync(normalized, cancellationToken).ConfigureAwait(false);
-        }
-
-        // Invalidate reference cache to ensure subsequent reads see the updated value
-        Interlocked.Exchange(ref _references, CreateReferenceCache());
-    }
-
-    /// <summary>
-    /// Validates that the reference at the specified path matches the expected old value or does not exist, depending
-    /// on the provided expectation.
-    /// </summary>
-    /// <param name="normalized">The normalized form of the reference path used for resolution.</param>
-    /// <param name="expectedOldValue">The expected value of the reference. If specified, the reference must exist and match this value; if null, the
-    /// reference must not exist.</param>
-    /// <param name="cancellationToken">A cancellation token that can be used to cancel the asynchronous operation.</param>
-    /// <returns>A task that represents the asynchronous validation operation.</returns>
-    /// <exception cref="InvalidOperationException">Thrown if the reference does not exist when an expected value is provided, if the reference exists but its value
-    /// does not match the expected value, or if the reference exists when no value is expected.</exception>
-    private async Task ValidateReferenceOldValue(string normalized, GitHash? expectedOldValue, CancellationToken cancellationToken)
-    {
-        var currentValue = await TryResolveReferencePathAsync(normalized, cancellationToken).ConfigureAwait(false);
-
-        // Validate expected state
-        if (expectedOldValue.HasValue)
-        {
-            if (!currentValue.HasValue)
-            {
-                throw new InvalidOperationException($"Reference '{normalized}' does not exist, but was expected to have value {expectedOldValue.Value.Value}");
-            }
-            if (!currentValue.Value.Equals(expectedOldValue.Value))
-            {
-                throw new InvalidOperationException($"Reference '{normalized}' has value {currentValue.Value.Value}, but was expected to have value {expectedOldValue.Value.Value}");
-            }
-        }
-        else
-        {
-            if (currentValue.HasValue)
-            {
-                throw new InvalidOperationException($"Reference '{normalized}' already exists with value {currentValue.Value.Value}");
-            }
-        }
-    }
-
-    /// <summary>
-    /// Acquires locks for multiple references in a consistent order to prevent deadlocks.
-    /// This is used for batch reference updates like git push.
-    /// </summary>
-    /// <param name="referencePaths">Fully qualified reference paths to lock.</param>
-    /// <param name="cancellationToken">Token used to cancel the async operation.</param>
-    /// <returns>A disposable lock that must be released after all operations complete.</returns>
-    public async Task<IGitMultipleReferenceLocks> AcquireMultipleReferenceLocksAsync(IEnumerable<string> referencePaths, CancellationToken cancellationToken = default)
-    {
-        if (referencePaths is null)
-        {
-            throw new ArgumentNullException(nameof(referencePaths));
-        }
-
-        // Normalize all reference paths to ensure consistency
-        var normalizedPaths = referencePaths.Select(NormalizeAbsoluteReferencePath).ToList();
-
-        var lockDisposable = await _lockManager.AcquireMultipleReferenceLocksAsync(normalizedPaths, cancellationToken);
-
-        return new GitMultipleReferenceLocks(this, normalizedPaths, lockDisposable);
     }
 
     /// <summary>
@@ -796,19 +674,6 @@ public sealed class GitRepository : IGitRepository
         }
 
         return false;
-    }
-
-    private Task DeleteReferenceInternalAsync(string normalizedReferencePath, CancellationToken cancellationToken)
-    {
-        cancellationToken.ThrowIfCancellationRequested();
-        var refPath = Path.Combine(GitDirectory, normalizedReferencePath.Replace('/', Path.DirectorySeparatorChar));
-        if (File.Exists(refPath))
-        {
-            File.Delete(refPath);
-        }
-
-        Interlocked.Exchange(ref _references, CreateReferenceCache());
-        return Task.CompletedTask;
     }
 
     private async Task<GitCommit> GetCommitAsync(GitHash hash, CancellationToken cancellationToken)
@@ -865,7 +730,7 @@ public sealed class GitRepository : IGitRepository
     {
         if (string.IsNullOrWhiteSpace(reference) || reference!.Equals("HEAD", StringComparison.OrdinalIgnoreCase))
         {
-            return await ResolveHeadAsync(cancellationToken).ConfigureAwait(false);
+            return await _referenceStore.ResolveHeadAsync(cancellationToken).ConfigureAwait(false);
         }
 
         var nonEmptyReference = reference!;
@@ -884,7 +749,7 @@ public sealed class GitRepository : IGitRepository
 
         foreach (var candidate in candidates)
         {
-            var resolved = await TryResolveReferencePathAsync(candidate, cancellationToken).ConfigureAwait(false);
+            var resolved = await _referenceStore.TryResolveReferenceAsync(candidate, cancellationToken).ConfigureAwait(false);
             if (resolved.HasValue)
             {
                 return resolved.Value;
@@ -892,57 +757,6 @@ public sealed class GitRepository : IGitRepository
         }
 
         throw new InvalidOperationException($"Unknown reference '{reference}'");
-    }
-
-    private async Task<GitHash> ResolveHeadAsync(CancellationToken cancellationToken)
-    {
-        var headPath = Path.Combine(GitDirectory, "HEAD");
-        if (!File.Exists(headPath))
-        {
-            throw new FileNotFoundException("HEAD reference not found", headPath);
-        }
-
-        var content = (await File.ReadAllTextAsync(headPath, cancellationToken).ConfigureAwait(false)).Trim();
-        if (content.StartsWith("ref: ", StringComparison.Ordinal))
-        {
-            var target = content[5..].Trim();
-            var resolved = await TryResolveReferencePathAsync(target, cancellationToken).ConfigureAwait(false);
-            if (resolved.HasValue)
-            {
-                return resolved.Value;
-            }
-
-            throw new InvalidOperationException($"Unable to resolve ref '{target}' pointed by HEAD");
-        }
-
-        if (GitHash.TryParse(content, out var direct))
-        {
-            return direct;
-        }
-
-        throw new InvalidDataException("HEAD does not contain a valid reference");
-    }
-
-    private async Task<GitHash?> TryResolveReferencePathAsync(string referencePath, CancellationToken cancellationToken)
-    {
-        var normalized = referencePath.Replace('\\', '/');
-        var refs = await _references.Value.ConfigureAwait(false);
-        if (refs.TryGetValue(normalized, out var hash))
-        {
-            return hash;
-        }
-
-        var filePath = Path.Combine(GitDirectory, normalized.Replace('/', Path.DirectorySeparatorChar));
-        if (File.Exists(filePath))
-        {
-            var content = (await File.ReadAllTextAsync(filePath, cancellationToken).ConfigureAwait(false)).Trim();
-            if (GitHash.TryParse(content, out hash))
-            {
-                return hash;
-            }
-        }
-
-        return null;
     }
 
     private static string NormalizeReference(string branchName)
@@ -964,27 +778,6 @@ public sealed class GitRepository : IGitRepository
         }
 
         return $"refs/heads/{trimmed}";
-    }
-
-    internal static string NormalizeAbsoluteReferencePath(string referencePath)
-    {
-        if (string.IsNullOrWhiteSpace(referencePath))
-        {
-            throw new ArgumentException("Reference path cannot be empty", nameof(referencePath));
-        }
-
-        var normalized = referencePath.Replace('\\', '/').Trim();
-        if (string.IsNullOrEmpty(normalized))
-        {
-            throw new ArgumentException("Reference path cannot be empty", nameof(referencePath));
-        }
-
-        if (!normalized.StartsWith("refs/", StringComparison.Ordinal))
-        {
-            throw new ArgumentException($"Absolute reference path must start with 'refs/', got '{referencePath}'", nameof(referencePath));
-        }
-
-        return normalized;
     }
 
     private async Task<Dictionary<string, TreeLeaf>> LoadLeafEntriesAsync(GitHash treeHash, CancellationToken cancellationToken)
@@ -1224,71 +1017,6 @@ public sealed class GitRepository : IGitRepository
         builder.Append(metadata.Message);
         return Encoding.UTF8.GetBytes(builder.ToString());
     }
-
-    private async Task UpdateReferenceAsync(string referencePath, GitHash commitHash, CancellationToken cancellationToken)
-    {
-        var refPath = Path.Combine(GitDirectory, referencePath.Replace('/', Path.DirectorySeparatorChar));
-        var directory = Path.GetDirectoryName(refPath);
-        if (!string.IsNullOrEmpty(directory))
-        {
-            Directory.CreateDirectory(directory);
-        }
-
-        var tempDirectory = directory ?? GitDirectory;
-        var tempPath = Path.Combine(tempDirectory, $"{Path.GetFileName(refPath)}.{Guid.NewGuid():N}.tmp");
-        await File.WriteAllTextAsync(tempPath, commitHash.Value + "\n", cancellationToken).ConfigureAwait(false);
-        File.Move(tempPath, refPath, overwrite: true);
-    }
-
-    private async Task<Dictionary<string, GitHash>> LoadReferencesAsync()
-    {
-        var refs = new Dictionary<string, GitHash>(StringComparer.Ordinal);
-        var refsRoot = Path.Combine(GitDirectory, "refs");
-        if (Directory.Exists(refsRoot))
-        {
-            foreach (var file in Directory.EnumerateFiles(refsRoot, "*", SearchOption.AllDirectories))
-            {
-                var relative = Path.GetRelativePath(GitDirectory, file).Replace('\\', '/');
-                var content = (await File.ReadAllTextAsync(file).ConfigureAwait(false)).Trim();
-                if (GitHash.TryParse(content, out var hash))
-                {
-                    refs[relative] = hash;
-                }
-            }
-        }
-
-        var packedRefs = Path.Combine(GitDirectory, "packed-refs");
-        if (File.Exists(packedRefs))
-        {
-            var lines = await File.ReadAllLinesAsync(packedRefs).ConfigureAwait(false);
-            foreach (var line in lines)
-            {
-                var trimmed = line.Trim();
-                if (string.IsNullOrEmpty(trimmed) || trimmed.StartsWith('#') || trimmed.StartsWith('^'))
-                {
-                    continue;
-                }
-
-                var separator = trimmed.IndexOf(' ');
-                if (separator <= 0)
-                {
-                    continue;
-                }
-
-                var hashString = trimmed[..separator];
-                var name = trimmed[(separator + 1)..];
-                if (GitHash.TryParse(hashString, out var hash))
-                {
-                    refs[name] = hash;
-                }
-            }
-        }
-
-        return refs;
-    }
-
-    private Lazy<Task<Dictionary<string, GitHash>>> CreateReferenceCache()
-        => new Lazy<Task<Dictionary<string, GitHash>>>(LoadReferencesAsync, LazyThreadSafetyMode.ExecutionAndPublication);
 
     private static string NormalizePath(string path)
     {
