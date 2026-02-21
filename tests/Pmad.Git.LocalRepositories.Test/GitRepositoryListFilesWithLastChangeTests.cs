@@ -129,7 +129,7 @@ public sealed class GitRepositoryListFilesWithLastChangeTests
     }
 
     [Fact]
-    public async Task ListFilesWithLastChangeAsync_NonExistentPath_ReturnsEmpty()
+    public async Task ListFilesWithLastChangeAsync_NonExistentPath_ThrowsDirectoryNotFoundException()
     {
         using var repo = GitTestRepository.Create();
         repo.Commit("Add file", ("file.txt", "content"));
@@ -571,7 +571,7 @@ public sealed class GitRepositoryListFilesWithLastChangeTests
     }
 
     [Fact]
-    public async Task ListFilesWithLastChangeAsync_EmptyDirectoryAfterAllFilesRemoved_ReturnsEmpty()
+    public async Task ListFilesWithLastChangeAsync_EmptyDirectoryAfterAllFilesRemoved_ThrowsDirectoryNotFoundException()
     {
         using var repo = GitTestRepository.Create();
         repo.Commit("Add docs", ("docs/a.md", "a"), ("docs/b.md", "b"));
