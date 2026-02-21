@@ -502,6 +502,109 @@ public sealed class GitRepository : IGitRepository
     }
 
     /// <summary>
+    /// Lists files under the optional <paramref name="path"/> in the specified <paramref name="reference"/> along with the last commit that changed each file.
+    /// This is more efficient than calling <see cref="EnumerateCommitTreeAsync"/> followed by <see cref="GetFileHistoryAsync"/> for each file
+    /// because the commit graph is traversed only once.
+    /// </summary>
+    /// <param name="reference">Starting reference or commit hash; defaults to HEAD.</param>
+    /// <param name="path">Optional directory path to scope the result; all files when omitted.</param>
+    /// <param name="fileFilter">Optional predicate applied to each file path; only files for which it returns <see langword="true"/> are included. All files are included when omitted.</param>
+    /// <param name="cancellationToken">Token used to cancel the async operation.</param>
+    /// <returns>A dictionary mapping each file path to its most recent modifying commit.</returns>
+    public async Task<Dictionary<string, GitCommit>> ListFilesWithLastChangeAsync(
+        string? reference = null,
+        string? path = null,
+        Func<string, bool>? fileFilter = null,
+        CancellationToken cancellationToken = default)
+    {
+        var prefix = NormalizePathAllowEmpty(path);
+
+        // file path -> blob hash recorded in the previous (newer) commit
+        var initialBlobPerFile = new Dictionary<string, GitHash>(StringComparer.Ordinal);
+
+        // file path -> the commit we will ultimately return (the newest commit that changed it)
+        var result = new Dictionary<string, GitCommit>(StringComparer.Ordinal);
+
+        // files whose last-commit has already been finalised and no longer need tracking
+        var done = new HashSet<string>(StringComparer.Ordinal);
+
+        bool isFirst = true;
+
+        await foreach (var commit in EnumerateCommitsAsync(reference, cancellationToken).ConfigureAwait(false))
+        {
+            if (isFirst)
+            {
+                await foreach (var item in EnumerateCommitTreeAsync(commit.Id.Value, prefix, cancellationToken).ConfigureAwait(false))
+                {
+                    if (item.Entry.Kind != GitTreeEntryKind.Blob || (fileFilter != null && !fileFilter(item.Path)))
+                    {
+                        continue;
+                    }
+                    initialBlobPerFile[item.Path] = item.Entry.Hash;
+                    result[item.Path] = commit;
+                }
+                isFirst = false;
+
+                if (initialBlobPerFile.Count == 0)
+                {
+                    // No file, nothing to track or return
+                    break;
+                }
+            }
+            else
+            {
+                try
+                {
+                    var seen = new HashSet<string>(StringComparer.Ordinal);
+
+                    await foreach (var item in EnumerateCommitTreeAsync(commit.Id.Value, prefix, cancellationToken).ConfigureAwait(false))
+                    {
+                        if (item.Entry.Kind == GitTreeEntryKind.Blob && result.ContainsKey(item.Path) && !done.Contains(item.Path))
+                        {
+                            if (initialBlobPerFile.TryGetValue(item.Path, out var previousHash))
+                            {
+                                // File has interrest
+                                if (!previousHash.Equals(item.Entry.Hash))
+                                {
+                                    // File no more exists or has changed content compared to the previous (newer) commit
+                                    // newer commit is the last one that changed it, so we can finalise the result for this file and stop tracking it
+                                    done.Add(item.Path);
+                                }
+                                else
+                                {
+                                    // Update the commit for this file to the current (older) commit, as it is still the same blob
+                                    result[item.Path] = commit;
+                                    seen.Add(item.Path);
+                                }
+                            }
+                        }
+                    }
+
+                    foreach(var missingPath in initialBlobPerFile.Keys.Where(p => !seen.Contains(p) && !done.Contains(p)))
+                    {
+                        // File that existed in the previous (newer) commit is now missing, meaning it was removed in the current (older) commit
+                        // newer commit is the last one that changed it, so we can finalise the result for this file and stop tracking it
+                        done.Add(missingPath);
+                    }
+                }
+                catch (DirectoryNotFoundException)
+                {
+                    // Requested directory no longer exists in this commit
+                    return result;
+                }
+
+                // All known files are finalised — no older commit can affect the result.
+                if (done.Count == initialBlobPerFile.Count)
+                {
+                    break;
+                }
+            }
+        }
+
+        return result;
+    }
+
+    /// <summary>
     /// Creates a new commit on the specified branch by applying the provided operations.
     /// This method is thread-safe and prevents concurrent commits to the same branch.
     /// </summary>
@@ -1030,8 +1133,12 @@ public sealed class GitRepository : IGitRepository
         return normalized;
     }
 
-    private static string NormalizePathAllowEmpty(string path)
+    private static string NormalizePathAllowEmpty(string? path)
     {
+        if (string.IsNullOrEmpty(path))
+        {
+            return string.Empty;
+        }
         var normalized = path.Replace('\\', '/');
         normalized = normalized.Trim();
         normalized = normalized.Trim('/');

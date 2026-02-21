@@ -155,6 +155,22 @@ public interface IGitRepository
         CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Lists files under the optional <paramref name="path"/> in the specified <paramref name="reference"/> along with the last commit that changed each file.
+    /// This is more efficient than calling <see cref="EnumerateCommitTreeAsync"/> followed by <see cref="GetFileHistoryAsync"/> for each file
+    /// because the commit graph is traversed only once.
+    /// </summary>
+    /// <param name="reference">Starting reference or commit hash; defaults to HEAD.</param>
+    /// <param name="path">Optional directory path to scope the result; all files when omitted.</param>
+    /// <param name="fileFilter">Optional predicate applied to each file path; only files for which it returns <see langword="true"/> are included. All files are included when omitted.</param>
+    /// <param name="cancellationToken">Token used to cancel the async operation.</param>
+    /// <returns>A dictionary mapping each file path to its most recent modifying commit.</returns>
+    Task<Dictionary<string, GitCommit>> ListFilesWithLastChangeAsync(
+        string? reference = null,
+        string? path = null,
+        Func<string, bool>? fileFilter = null,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// Clears cached git metadata so subsequent operations reflect the current repository state.
     /// </summary>
     /// <param name="clearAllData">Clears all cached data, including data that should not change on normal git operations</param>

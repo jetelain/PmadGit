@@ -67,6 +67,24 @@ public sealed class GitTestRepository : IDisposable
         return head;
     }
 
+    public GitHash RemoveFiles(string message, params string[] filePaths)
+    {
+        foreach (var relativePath in filePaths)
+        {
+            var fullPath = Path.Combine(WorkingDirectory, relativePath.Replace('/', Path.DirectorySeparatorChar));
+            if (File.Exists(fullPath))
+            {
+                File.Delete(fullPath);
+            }
+        }
+
+        RunGit("add -A");
+        RunGit($"commit -m \"{message}\" --quiet");
+        var head = new GitHash(RunGit("rev-parse HEAD").Trim());
+        _head = head;
+        return head;
+    }
+
     public string RunGit(string arguments)
     {
         var startInfo = new ProcessStartInfo("git", arguments)
