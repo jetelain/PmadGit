@@ -381,8 +381,21 @@ internal sealed class GitObjectStore : IGitObjectStore
                 return hash;
             }
 
-            File.Move(tempFile, objectPath, overwrite: false);
+            try
+            {
+                File.Move(tempFile, objectPath, overwrite: false);
+            }
+            catch (IOException)
+            {
+                // Another thread may have created the object in the meantime.
+                if (File.Exists(objectPath))
+                {
+                    // Object already exists; reuse it.
+                    return hash;
+                }
 
+                throw;
+            }
             return hash;
         }
         finally
