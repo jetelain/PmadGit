@@ -16,8 +16,8 @@ public sealed class GitRepositoryListFilesWithLastChangeTests
         var gitRepository = GitRepository.Open(repo.WorkingDirectory);
         var result = await gitRepository.ListFilesWithLastChangeAsync();
 
-        Assert.True(result.ContainsKey("file.txt"));
-        Assert.Equal(addCommit, result["file.txt"].Id);
+        Assert.Contains(result, e => e.Path == "file.txt");
+        Assert.Equal(addCommit, result.Single(e => e.Path == "file.txt").Commit.Id);
     }
 
     [Fact]
@@ -30,7 +30,7 @@ public sealed class GitRepositoryListFilesWithLastChangeTests
         var gitRepository = GitRepository.Open(repo.WorkingDirectory);
         var result = await gitRepository.ListFilesWithLastChangeAsync();
 
-        Assert.Equal(updateCommit, result["file.txt"].Id);
+        Assert.Equal(updateCommit, result.Single(e => e.Path == "file.txt").Commit.Id);
     }
 
     [Fact]
@@ -44,8 +44,8 @@ public sealed class GitRepositoryListFilesWithLastChangeTests
         var gitRepository = GitRepository.Open(repo.WorkingDirectory);
         var result = await gitRepository.ListFilesWithLastChangeAsync();
 
-        Assert.Equal(commitC, result["a.txt"].Id);
-        Assert.Equal(commitB, result["b.txt"].Id);
+        Assert.Equal(commitC, result.Single(e => e.Path == "a.txt").Commit.Id);
+        Assert.Equal(commitB, result.Single(e => e.Path == "b.txt").Commit.Id);
     }
 
     [Fact]
@@ -58,7 +58,7 @@ public sealed class GitRepositoryListFilesWithLastChangeTests
         var gitRepository = GitRepository.Open(repo.WorkingDirectory);
         var result = await gitRepository.ListFilesWithLastChangeAsync();
 
-        Assert.Equal(addCommit, result["stable.txt"].Id);
+        Assert.Equal(addCommit, result.Single(e => e.Path == "stable.txt").Commit.Id);
     }
 
     [Fact]
@@ -70,8 +70,8 @@ public sealed class GitRepositoryListFilesWithLastChangeTests
         var gitRepository = GitRepository.Open(repo.WorkingDirectory);
         var result = await gitRepository.ListFilesWithLastChangeAsync(path: "docs");
 
-        Assert.True(result.ContainsKey("docs/readme.md"));
-        Assert.False(result.ContainsKey("src/main.cs"));
+        Assert.Contains(result, e => e.Path == "docs/readme.md");
+        Assert.DoesNotContain(result, e => e.Path == "src/main.cs");
     }
 
     [Fact]
@@ -84,7 +84,7 @@ public sealed class GitRepositoryListFilesWithLastChangeTests
         var gitRepository = GitRepository.Open(repo.WorkingDirectory);
         var result = await gitRepository.ListFilesWithLastChangeAsync(path: "docs");
 
-        Assert.Equal(updateCommit, result["docs/a.md"].Id);
+        Assert.Equal(updateCommit, result.Single(e => e.Path == "docs/a.md").Commit.Id);
     }
 
     [Fact]
@@ -97,8 +97,8 @@ public sealed class GitRepositoryListFilesWithLastChangeTests
         var result = await gitRepository.ListFilesWithLastChangeAsync(
             fileFilter: path => path.EndsWith(".md", StringComparison.Ordinal));
 
-        Assert.True(result.ContainsKey("a.md"));
-        Assert.False(result.ContainsKey("b.txt"));
+        Assert.Contains(result, e => e.Path == "a.md");
+        Assert.DoesNotContain(result, e => e.Path == "b.txt");
     }
 
     [Fact]
@@ -125,7 +125,7 @@ public sealed class GitRepositoryListFilesWithLastChangeTests
         var gitRepository = GitRepository.Open(repo.WorkingDirectory);
         var result = await gitRepository.ListFilesWithLastChangeAsync(reference: "v1.0");
 
-        Assert.Equal(taggedCommit, result["file.txt"].Id);
+        Assert.Equal(taggedCommit, result.Single(e => e.Path == "file.txt").Commit.Id);
     }
 
     [Fact]
@@ -150,10 +150,10 @@ public sealed class GitRepositoryListFilesWithLastChangeTests
         var gitRepository = GitRepository.Open(repo.WorkingDirectory);
         var result = await gitRepository.ListFilesWithLastChangeAsync(path: "src");
 
-        Assert.True(result.ContainsKey("src/a/file1.txt"));
-        Assert.True(result.ContainsKey("src/b/file2.txt"));
-        Assert.Equal(commit, result["src/a/file1.txt"].Id);
-        Assert.Equal(commit, result["src/b/file2.txt"].Id);
+        Assert.Contains(result, e => e.Path == "src/a/file1.txt");
+        Assert.Contains(result, e => e.Path == "src/b/file2.txt");
+        Assert.Equal(commit, result.Single(e => e.Path == "src/a/file1.txt").Commit.Id);
+        Assert.Equal(commit, result.Single(e => e.Path == "src/b/file2.txt").Commit.Id);
     }
 
     [Fact]
@@ -166,8 +166,8 @@ public sealed class GitRepositoryListFilesWithLastChangeTests
         var gitRepository = GitRepository.Open(repo.WorkingDirectory);
         var result = await gitRepository.ListFilesWithLastChangeAsync(path: "docs");
 
-        Assert.True(result.ContainsKey("docs/readme.md"));
-        Assert.Equal(updateCommit, result["docs/readme.md"].Id);
+        Assert.Contains(result, e => e.Path == "docs/readme.md");
+        Assert.Equal(updateCommit, result.Single(e => e.Path == "docs/readme.md").Commit.Id);
     }
 
     [Fact]
@@ -195,7 +195,7 @@ public sealed class GitRepositoryListFilesWithLastChangeTests
         var gitRepository = GitRepository.Open(repo.WorkingDirectory);
         var result = await gitRepository.ListFilesWithLastChangeAsync();
 
-        Assert.True(result.ContainsKey("README.md"));
+        Assert.Contains(result, e => e.Path == "README.md");
     }
 
     [Fact]
@@ -208,7 +208,7 @@ public sealed class GitRepositoryListFilesWithLastChangeTests
         var gitRepository = GitRepository.Open(repo.WorkingDirectory);
         var result = await gitRepository.ListFilesWithLastChangeAsync();
 
-        Assert.Equal(addCommit, result["stable.txt"].Id);
+        Assert.Equal(addCommit, result.Single(e => e.Path == "stable.txt").Commit.Id);
     }
 
     [Fact]
@@ -221,9 +221,9 @@ public sealed class GitRepositoryListFilesWithLastChangeTests
         var gitRepository = GitRepository.Open(repo.WorkingDirectory);
         var result = await gitRepository.ListFilesWithLastChangeAsync();
 
-        Assert.True(result.ContainsKey("file1.txt"));
-        Assert.False(result.ContainsKey("file2.txt"));
-        Assert.Equal(addCommit, result["file1.txt"].Id);
+        Assert.Contains(result, e => e.Path == "file1.txt");
+        Assert.DoesNotContain(result, e => e.Path == "file2.txt");
+        Assert.Equal(addCommit, result.Single(e => e.Path == "file1.txt").Commit.Id);
     }
 
     [Fact]
@@ -236,9 +236,9 @@ public sealed class GitRepositoryListFilesWithLastChangeTests
         var gitRepository = GitRepository.Open(repo.WorkingDirectory);
         var result = await gitRepository.ListFilesWithLastChangeAsync();
 
-        Assert.False(result.ContainsKey("temp.txt"));
-        Assert.True(result.ContainsKey("keep.txt"));
-        Assert.Equal(addCommit, result["keep.txt"].Id);
+        Assert.DoesNotContain(result, e => e.Path == "temp.txt");
+        Assert.Contains(result, e => e.Path == "keep.txt");
+        Assert.Equal(addCommit, result.Single(e => e.Path == "keep.txt").Commit.Id);
     }
 
     [Fact]
@@ -252,8 +252,8 @@ public sealed class GitRepositoryListFilesWithLastChangeTests
         var gitRepository = GitRepository.Open(repo.WorkingDirectory);
         var result = await gitRepository.ListFilesWithLastChangeAsync();
 
-        Assert.True(result.ContainsKey("file.txt"));
-        Assert.Equal(reAddCommit, result["file.txt"].Id);
+        Assert.Contains(result, e => e.Path == "file.txt");
+        Assert.Equal(reAddCommit, result.Single(e => e.Path == "file.txt").Commit.Id);
     }
 
     [Fact]
@@ -267,10 +267,10 @@ public sealed class GitRepositoryListFilesWithLastChangeTests
         var gitRepository = GitRepository.Open(repo.WorkingDirectory);
         var result = await gitRepository.ListFilesWithLastChangeAsync();
 
-        Assert.False(result.ContainsKey("a.txt"));
-        Assert.False(result.ContainsKey("b.txt"));
-        Assert.True(result.ContainsKey("c.txt"));
-        Assert.Equal(addCommit, result["c.txt"].Id);
+        Assert.DoesNotContain(result, e => e.Path == "a.txt");
+        Assert.DoesNotContain(result, e => e.Path == "b.txt");
+        Assert.Contains(result, e => e.Path == "c.txt");
+        Assert.Equal(addCommit, result.Single(e => e.Path == "c.txt").Commit.Id);
     }
 
     [Fact]
@@ -283,9 +283,9 @@ public sealed class GitRepositoryListFilesWithLastChangeTests
         var gitRepository = GitRepository.Open(repo.WorkingDirectory);
         var result = await gitRepository.ListFilesWithLastChangeAsync(path: "docs");
 
-        Assert.True(result.ContainsKey("docs/a.md"));
-        Assert.False(result.ContainsKey("docs/b.md"));
-        Assert.Equal(addCommit, result["docs/a.md"].Id);
+        Assert.Contains(result, e => e.Path == "docs/a.md");
+        Assert.DoesNotContain(result, e => e.Path == "docs/b.md");
+        Assert.Equal(addCommit, result.Single(e => e.Path == "docs/a.md").Commit.Id);
     }
 
     [Fact]
@@ -299,9 +299,9 @@ public sealed class GitRepositoryListFilesWithLastChangeTests
         var result = await gitRepository.ListFilesWithLastChangeAsync(
             fileFilter: path => path.EndsWith(".txt", StringComparison.Ordinal) || path.EndsWith(".md", StringComparison.Ordinal));
 
-        Assert.False(result.ContainsKey("a.txt"));
-        Assert.True(result.ContainsKey("b.md"));
-        Assert.Equal(addCommit, result["b.md"].Id);
+        Assert.DoesNotContain(result, e => e.Path == "a.txt");
+        Assert.Contains(result, e => e.Path == "b.md");
+        Assert.Equal(addCommit, result.Single(e => e.Path == "b.md").Commit.Id);
     }
 
     [Fact]
@@ -331,7 +331,7 @@ public sealed class GitRepositoryListFilesWithLastChangeTests
         var gitRepository = GitRepository.Open(repo.WorkingDirectory);
         var result = await gitRepository.ListFilesWithLastChangeAsync();
 
-        Assert.Equal(latestChange, result["file.txt"].Id);
+        Assert.Equal(latestChange, result.Single(e => e.Path == "file.txt").Commit.Id);
     }
 
     [Fact]
@@ -347,9 +347,9 @@ public sealed class GitRepositoryListFilesWithLastChangeTests
         var result = await gitRepository.ListFilesWithLastChangeAsync();
 
         Assert.Equal(3, result.Count);
-        Assert.Equal(updateA, result["a.txt"].Id);
-        Assert.False(result.ContainsKey("b.txt"));
-        Assert.Equal(updateC, result["c.txt"].Id);
+        Assert.Equal(updateA, result.Single(e => e.Path == "a.txt").Commit.Id);
+        Assert.DoesNotContain(result, e => e.Path == "b.txt");
+        Assert.Equal(updateC, result.Single(e => e.Path == "c.txt").Commit.Id);
     }
 
     [Fact]
@@ -365,7 +365,7 @@ public sealed class GitRepositoryListFilesWithLastChangeTests
         var gitRepository = GitRepository.Open(repo.WorkingDirectory);
         var result = await gitRepository.ListFilesWithLastChangeAsync();
 
-        Assert.Equal(addCommit, result["stable.txt"].Id);
+        Assert.Equal(addCommit, result.Single(e => e.Path == "stable.txt").Commit.Id);
     }
 
     [Fact]
@@ -381,9 +381,9 @@ public sealed class GitRepositoryListFilesWithLastChangeTests
         var result = await gitRepository.ListFilesWithLastChangeAsync(path: "docs");
 
         Assert.Equal(2, result.Count);
-        Assert.True(result.ContainsKey("docs/a.md"));
-        Assert.False(result.ContainsKey("docs/b.md"));
-        Assert.Equal(updateC, result["docs/c.md"].Id);
+        Assert.Contains(result, e => e.Path == "docs/a.md");
+        Assert.DoesNotContain(result, e => e.Path == "docs/b.md");
+        Assert.Equal(updateC, result.Single(e => e.Path == "docs/c.md").Commit.Id);
     }
 
     [Fact]
@@ -397,8 +397,8 @@ public sealed class GitRepositoryListFilesWithLastChangeTests
         var gitRepository = GitRepository.Open(repo.WorkingDirectory);
         var result = await gitRepository.ListFilesWithLastChangeAsync();
 
-        Assert.True(result.ContainsKey("file.txt"));
-        Assert.Equal(reAddCommit, result["file.txt"].Id);
+        Assert.Contains(result, e => e.Path == "file.txt");
+        Assert.Equal(reAddCommit, result.Single(e => e.Path == "file.txt").Commit.Id);
     }
 
     [Fact]
@@ -428,10 +428,10 @@ public sealed class GitRepositoryListFilesWithLastChangeTests
         var result = await gitRepository.ListFilesWithLastChangeAsync();
 
         Assert.Equal(4, result.Count);
-        Assert.Equal(add, result["a.txt"].Id);
-        Assert.Equal(updateB, result["b.txt"].Id);
-        Assert.False(result.ContainsKey("c.txt"));
-        Assert.Equal(updateD, result["d.txt"].Id);
+        Assert.Equal(add, result.Single(e => e.Path == "a.txt").Commit.Id);
+        Assert.Equal(updateB, result.Single(e => e.Path == "b.txt").Commit.Id);
+        Assert.DoesNotContain(result, e => e.Path == "c.txt");
+        Assert.Equal(updateD, result.Single(e => e.Path == "d.txt").Commit.Id);
     }
 
     [Fact]
@@ -446,9 +446,9 @@ public sealed class GitRepositoryListFilesWithLastChangeTests
         var result = await gitRepository.ListFilesWithLastChangeAsync();
 
         Assert.Equal(3, result.Count);
-        Assert.True(result.ContainsKey("README.md"));
-        Assert.Equal(reAdd, result["a.txt"].Id);
-        Assert.Equal(add, result["b.txt"].Id);
+        Assert.Contains(result, e => e.Path == "README.md");
+        Assert.Equal(reAdd, result.Single(e => e.Path == "a.txt").Commit.Id);
+        Assert.Equal(add, result.Single(e => e.Path == "b.txt").Commit.Id);
     }
 
     [Fact]
@@ -463,9 +463,9 @@ public sealed class GitRepositoryListFilesWithLastChangeTests
         var result = await gitRepository.ListFilesWithLastChangeAsync();
 
         Assert.Equal(2, result.Count);
-        Assert.True(result.ContainsKey("README.md"));
-        Assert.True(result.ContainsKey("file2.txt"));
-        Assert.Equal(add2, result["file2.txt"].Id);
+        Assert.Contains(result, e => e.Path == "README.md");
+        Assert.Contains(result, e => e.Path == "file2.txt");
+        Assert.Equal(add2, result.Single(e => e.Path == "file2.txt").Commit.Id);
     }
 
     [Fact]
@@ -480,9 +480,9 @@ public sealed class GitRepositoryListFilesWithLastChangeTests
         var result = await gitRepository.ListFilesWithLastChangeAsync();
 
         Assert.Equal(2, result.Count);
-        Assert.True(result.ContainsKey("README.md"));
-        Assert.True(result.ContainsKey("dir2/file.txt"));
-        Assert.Equal(update, result["dir2/file.txt"].Id);
+        Assert.Contains(result, e => e.Path == "README.md");
+        Assert.Contains(result, e => e.Path == "dir2/file.txt");
+        Assert.Equal(update, result.Single(e => e.Path == "dir2/file.txt").Commit.Id);
     }
 
     [Fact]
@@ -497,8 +497,8 @@ public sealed class GitRepositoryListFilesWithLastChangeTests
         var result = await gitRepository.ListFilesWithLastChangeAsync();
 
         Assert.Equal(2, result.Count);
-        Assert.True(result.ContainsKey("README.md"));
-        Assert.Equal(add2, result["file.txt"].Id);
+        Assert.Contains(result, e => e.Path == "README.md");
+        Assert.Equal(add2, result.Single(e => e.Path == "file.txt").Commit.Id);
     }
 
     [Fact]
@@ -513,12 +513,12 @@ public sealed class GitRepositoryListFilesWithLastChangeTests
         var result = await gitRepository.ListFilesWithLastChangeAsync();
 
         Assert.Equal(3, result.Count);
-        Assert.False(result.ContainsKey("a.txt"));
-        Assert.True(result.ContainsKey("b.txt"));
-        Assert.False(result.ContainsKey("c.txt"));
-        Assert.True(result.ContainsKey("d.txt"));
-        Assert.Equal(update, result["b.txt"].Id);
-        Assert.Equal(add, result["d.txt"].Id);
+        Assert.DoesNotContain(result, e => e.Path == "a.txt");
+        Assert.Contains(result, e => e.Path == "b.txt");
+        Assert.DoesNotContain(result, e => e.Path == "c.txt");
+        Assert.Contains(result, e => e.Path == "d.txt");
+        Assert.Equal(update, result.Single(e => e.Path == "b.txt").Commit.Id);
+        Assert.Equal(add, result.Single(e => e.Path == "d.txt").Commit.Id);
     }
 
     [Fact]
@@ -532,9 +532,9 @@ public sealed class GitRepositoryListFilesWithLastChangeTests
         var result = await gitRepository.ListFilesWithLastChangeAsync();
 
         Assert.Equal(2, result.Count);
-        Assert.True(result.ContainsKey("README.md"));
-        Assert.True(result.ContainsKey("keep.txt"));
-        Assert.Equal(add, result["keep.txt"].Id);
+        Assert.Contains(result, e => e.Path == "README.md");
+        Assert.Contains(result, e => e.Path == "keep.txt");
+        Assert.Equal(add, result.Single(e => e.Path == "keep.txt").Commit.Id);
     }
 
     [Fact]
@@ -550,9 +550,9 @@ public sealed class GitRepositoryListFilesWithLastChangeTests
             fileFilter: path => path.EndsWith(".txt", StringComparison.Ordinal));
 
         Assert.Single(result);
-        Assert.False(result.ContainsKey("a.txt"));
-        Assert.True(result.ContainsKey("c.txt"));
-        Assert.Equal(update, result["c.txt"].Id);
+        Assert.DoesNotContain(result, e => e.Path == "a.txt");
+        Assert.Contains(result, e => e.Path == "c.txt");
+        Assert.Equal(update, result.Single(e => e.Path == "c.txt").Commit.Id);
     }
 
     [Fact]
@@ -583,4 +583,18 @@ public sealed class GitRepositoryListFilesWithLastChangeTests
         await Assert.ThrowsAsync<DirectoryNotFoundException>(
             () => gitRepository.ListFilesWithLastChangeAsync(path: "docs"));
     }
+
+    [Fact]
+    public async Task ListFilesWithLastChangeAsync_ResultIsSortedByPathOrdinal()
+    {
+        using var repo = GitTestRepository.Create();
+        repo.Commit("Add files", ("z.txt", "z"), ("a.txt", "a"), ("m.txt", "m"), ("B.txt", "B"));
+
+        var gitRepository = GitRepository.Open(repo.WorkingDirectory);
+        var result = await gitRepository.ListFilesWithLastChangeAsync();
+
+        var paths = result.Select(e => e.Path).ToList();
+        Assert.Equal(paths.OrderBy(p => p, StringComparer.Ordinal), paths);
+    }
 }
+

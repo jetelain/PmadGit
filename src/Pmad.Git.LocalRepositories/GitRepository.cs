@@ -510,8 +510,8 @@ public sealed class GitRepository : IGitRepository
     /// <param name="path">Optional directory path to scope the result; all files when omitted.</param>
     /// <param name="fileFilter">Optional predicate applied to each file path; only files for which it returns <see langword="true"/> are included. All files are included when omitted.</param>
     /// <param name="cancellationToken">Token used to cancel the async operation.</param>
-    /// <returns>A dictionary mapping each file path to its most recent modifying commit.</returns>
-    public async Task<Dictionary<string, GitCommit>> ListFilesWithLastChangeAsync(
+    /// <returns>A list of <see cref="GitFileLastChange"/> entries, one per file, sorted by path in ordinal order, each pairing the file path with its most recent modifying commit.</returns>
+    public async Task<IReadOnlyList<GitFileLastChange>> ListFilesWithLastChangeAsync(
         string? reference = null,
         string? path = null,
         Func<string, bool>? fileFilter = null,
@@ -590,7 +590,7 @@ public sealed class GitRepository : IGitRepository
                 catch (DirectoryNotFoundException)
                 {
                     // Requested directory no longer exists in this commit
-                    return result;
+                    return BuildResult(result);
                 }
 
                 // All known files are finalised  no older commit can affect the result.
@@ -601,7 +601,10 @@ public sealed class GitRepository : IGitRepository
             }
         }
 
-        return result;
+        return BuildResult(result);
+
+        static IReadOnlyList<GitFileLastChange> BuildResult(Dictionary<string, GitCommit> dict)
+            => dict.OrderBy(kv => kv.Key, StringComparer.Ordinal).Select(kv => new GitFileLastChange(kv.Key, kv.Value)).ToList();
     }
 
     /// <summary>
