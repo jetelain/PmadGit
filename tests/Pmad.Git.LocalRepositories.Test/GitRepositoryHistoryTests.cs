@@ -411,7 +411,7 @@ public sealed class GitRepositoryHistoryTests
 	}
 
 	[Fact]
-	public async Task EnumerateCommitTreeAsync_TopDirectoryOnly_EmptyDirectory_ReturnsNoItems()
+	public async Task EnumerateCommitTreeAsync_TopDirectoryOnly_FlatDirectory_ReturnsOnlyBlobs()
 	{
 		using var repo = GitTestRepository.Create();
 		// Git does not track empty directories; add a file then remove it to get an empty tree

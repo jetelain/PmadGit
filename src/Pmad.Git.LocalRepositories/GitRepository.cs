@@ -203,7 +203,7 @@ public sealed class GitRepository : IGitRepository
     /// </summary>
     /// <param name="reference">Commit hash or ref to inspect; defaults to HEAD.</param>
     /// <param name="path">Optional directory path inside the tree to enumerate.</param>
-    /// <param name="searchOption">Whether to include files in all subdirectories or only the specified directory; defaults to <see cref="SearchOption.AllDirectories"/>.</param>
+    /// <param name="searchOption">Whether to include items in all subdirectories or only the specified directory; defaults to <see cref="SearchOption.AllDirectories"/>.</param>
     /// <param name="cancellationToken">Token used to cancel the async iteration.</param>
     /// <returns>An async stream of tree items rooted at the specified path.</returns>
     public async IAsyncEnumerable<GitTreeItem> EnumerateCommitTreeAsync(
