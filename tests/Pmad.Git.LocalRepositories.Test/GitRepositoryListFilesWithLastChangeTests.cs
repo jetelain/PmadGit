@@ -157,7 +157,7 @@ public sealed class GitRepositoryListFilesWithLastChangeTests
     }
 
     [Fact]
-    public async Task ListFilesWithLastChangeAsync_PathDirectoryRemovedInOlderCommit_StillReturnsFiles()
+    public async Task ListFilesWithLastChangeAsync_PathDirectoryCreatedInOlderCommit_StillReturnsFiles()
     {
         using var repo = GitTestRepository.Create();
         repo.Commit("Add docs", ("docs/readme.md", "v1"));
@@ -212,11 +212,11 @@ public sealed class GitRepositoryListFilesWithLastChangeTests
     }
 
     [Fact]
-    public async Task ListFilesWithLastChangeAsync_RemovedFile_ReturnsCommitThatRemovedIt()
+    public async Task ListFilesWithLastChangeAsync_RemovedFile_DoesNotReturnRemovedFile()
     {
         using var repo = GitTestRepository.Create();
         var addCommit = repo.Commit("Add files", ("file1.txt", "content1"), ("file2.txt", "content2"));
-        var removeCommit = repo.RemoveFiles("Remove file2", "file2.txt");
+        repo.RemoveFiles("Remove file2", "file2.txt");
 
         var gitRepository = GitRepository.Open(repo.WorkingDirectory);
         var result = await gitRepository.ListFilesWithLastChangeAsync();

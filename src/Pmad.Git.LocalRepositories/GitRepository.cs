@@ -519,7 +519,7 @@ public sealed class GitRepository : IGitRepository
     {
         var prefix = NormalizePathAllowEmpty(path);
 
-        // file path -> blob hash recorded in the previous (newer) commit
+        // file path -> blob hash recorded in the current commit (used to detect changes compared to older commits)
         var initialBlobPerFile = new Dictionary<string, GitHash>(StringComparer.Ordinal);
 
         // file path -> the commit we will ultimately return (the newest commit that changed it)
