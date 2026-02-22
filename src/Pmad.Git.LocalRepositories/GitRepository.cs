@@ -582,18 +582,18 @@ public sealed class GitRepository : IGitRepository
 
                     foreach (var missingPath in initialBlobPerFile.Keys.Where(p => !seen.Contains(p) && !done.Contains(p)))
                     {
-                        // File that existed in the previous (newer) commit is now missing, meaning it was removed in the current (older) commit
-                        // newer commit is the last one that changed it, so we can finalise the result for this file and stop tracking it
+                        // File that existed in the previous (newer) commit is not present in this older commit, meaning this commit predates the file's introduction
+                        // The newer commit is therefore the last one that affected it, so we can finalise the result for this file and stop tracking it
                         done.Add(missingPath);
                     }
                 }
                 catch (DirectoryNotFoundException)
                 {
-                    // Requested directory no longer exists in this commit
+                    // Requested directory does not exist in this commit (we have reached a point in history before it was introduced)
                     return BuildResult(result);
                 }
 
-                // All known files are finalised  no older commit can affect the result.
+                // All known files are finalised - no older commit can affect the result.
                 if (done.Count == initialBlobPerFile.Count)
                 {
                     break;
