@@ -1,3 +1,4 @@
+using System.IO;
 using Pmad.Git.LocalRepositories.Test.Infrastructure;
 
 namespace Pmad.Git.LocalRepositories.Test;
@@ -318,6 +319,114 @@ public sealed class GitRepositoryHistoryTests
 
 		Assert.Contains(items, i => i.Entry.Kind == GitTreeEntryKind.Tree);
 		Assert.Contains(items, i => i.Entry.Kind == GitTreeEntryKind.Blob);
+	}
+
+	[Fact]
+	public async Task EnumerateCommitTreeAsync_TopDirectoryOnly_ExcludesFilesInSubDirectories()
+	{
+		using var repo = GitTestRepository.Create();
+		repo.Commit("Add files",
+			("root.txt", "root"),
+			("sub/nested.txt", "nested"),
+			("sub/deep/file.txt", "deep"));
+		var gitRepository = GitRepository.Open(repo.WorkingDirectory);
+
+		var items = new List<GitTreeItem>();
+		await foreach (var item in gitRepository.EnumerateCommitTreeAsync(searchOption: SearchOption.TopDirectoryOnly))
+		{
+			items.Add(item);
+		}
+
+		var paths = items.Select(i => i.Path).ToList();
+		Assert.Contains("root.txt", paths);
+		Assert.Contains("README.md", paths);
+		Assert.DoesNotContain("sub/nested.txt", paths);
+		Assert.DoesNotContain("sub/deep/file.txt", paths);
+	}
+
+	[Fact]
+	public async Task EnumerateCommitTreeAsync_TopDirectoryOnly_YieldsSubDirectoryTreeEntries()
+	{
+		using var repo = GitTestRepository.Create();
+		repo.Commit("Add files",
+			("sub/nested.txt", "nested"),
+			("other/file.txt", "file"));
+		var gitRepository = GitRepository.Open(repo.WorkingDirectory);
+
+		var items = new List<GitTreeItem>();
+		await foreach (var item in gitRepository.EnumerateCommitTreeAsync(searchOption: SearchOption.TopDirectoryOnly))
+		{
+			items.Add(item);
+		}
+
+		var paths = items.Select(i => i.Path).ToList();
+		Assert.Contains("sub", paths);
+		Assert.Contains("other", paths);
+		Assert.All(items.Where(i => i.Path is "sub" or "other"), i => Assert.Equal(GitTreeEntryKind.Tree, i.Entry.Kind));
+	}
+
+	[Fact]
+	public async Task EnumerateCommitTreeAsync_TopDirectoryOnly_WithPath_EnumeratesOnlyDirectChildren()
+	{
+		using var repo = GitTestRepository.Create();
+		repo.Commit("Add files",
+			("src/file1.txt", "f1"),
+			("src/sub/file2.txt", "f2"),
+			("src/sub/deep/file3.txt", "f3"));
+		var gitRepository = GitRepository.Open(repo.WorkingDirectory);
+
+		var items = new List<GitTreeItem>();
+		await foreach (var item in gitRepository.EnumerateCommitTreeAsync(path: "src", searchOption: SearchOption.TopDirectoryOnly))
+		{
+			items.Add(item);
+		}
+
+		var paths = items.Select(i => i.Path).ToList();
+		Assert.Contains("src/file1.txt", paths);
+		Assert.Contains("src/sub", paths);
+		Assert.DoesNotContain("src/sub/file2.txt", paths);
+		Assert.DoesNotContain("src/sub/deep/file3.txt", paths);
+	}
+
+	[Fact]
+	public async Task EnumerateCommitTreeAsync_AllDirectories_WithPath_EnumeratesAllDescendants()
+	{
+		using var repo = GitTestRepository.Create();
+		repo.Commit("Add files",
+			("src/file1.txt", "f1"),
+			("src/sub/file2.txt", "f2"),
+			("src/sub/deep/file3.txt", "f3"));
+		var gitRepository = GitRepository.Open(repo.WorkingDirectory);
+
+		var items = new List<GitTreeItem>();
+		await foreach (var item in gitRepository.EnumerateCommitTreeAsync(path: "src", searchOption: SearchOption.AllDirectories))
+		{
+			items.Add(item);
+		}
+
+		var paths = items.Select(i => i.Path).ToList();
+		Assert.Contains("src/file1.txt", paths);
+		Assert.Contains("src/sub/file2.txt", paths);
+		Assert.Contains("src/sub/deep/file3.txt", paths);
+	}
+
+	[Fact]
+	public async Task EnumerateCommitTreeAsync_TopDirectoryOnly_FlatDirectory_ReturnsOnlyBlobs()
+	{
+		using var repo = GitTestRepository.Create();
+		// Git does not track empty directories; add a file then remove it to get an empty tree
+		// Instead use a path that has only one level of children to verify top-only returns only blobs at that level
+		repo.Commit("Add flat dir", ("flat/a.txt", "a"), ("flat/b.txt", "b"));
+		var gitRepository = GitRepository.Open(repo.WorkingDirectory);
+
+		var items = new List<GitTreeItem>();
+		await foreach (var item in gitRepository.EnumerateCommitTreeAsync(path: "flat", searchOption: SearchOption.TopDirectoryOnly))
+		{
+			items.Add(item);
+		}
+
+		Assert.Equal(2, items.Count);
+		Assert.All(items, i => Assert.Equal(GitTreeEntryKind.Blob, i.Entry.Kind));
 	}
 
 	#endregion

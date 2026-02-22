@@ -54,11 +54,13 @@ public interface IGitRepository
     /// </summary>
     /// <param name="reference">Commit hash or ref to inspect; defaults to HEAD.</param>
     /// <param name="path">Optional directory path inside the tree to enumerate.</param>
+    /// <param name="searchOption">Whether to include items in all subdirectories or only the specified directory; defaults to <see cref="SearchOption.AllDirectories"/>.</param>
     /// <param name="cancellationToken">Token used to cancel the async iteration.</param>
     /// <returns>An async stream of tree items rooted at the specified path.</returns>
     IAsyncEnumerable<GitTreeItem> EnumerateCommitTreeAsync(
         string? reference = null,
         string? path = null,
+        SearchOption searchOption = SearchOption.AllDirectories,
         CancellationToken cancellationToken = default);
 
     /// <summary>
@@ -162,12 +164,14 @@ public interface IGitRepository
     /// <param name="reference">Starting reference or commit hash; defaults to HEAD.</param>
     /// <param name="path">Optional directory path to scope the result; all files when omitted.</param>
     /// <param name="fileFilter">Optional predicate applied to each file path; only files for which it returns <see langword="true"/> are included. All files are included when omitted.</param>
+    /// <param name="searchOption">Whether to include files in all subdirectories or only the specified directory; defaults to <see cref="SearchOption.AllDirectories"/>.</param>
     /// <param name="cancellationToken">Token used to cancel the async operation.</param>
     /// <returns>A list of <see cref="GitFileLastChange"/> entries, one per file, sorted by path in ordinal order, each pairing the file path with its most recent modifying commit.</returns>
     Task<IReadOnlyList<GitFileLastChange>> ListFilesWithLastChangeAsync(
         string? reference = null,
         string? path = null,
         Func<string, bool>? fileFilter = null,
+        SearchOption searchOption = SearchOption.AllDirectories,
         CancellationToken cancellationToken = default);
 
     /// <summary>

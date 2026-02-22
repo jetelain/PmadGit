@@ -1,3 +1,4 @@
+using System.IO;
 using Pmad.Git.LocalRepositories.Test.Infrastructure;
 
 namespace Pmad.Git.LocalRepositories.Test;
@@ -595,6 +596,100 @@ public sealed class GitRepositoryListFilesWithLastChangeTests
 
         var paths = result.Select(e => e.Path).ToList();
         Assert.Equal(paths.OrderBy(p => p, StringComparer.Ordinal), paths);
+    }
+
+    [Fact]
+    public async Task ListFilesWithLastChangeAsync_TopDirectoryOnly_ExcludesFilesInSubDirectories()
+    {
+        using var repo = GitTestRepository.Create();
+        var rootCommit = repo.Commit("Add files", ("root.txt", "root"), ("sub/nested.txt", "nested"));
+
+        var gitRepository = GitRepository.Open(repo.WorkingDirectory);
+        var result = await gitRepository.ListFilesWithLastChangeAsync(searchOption: SearchOption.TopDirectoryOnly);
+
+        Assert.Contains(result, e => e.Path == "root.txt");
+        Assert.Contains(result, e => e.Path == "README.md");
+        Assert.DoesNotContain(result, e => e.Path == "sub/nested.txt");
+    }
+
+    [Fact]
+    public async Task ListFilesWithLastChangeAsync_TopDirectoryOnly_WithPath_OnlyReturnsDirectChildren()
+    {
+        using var repo = GitTestRepository.Create();
+        var addCommit = repo.Commit("Add files",
+            ("docs/intro.md", "intro"),
+            ("docs/api/reference.md", "ref"),
+            ("docs/api/advanced/guide.md", "guide"));
+
+        var gitRepository = GitRepository.Open(repo.WorkingDirectory);
+        var result = await gitRepository.ListFilesWithLastChangeAsync(path: "docs", searchOption: SearchOption.TopDirectoryOnly);
+
+        Assert.Contains(result, e => e.Path == "docs/intro.md");
+        Assert.DoesNotContain(result, e => e.Path == "docs/api/reference.md");
+        Assert.DoesNotContain(result, e => e.Path == "docs/api/advanced/guide.md");
+    }
+
+    [Fact]
+    public async Task ListFilesWithLastChangeAsync_TopDirectoryOnly_WithPath_UpdatedDirectChild_ReturnsNewestCommit()
+    {
+        using var repo = GitTestRepository.Create();
+        repo.Commit("Add files", ("docs/intro.md", "v1"), ("docs/sub/other.md", "other"));
+        var updateCommit = repo.Commit("Update intro", ("docs/intro.md", "v2"));
+
+        var gitRepository = GitRepository.Open(repo.WorkingDirectory);
+        var result = await gitRepository.ListFilesWithLastChangeAsync(path: "docs", searchOption: SearchOption.TopDirectoryOnly);
+
+        Assert.Single(result);
+        Assert.Equal("docs/intro.md", result[0].Path);
+        Assert.Equal(updateCommit, result[0].Commit.Id);
+    }
+
+    [Fact]
+    public async Task ListFilesWithLastChangeAsync_AllDirectories_WithPath_IncludesAllDescendants()
+    {
+        using var repo = GitTestRepository.Create();
+        var addCommit = repo.Commit("Add files",
+            ("src/file.cs", "f"),
+            ("src/sub/other.cs", "o"),
+            ("src/sub/deep/deep.cs", "d"));
+
+        var gitRepository = GitRepository.Open(repo.WorkingDirectory);
+        var result = await gitRepository.ListFilesWithLastChangeAsync(path: "src", searchOption: SearchOption.AllDirectories);
+
+        Assert.Contains(result, e => e.Path == "src/file.cs");
+        Assert.Contains(result, e => e.Path == "src/sub/other.cs");
+        Assert.Contains(result, e => e.Path == "src/sub/deep/deep.cs");
+    }
+
+    [Fact]
+    public async Task ListFilesWithLastChangeAsync_TopDirectoryOnly_RemovedDirectChildFile_NotInResult()
+    {
+        using var repo = GitTestRepository.Create();
+        repo.Commit("Add files", ("a.txt", "a"), ("b.txt", "b"), ("sub/c.txt", "c"));
+        repo.RemoveFiles("Remove b.txt", "b.txt");
+
+        var gitRepository = GitRepository.Open(repo.WorkingDirectory);
+        var result = await gitRepository.ListFilesWithLastChangeAsync(searchOption: SearchOption.TopDirectoryOnly);
+
+        Assert.Contains(result, e => e.Path == "a.txt");
+        Assert.DoesNotContain(result, e => e.Path == "b.txt");
+        Assert.DoesNotContain(result, e => e.Path == "sub/c.txt");
+    }
+
+    [Fact]
+    public async Task ListFilesWithLastChangeAsync_TopDirectoryOnly_WithFileFilter_AppliesFilterToDirectChildren()
+    {
+        using var repo = GitTestRepository.Create();
+        repo.Commit("Add files", ("a.cs", "cs"), ("b.txt", "txt"), ("sub/c.cs", "cs"));
+
+        var gitRepository = GitRepository.Open(repo.WorkingDirectory);
+        var result = await gitRepository.ListFilesWithLastChangeAsync(
+            fileFilter: p => p.EndsWith(".cs", StringComparison.Ordinal),
+            searchOption: SearchOption.TopDirectoryOnly);
+
+        Assert.Contains(result, e => e.Path == "a.cs");
+        Assert.DoesNotContain(result, e => e.Path == "b.txt");
+        Assert.DoesNotContain(result, e => e.Path == "sub/c.cs");
     }
 }
 

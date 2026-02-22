@@ -203,17 +203,19 @@ public sealed class GitRepository : IGitRepository
     /// </summary>
     /// <param name="reference">Commit hash or ref to inspect; defaults to HEAD.</param>
     /// <param name="path">Optional directory path inside the tree to enumerate.</param>
+    /// <param name="searchOption">Whether to include items in all subdirectories or only the specified directory; defaults to <see cref="SearchOption.AllDirectories"/>.</param>
     /// <param name="cancellationToken">Token used to cancel the async iteration.</param>
     /// <returns>An async stream of tree items rooted at the specified path.</returns>
     public async IAsyncEnumerable<GitTreeItem> EnumerateCommitTreeAsync(
         string? reference = null,
         string? path = null,
+        SearchOption searchOption = SearchOption.AllDirectories,
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
         var commit = await GetCommitAsync(reference, cancellationToken).ConfigureAwait(false);
         if (string.IsNullOrWhiteSpace(path))
         {
-            await foreach (var item in EnumerateTreeAsync(commit.Tree, string.Empty, cancellationToken).ConfigureAwait(false))
+            await foreach (var item in EnumerateTreeAsync(commit.Tree, string.Empty, searchOption, cancellationToken).ConfigureAwait(false))
             {
                 yield return item;
             }
@@ -224,7 +226,7 @@ public sealed class GitRepository : IGitRepository
         var normalized = NormalizePath(path);
         if (string.IsNullOrEmpty(normalized))
         {
-            await foreach (var item in EnumerateTreeAsync(commit.Tree, string.Empty, cancellationToken).ConfigureAwait(false))
+            await foreach (var item in EnumerateTreeAsync(commit.Tree, string.Empty, searchOption, cancellationToken).ConfigureAwait(false))
             {
                 yield return item;
             }
@@ -250,7 +252,7 @@ public sealed class GitRepository : IGitRepository
             {
                 if (entry.Kind == GitTreeEntryKind.Tree)
                 {
-                    await foreach (var item in EnumerateTreeAsync(entry.Hash, normalized, cancellationToken).ConfigureAwait(false))
+                    await foreach (var item in EnumerateTreeAsync(entry.Hash, normalized, searchOption, cancellationToken).ConfigureAwait(false))
                     {
                         yield return item;
                     }
@@ -509,12 +511,14 @@ public sealed class GitRepository : IGitRepository
     /// <param name="reference">Starting reference or commit hash; defaults to HEAD.</param>
     /// <param name="path">Optional directory path to scope the result; all files when omitted.</param>
     /// <param name="fileFilter">Optional predicate applied to each file path; only files for which it returns <see langword="true"/> are included. All files are included when omitted.</param>
+    /// <param name="searchOption">Whether to include files in all subdirectories or only the specified directory; defaults to <see cref="SearchOption.AllDirectories"/>.</param>
     /// <param name="cancellationToken">Token used to cancel the async operation.</param>
     /// <returns>A list of <see cref="GitFileLastChange"/> entries, one per file, sorted by path in ordinal order, each pairing the file path with its most recent modifying commit.</returns>
     public async Task<IReadOnlyList<GitFileLastChange>> ListFilesWithLastChangeAsync(
         string? reference = null,
         string? path = null,
         Func<string, bool>? fileFilter = null,
+        SearchOption searchOption = SearchOption.AllDirectories,
         CancellationToken cancellationToken = default)
     {
         var prefix = NormalizePathAllowEmpty(path);
@@ -534,7 +538,7 @@ public sealed class GitRepository : IGitRepository
         {
             if (isFirst)
             {
-                await foreach (var item in EnumerateCommitTreeAsync(commit.Id.Value, prefix, cancellationToken).ConfigureAwait(false))
+                await foreach (var item in EnumerateCommitTreeAsync(commit.Id.Value, prefix, searchOption, cancellationToken).ConfigureAwait(false))
                 {
                     if (item.Entry.Kind != GitTreeEntryKind.Blob || (fileFilter != null && !fileFilter(item.Path)))
                     {
@@ -557,7 +561,7 @@ public sealed class GitRepository : IGitRepository
                 {
                     var seen = new HashSet<string>(StringComparer.Ordinal);
 
-                    await foreach (var item in EnumerateCommitTreeAsync(commit.Id.Value, prefix, cancellationToken).ConfigureAwait(false))
+                    await foreach (var item in EnumerateCommitTreeAsync(commit.Id.Value, prefix, searchOption, cancellationToken).ConfigureAwait(false))
                     {
                         if (item.Entry.Kind == GitTreeEntryKind.Blob && result.ContainsKey(item.Path) && !done.Contains(item.Path))
                         {
@@ -889,7 +893,7 @@ public sealed class GitRepository : IGitRepository
     private async Task<Dictionary<string, TreeLeaf>> LoadLeafEntriesAsync(GitHash treeHash, CancellationToken cancellationToken)
     {
         var entries = new Dictionary<string, TreeLeaf>(StringComparer.Ordinal);
-        await foreach (var item in EnumerateTreeAsync(treeHash, string.Empty, cancellationToken).ConfigureAwait(false))
+        await foreach (var item in EnumerateTreeAsync(treeHash, string.Empty, SearchOption.AllDirectories, cancellationToken).ConfigureAwait(false))
         {
             if (item.Entry.Kind == GitTreeEntryKind.Tree)
             {
@@ -1151,6 +1155,7 @@ public sealed class GitRepository : IGitRepository
     private async IAsyncEnumerable<GitTreeItem> EnumerateTreeAsync(
         GitHash treeHash,
         string prefix,
+        SearchOption searchOption,
         [EnumeratorCancellation] CancellationToken cancellationToken)
     {
         var tree = await GetTreeAsync(treeHash, cancellationToken).ConfigureAwait(false);
@@ -1159,9 +1164,9 @@ public sealed class GitRepository : IGitRepository
             cancellationToken.ThrowIfCancellationRequested();
             var path = string.IsNullOrEmpty(prefix) ? entry.Name : $"{prefix}/{entry.Name}";
             yield return new GitTreeItem(path, entry);
-            if (entry.Kind == GitTreeEntryKind.Tree)
+            if (entry.Kind == GitTreeEntryKind.Tree && searchOption == SearchOption.AllDirectories)
             {
-                await foreach (var child in EnumerateTreeAsync(entry.Hash, path, cancellationToken).ConfigureAwait(false))
+                await foreach (var child in EnumerateTreeAsync(entry.Hash, path, searchOption, cancellationToken).ConfigureAwait(false))
                 {
                     yield return child;
                 }
