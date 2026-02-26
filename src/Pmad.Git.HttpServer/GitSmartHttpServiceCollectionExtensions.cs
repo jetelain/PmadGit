@@ -46,18 +46,7 @@ public static class GitSmartHttpServiceCollectionExtensions
             throw new ArgumentNullException(nameof(options));
         }
 
-        return AddGitSmartHttp(services, opts =>
-        {
-            opts.RepositoryRoot = options.RepositoryRoot;
-            opts.EnableUploadPack = options.EnableUploadPack;
-            opts.EnableReceivePack = options.EnableReceivePack;
-            opts.Agent = options.Agent;
-            opts.AuthorizeAsync = options.AuthorizeAsync;
-            opts.RepositoryNameNormalizer = options.RepositoryNameNormalizer;
-            opts.RepositoryResolver = options.RepositoryResolver;
-            opts.OnReceivePackCompleted = options.OnReceivePackCompleted;
-            opts.RepositoryNameValidator = options.RepositoryNameValidator;
-        });
+        return AddGitSmartHttp(services, options.CopyTo);
     }
 
     /// <summary>

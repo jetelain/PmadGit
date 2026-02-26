@@ -343,4 +343,38 @@ app.Run();
 ```
 
 This allows URLs like:
-- `git clone http://localhost/git/My Project.git` ? resolves to `my-project.git`
+- `git clone http://localhost/git/My%20Project.git` ? resolves to `my-project.git`
+
+## Custom Repository Name Validation
+
+Override the default validator to allow additional characters such as dots (e.g. for version-tagged repositories):
+
+```csharp
+var builder = WebApplication.CreateBuilder(args);
+
+builder.Services.AddGitSmartHttp(options =>
+{
+    options.RepositoryRoot = "/srv/git";
+    options.RepositoryNameValidator = name =>
+    {
+        // Allow alphanumeric, hyphens, underscores, dots, and forward slashes
+        // (still disallow leading, trailing, or repeated slashes to prevent traversal)
+        return !string.IsNullOrEmpty(name)
+            && !name.StartsWith('/')
+            && !name.EndsWith('/')
+            && !name.Contains("//")
+            && name.All(c => char.IsLetterOrDigit(c) || c == '-' || c == '_' || c == '.' || c == '/');
+    };
+});
+
+var app = builder.Build();
+
+app.MapGitSmartHttp();
+
+app.Run();
+```
+
+**Supported URLs:**
+- `git clone http://localhost/git/project.v2.git`
+- `git clone http://localhost/git/org/app.v1.0.git`
+

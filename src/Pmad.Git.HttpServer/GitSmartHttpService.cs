@@ -12,7 +12,7 @@ namespace Pmad.Git.HttpServer;
 /// Implements the Git Smart HTTP protocol for serving Git repositories over HTTP.
 /// Handles info/refs, upload-pack (fetch/clone), and receive-pack (push) operations.
 /// </summary>
-public sealed class GitSmartHttpService
+internal sealed class GitSmartHttpService
 {
     private readonly GitSmartHttpOptions _options;
     private readonly IGitRepositoryService _repositoryService;

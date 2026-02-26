@@ -60,4 +60,10 @@ public interface IGitObjectStore
     /// <returns>The hash assigned to the stored object.</returns>
     /// <exception cref="System.ArgumentException">Thrown when <paramref name="content"/> does not support seeking.</exception>
     Task<GitHash> WriteObjectAsync(GitObjectType type, Stream content, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Discards the cached pack-file index so that subsequent reads reflect the current state of the
+    /// <c>objects/pack</c> directory.
+    /// </summary>
+    void InvalidateCaches();
 }
