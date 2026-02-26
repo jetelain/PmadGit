@@ -6,7 +6,7 @@ namespace Pmad.Git.LocalRepositories;
 /// <summary>
 /// Represents a git signature (name, email, timestamp) used in commit and tag objects.
 /// </summary>
-public sealed class GitCommitSignature
+public sealed record GitCommitSignature
 {
     /// <summary>
     /// Invalid characters that are not allowed in the name or email of a git signature, as they can break the header format.

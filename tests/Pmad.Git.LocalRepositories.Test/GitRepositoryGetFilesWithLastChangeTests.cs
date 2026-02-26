@@ -1,41 +1,40 @@
-using System.IO;
 using Pmad.Git.LocalRepositories.Test.Infrastructure;
 
 namespace Pmad.Git.LocalRepositories.Test;
 
 /// <summary>
-/// Tests for GitRepository.ListFilesWithLastChangeAsync.
+/// Tests for GitRepository.GetFilesWithLastChangeAsync.
 /// </summary>
-public sealed class GitRepositoryListFilesWithLastChangeTests
+public sealed class GitRepositoryGetFilesWithLastChangeTests
 {
     [Fact]
-    public async Task ListFilesWithLastChangeAsync_SingleFile_ReturnsCorrectCommit()
+    public async Task GetFilesWithLastChangeAsync_SingleFile_ReturnsCorrectCommit()
     {
         using var repo = GitTestRepository.Create();
         var addCommit = repo.Commit("Add file", ("file.txt", "v1"));
 
         var gitRepository = GitRepository.Open(repo.WorkingDirectory);
-        var result = await gitRepository.ListFilesWithLastChangeAsync();
+        var result = await gitRepository.GetFilesWithLastChangeAsync();
 
         Assert.Contains(result, e => e.Path == "file.txt");
         Assert.Equal(addCommit, result.Single(e => e.Path == "file.txt").Commit.Id);
     }
 
     [Fact]
-    public async Task ListFilesWithLastChangeAsync_UpdatedFile_ReturnsNewestCommit()
+    public async Task GetFilesWithLastChangeAsync_UpdatedFile_ReturnsNewestCommit()
     {
         using var repo = GitTestRepository.Create();
         repo.Commit("Add file", ("file.txt", "v1"));
         var updateCommit = repo.Commit("Update file", ("file.txt", "v2"));
 
         var gitRepository = GitRepository.Open(repo.WorkingDirectory);
-        var result = await gitRepository.ListFilesWithLastChangeAsync();
+        var result = await gitRepository.GetFilesWithLastChangeAsync();
 
         Assert.Equal(updateCommit, result.Single(e => e.Path == "file.txt").Commit.Id);
     }
 
     [Fact]
-    public async Task ListFilesWithLastChangeAsync_MultipleFiles_EachReturnsItsOwnLastCommit()
+    public async Task GetFilesWithLastChangeAsync_MultipleFiles_EachReturnsItsOwnLastCommit()
     {
         using var repo = GitTestRepository.Create();
         var commitA = repo.Commit("Add a.txt", ("a.txt", "a1"));
@@ -43,80 +42,80 @@ public sealed class GitRepositoryListFilesWithLastChangeTests
         var commitC = repo.Commit("Update a.txt", ("a.txt", "a2"));
 
         var gitRepository = GitRepository.Open(repo.WorkingDirectory);
-        var result = await gitRepository.ListFilesWithLastChangeAsync();
+        var result = await gitRepository.GetFilesWithLastChangeAsync();
 
         Assert.Equal(commitC, result.Single(e => e.Path == "a.txt").Commit.Id);
         Assert.Equal(commitB, result.Single(e => e.Path == "b.txt").Commit.Id);
     }
 
     [Fact]
-    public async Task ListFilesWithLastChangeAsync_FileNeverUpdated_ReturnsCreatingCommit()
+    public async Task GetFilesWithLastChangeAsync_FileNeverUpdated_ReturnsCreatingCommit()
     {
         using var repo = GitTestRepository.Create();
         var addCommit = repo.Commit("Add stable.txt", ("stable.txt", "content"));
         repo.Commit("Add other.txt", ("other.txt", "content"));
 
         var gitRepository = GitRepository.Open(repo.WorkingDirectory);
-        var result = await gitRepository.ListFilesWithLastChangeAsync();
+        var result = await gitRepository.GetFilesWithLastChangeAsync();
 
         Assert.Equal(addCommit, result.Single(e => e.Path == "stable.txt").Commit.Id);
     }
 
     [Fact]
-    public async Task ListFilesWithLastChangeAsync_WithPath_OnlyReturnsFilesUnderPath()
+    public async Task GetFilesWithLastChangeAsync_WithPath_OnlyReturnsFilesUnderPath()
     {
         using var repo = GitTestRepository.Create();
         repo.Commit("Add files", ("docs/readme.md", "doc"), ("src/main.cs", "code"));
 
         var gitRepository = GitRepository.Open(repo.WorkingDirectory);
-        var result = await gitRepository.ListFilesWithLastChangeAsync(path: "docs");
+        var result = await gitRepository.GetFilesWithLastChangeAsync(path: "docs");
 
         Assert.Contains(result, e => e.Path == "docs/readme.md");
         Assert.DoesNotContain(result, e => e.Path == "src/main.cs");
     }
 
     [Fact]
-    public async Task ListFilesWithLastChangeAsync_WithPath_UpdatedFileUnderPath_ReturnsNewestCommit()
+    public async Task GetFilesWithLastChangeAsync_WithPath_UpdatedFileUnderPath_ReturnsNewestCommit()
     {
         using var repo = GitTestRepository.Create();
         repo.Commit("Add docs", ("docs/a.md", "v1"), ("docs/b.md", "v1"));
         var updateCommit = repo.Commit("Update docs/a.md", ("docs/a.md", "v2"));
 
         var gitRepository = GitRepository.Open(repo.WorkingDirectory);
-        var result = await gitRepository.ListFilesWithLastChangeAsync(path: "docs");
+        var result = await gitRepository.GetFilesWithLastChangeAsync(path: "docs");
 
         Assert.Equal(updateCommit, result.Single(e => e.Path == "docs/a.md").Commit.Id);
     }
 
     [Fact]
-    public async Task ListFilesWithLastChangeAsync_WithFileFilter_ExcludesNonMatchingFiles()
+    public async Task GetFilesWithLastChangeAsync_WithFileFilter_ExcludesNonMatchingFiles()
     {
         using var repo = GitTestRepository.Create();
         repo.Commit("Add files", ("a.md", "md"), ("b.txt", "txt"));
 
         var gitRepository = GitRepository.Open(repo.WorkingDirectory);
-        var result = await gitRepository.ListFilesWithLastChangeAsync(
-            fileFilter: path => path.EndsWith(".md", StringComparison.Ordinal));
+        var result = await gitRepository.GetFilesWithLastChangeAsync(
+            predicate: path => path.EndsWith(".md", StringComparison.Ordinal));
 
         Assert.Contains(result, e => e.Path == "a.md");
         Assert.DoesNotContain(result, e => e.Path == "b.txt");
     }
 
     [Fact]
-    public async Task ListFilesWithLastChangeAsync_WithFileFilter_AllFilesExcluded_ReturnsEmpty()
+    public async Task GetFilesWithLastChangeAsync_WithFileFilter_AllFilesExcluded_ReturnsEmpty()
     {
         using var repo = GitTestRepository.Create();
         repo.Commit("Add file", ("file.txt", "content"));
 
         var gitRepository = GitRepository.Open(repo.WorkingDirectory);
-        var result = await gitRepository.ListFilesWithLastChangeAsync(
-            fileFilter: _ => false);
+        var result = await gitRepository.GetFilesWithLastChangeAsync(
+            predicate: _ => false);
 
         Assert.Empty(result);
     }
 
     [Fact]
-    public async Task ListFilesWithLastChangeAsync_WithReference_UsesSpecifiedCommit()
+    public async Task GetFilesWithLastChangeAsync_WithReference_UsesSpecifiedCommit()
     {
         using var repo = GitTestRepository.Create();
         var taggedCommit = repo.Commit("Tagged commit", ("file.txt", "v1"));
@@ -124,24 +123,24 @@ public sealed class GitRepositoryListFilesWithLastChangeTests
         repo.Commit("After tag", ("file.txt", "v2"));
 
         var gitRepository = GitRepository.Open(repo.WorkingDirectory);
-        var result = await gitRepository.ListFilesWithLastChangeAsync(reference: "v1.0");
+        var result = await gitRepository.GetFilesWithLastChangeAsync(reference: "v1.0");
 
         Assert.Equal(taggedCommit, result.Single(e => e.Path == "file.txt").Commit.Id);
     }
 
     [Fact]
-    public async Task ListFilesWithLastChangeAsync_NonExistentPath_ThrowsDirectoryNotFoundException()
+    public async Task GetFilesWithLastChangeAsync_NonExistentPath_ThrowsDirectoryNotFoundException()
     {
         using var repo = GitTestRepository.Create();
         repo.Commit("Add file", ("file.txt", "content"));
 
         var gitRepository = GitRepository.Open(repo.WorkingDirectory);
         await Assert.ThrowsAsync<DirectoryNotFoundException>(
-            () => gitRepository.ListFilesWithLastChangeAsync(path: "nonexistent"));
+            () => gitRepository.GetFilesWithLastChangeAsync(path: "nonexistent"));
     }
 
     [Fact]
-    public async Task ListFilesWithLastChangeAsync_FilesInSubDirectories_ReturnsCorrectPaths()
+    public async Task GetFilesWithLastChangeAsync_FilesInSubDirectories_ReturnsCorrectPaths()
     {
         using var repo = GitTestRepository.Create();
         var commit = repo.Commit("Add nested files",
@@ -149,7 +148,7 @@ public sealed class GitRepositoryListFilesWithLastChangeTests
             ("src/b/file2.txt", "v1"));
 
         var gitRepository = GitRepository.Open(repo.WorkingDirectory);
-        var result = await gitRepository.ListFilesWithLastChangeAsync(path: "src");
+        var result = await gitRepository.GetFilesWithLastChangeAsync(path: "src");
 
         Assert.Contains(result, e => e.Path == "src/a/file1.txt");
         Assert.Contains(result, e => e.Path == "src/b/file2.txt");
@@ -158,21 +157,21 @@ public sealed class GitRepositoryListFilesWithLastChangeTests
     }
 
     [Fact]
-    public async Task ListFilesWithLastChangeAsync_PathDirectoryCreatedInOlderCommit_StillReturnsFiles()
+    public async Task GetFilesWithLastChangeAsync_PathDirectoryCreatedInOlderCommit_StillReturnsFiles()
     {
         using var repo = GitTestRepository.Create();
         repo.Commit("Add docs", ("docs/readme.md", "v1"));
         var updateCommit = repo.Commit("Update docs", ("docs/readme.md", "v2"));
 
         var gitRepository = GitRepository.Open(repo.WorkingDirectory);
-        var result = await gitRepository.ListFilesWithLastChangeAsync(path: "docs");
+        var result = await gitRepository.GetFilesWithLastChangeAsync(path: "docs");
 
         Assert.Contains(result, e => e.Path == "docs/readme.md");
         Assert.Equal(updateCommit, result.Single(e => e.Path == "docs/readme.md").Commit.Id);
     }
 
     [Fact]
-    public async Task ListFilesWithLastChangeAsync_RespectsCancellationToken()
+    public async Task GetFilesWithLastChangeAsync_RespectsCancellationToken()
     {
         using var repo = GitTestRepository.Create();
         for (var i = 0; i < 5; i++)
@@ -185,42 +184,42 @@ public sealed class GitRepositoryListFilesWithLastChangeTests
         cts.Cancel();
 
         await Assert.ThrowsAnyAsync<OperationCanceledException>(
-            () => gitRepository.ListFilesWithLastChangeAsync(cancellationToken: cts.Token));
+            () => gitRepository.GetFilesWithLastChangeAsync(cancellationToken: cts.Token));
     }
 
     [Fact]
-    public async Task ListFilesWithLastChangeAsync_AllFiles_IncludesInitialCommitFiles()
+    public async Task GetFilesWithLastChangeAsync_AllFiles_IncludesInitialCommitFiles()
     {
         using var repo = GitTestRepository.Create();
         // GitTestRepository.Create() makes an initial commit with README.md
         var gitRepository = GitRepository.Open(repo.WorkingDirectory);
-        var result = await gitRepository.ListFilesWithLastChangeAsync();
+        var result = await gitRepository.GetFilesWithLastChangeAsync();
 
         Assert.Contains(result, e => e.Path == "README.md");
     }
 
     [Fact]
-    public async Task ListFilesWithLastChangeAsync_UnchangedFileAmongUpdatedOnes_ReturnsCreatingCommit()
+    public async Task GetFilesWithLastChangeAsync_UnchangedFileAmongUpdatedOnes_ReturnsCreatingCommit()
     {
         using var repo = GitTestRepository.Create();
         var addCommit = repo.Commit("Add both", ("stable.txt", "same"), ("changing.txt", "v1"));
         repo.Commit("Update changing only", ("changing.txt", "v2"));
 
         var gitRepository = GitRepository.Open(repo.WorkingDirectory);
-        var result = await gitRepository.ListFilesWithLastChangeAsync();
+        var result = await gitRepository.GetFilesWithLastChangeAsync();
 
         Assert.Equal(addCommit, result.Single(e => e.Path == "stable.txt").Commit.Id);
     }
 
     [Fact]
-    public async Task ListFilesWithLastChangeAsync_RemovedFile_DoesNotReturnRemovedFile()
+    public async Task GetFilesWithLastChangeAsync_RemovedFile_DoesNotReturnRemovedFile()
     {
         using var repo = GitTestRepository.Create();
         var addCommit = repo.Commit("Add files", ("file1.txt", "content1"), ("file2.txt", "content2"));
         repo.RemoveFiles("Remove file2", "file2.txt");
 
         var gitRepository = GitRepository.Open(repo.WorkingDirectory);
-        var result = await gitRepository.ListFilesWithLastChangeAsync();
+        var result = await gitRepository.GetFilesWithLastChangeAsync();
 
         Assert.Contains(result, e => e.Path == "file1.txt");
         Assert.DoesNotContain(result, e => e.Path == "file2.txt");
@@ -228,14 +227,14 @@ public sealed class GitRepositoryListFilesWithLastChangeTests
     }
 
     [Fact]
-    public async Task ListFilesWithLastChangeAsync_FileAddedAndRemoved_NotInResult()
+    public async Task GetFilesWithLastChangeAsync_FileAddedAndRemoved_NotInResult()
     {
         using var repo = GitTestRepository.Create();
         var addCommit = repo.Commit("Add temp.txt", ("temp.txt", "temp"), ("keep.txt", "keep"));
         var removeCommit = repo.RemoveFiles("Remove temp.txt", "temp.txt");
 
         var gitRepository = GitRepository.Open(repo.WorkingDirectory);
-        var result = await gitRepository.ListFilesWithLastChangeAsync();
+        var result = await gitRepository.GetFilesWithLastChangeAsync();
 
         Assert.DoesNotContain(result, e => e.Path == "temp.txt");
         Assert.Contains(result, e => e.Path == "keep.txt");
@@ -243,7 +242,7 @@ public sealed class GitRepositoryListFilesWithLastChangeTests
     }
 
     [Fact]
-    public async Task ListFilesWithLastChangeAsync_FileRemovedThenReAdded_ReturnsLatestAddCommit()
+    public async Task GetFilesWithLastChangeAsync_FileRemovedThenReAdded_ReturnsLatestAddCommit()
     {
         using var repo = GitTestRepository.Create();
         repo.Commit("Add file.txt", ("file.txt", "v1"));
@@ -251,14 +250,14 @@ public sealed class GitRepositoryListFilesWithLastChangeTests
         var reAddCommit = repo.Commit("Re-add file.txt", ("file.txt", "v2"));
 
         var gitRepository = GitRepository.Open(repo.WorkingDirectory);
-        var result = await gitRepository.ListFilesWithLastChangeAsync();
+        var result = await gitRepository.GetFilesWithLastChangeAsync();
 
         Assert.Contains(result, e => e.Path == "file.txt");
         Assert.Equal(reAddCommit, result.Single(e => e.Path == "file.txt").Commit.Id);
     }
 
     [Fact]
-    public async Task ListFilesWithLastChangeAsync_MultipleFilesRemovedAtDifferentTimes_TracksCorrectly()
+    public async Task GetFilesWithLastChangeAsync_MultipleFilesRemovedAtDifferentTimes_TracksCorrectly()
     {
         using var repo = GitTestRepository.Create();
         var addCommit = repo.Commit("Add three files", ("a.txt", "a"), ("b.txt", "b"), ("c.txt", "c"));
@@ -266,7 +265,7 @@ public sealed class GitRepositoryListFilesWithLastChangeTests
         var removeB = repo.RemoveFiles("Remove b.txt", "b.txt");
 
         var gitRepository = GitRepository.Open(repo.WorkingDirectory);
-        var result = await gitRepository.ListFilesWithLastChangeAsync();
+        var result = await gitRepository.GetFilesWithLastChangeAsync();
 
         Assert.DoesNotContain(result, e => e.Path == "a.txt");
         Assert.DoesNotContain(result, e => e.Path == "b.txt");
@@ -275,14 +274,14 @@ public sealed class GitRepositoryListFilesWithLastChangeTests
     }
 
     [Fact]
-    public async Task ListFilesWithLastChangeAsync_WithPath_FileRemovedFromDirectory_NotInResult()
+    public async Task GetFilesWithLastChangeAsync_WithPath_FileRemovedFromDirectory_NotInResult()
     {
         using var repo = GitTestRepository.Create();
         var addCommit = repo.Commit("Add docs", ("docs/a.md", "a"), ("docs/b.md", "b"));
         var removeCommit = repo.RemoveFiles("Remove docs/b.md", "docs/b.md");
 
         var gitRepository = GitRepository.Open(repo.WorkingDirectory);
-        var result = await gitRepository.ListFilesWithLastChangeAsync(path: "docs");
+        var result = await gitRepository.GetFilesWithLastChangeAsync(path: "docs");
 
         Assert.Contains(result, e => e.Path == "docs/a.md");
         Assert.DoesNotContain(result, e => e.Path == "docs/b.md");
@@ -290,15 +289,15 @@ public sealed class GitRepositoryListFilesWithLastChangeTests
     }
 
     [Fact]
-    public async Task ListFilesWithLastChangeAsync_WithFilter_RemovedFileMatchingFilter_NotInResult()
+    public async Task GetFilesWithLastChangeAsync_WithFilter_RemovedFileMatchingFilter_NotInResult()
     {
         using var repo = GitTestRepository.Create();
         var addCommit = repo.Commit("Add files", ("a.txt", "txt"), ("b.md", "md"));
         var removeCommit = repo.RemoveFiles("Remove a.txt", "a.txt");
 
         var gitRepository = GitRepository.Open(repo.WorkingDirectory);
-        var result = await gitRepository.ListFilesWithLastChangeAsync(
-            fileFilter: path => path.EndsWith(".txt", StringComparison.Ordinal) || path.EndsWith(".md", StringComparison.Ordinal));
+        var result = await gitRepository.GetFilesWithLastChangeAsync(
+            predicate: path => path.EndsWith(".txt", StringComparison.Ordinal) || path.EndsWith(".md", StringComparison.Ordinal));
 
         Assert.DoesNotContain(result, e => e.Path == "a.txt");
         Assert.Contains(result, e => e.Path == "b.md");
@@ -306,7 +305,7 @@ public sealed class GitRepositoryListFilesWithLastChangeTests
     }
 
     [Fact]
-    public async Task ListFilesWithLastChangeAsync_PathRemovedInHistory_ThrowsWhenPathDoesNotExistInStartCommit()
+    public async Task GetFilesWithLastChangeAsync_PathRemovedInHistory_ThrowsWhenPathDoesNotExistInStartCommit()
     {
         using var repo = GitTestRepository.Create();
         repo.Commit("Add other", ("other.txt", "other"));
@@ -317,11 +316,11 @@ public sealed class GitRepositoryListFilesWithLastChangeTests
         var gitRepository = GitRepository.Open(repo.WorkingDirectory);
         
         await Assert.ThrowsAsync<DirectoryNotFoundException>(
-            () => gitRepository.ListFilesWithLastChangeAsync(path: "docs"));
+            () => gitRepository.GetFilesWithLastChangeAsync(path: "docs"));
     }
 
     [Fact]
-    public async Task ListFilesWithLastChangeAsync_FileChangedMultipleTimes_ReturnsLatestChange()
+    public async Task GetFilesWithLastChangeAsync_FileChangedMultipleTimes_ReturnsLatestChange()
     {
         using var repo = GitTestRepository.Create();
         repo.Commit("Add file", ("file.txt", "v1"));
@@ -330,13 +329,13 @@ public sealed class GitRepositoryListFilesWithLastChangeTests
         var latestChange = repo.Commit("Update 3", ("file.txt", "v4"));
 
         var gitRepository = GitRepository.Open(repo.WorkingDirectory);
-        var result = await gitRepository.ListFilesWithLastChangeAsync();
+        var result = await gitRepository.GetFilesWithLastChangeAsync();
 
         Assert.Equal(latestChange, result.Single(e => e.Path == "file.txt").Commit.Id);
     }
 
     [Fact]
-    public async Task ListFilesWithLastChangeAsync_MixedOperations_TracksEachFileCorrectly()
+    public async Task GetFilesWithLastChangeAsync_MixedOperations_TracksEachFileCorrectly()
     {
         using var repo = GitTestRepository.Create();
         var addAll = repo.Commit("Add all", ("a.txt", "a1"), ("b.txt", "b1"), ("c.txt", "c1"));
@@ -345,7 +344,7 @@ public sealed class GitRepositoryListFilesWithLastChangeTests
         var updateC = repo.Commit("Update c", ("c.txt", "c2"));
 
         var gitRepository = GitRepository.Open(repo.WorkingDirectory);
-        var result = await gitRepository.ListFilesWithLastChangeAsync();
+        var result = await gitRepository.GetFilesWithLastChangeAsync();
 
         Assert.Equal(3, result.Count);
         Assert.Equal(updateA, result.Single(e => e.Path == "a.txt").Commit.Id);
@@ -354,7 +353,7 @@ public sealed class GitRepositoryListFilesWithLastChangeTests
     }
 
     [Fact]
-    public async Task ListFilesWithLastChangeAsync_FileUnchangedThroughManyCommits_ReturnsCreatingCommit()
+    public async Task GetFilesWithLastChangeAsync_FileUnchangedThroughManyCommits_ReturnsCreatingCommit()
     {
         using var repo = GitTestRepository.Create();
         var addCommit = repo.Commit("Add stable", ("stable.txt", "stable"));
@@ -364,13 +363,13 @@ public sealed class GitRepositoryListFilesWithLastChangeTests
         }
 
         var gitRepository = GitRepository.Open(repo.WorkingDirectory);
-        var result = await gitRepository.ListFilesWithLastChangeAsync();
+        var result = await gitRepository.GetFilesWithLastChangeAsync();
 
         Assert.Equal(addCommit, result.Single(e => e.Path == "stable.txt").Commit.Id);
     }
 
     [Fact]
-    public async Task ListFilesWithLastChangeAsync_DirectoryWithRemovedAndUpdatedFiles_TracksCorrectly()
+    public async Task GetFilesWithLastChangeAsync_DirectoryWithRemovedAndUpdatedFiles_TracksCorrectly()
     {
         using var repo = GitTestRepository.Create();
         repo.Commit("Add docs", ("docs/a.md", "a1"), ("docs/b.md", "b1"), ("docs/c.md", "c1"));
@@ -379,7 +378,7 @@ public sealed class GitRepositoryListFilesWithLastChangeTests
         var updateC = repo.Commit("Update c", ("docs/c.md", "c2"));
 
         var gitRepository = GitRepository.Open(repo.WorkingDirectory);
-        var result = await gitRepository.ListFilesWithLastChangeAsync(path: "docs");
+        var result = await gitRepository.GetFilesWithLastChangeAsync(path: "docs");
 
         Assert.Equal(2, result.Count);
         Assert.Contains(result, e => e.Path == "docs/a.md");
@@ -388,7 +387,7 @@ public sealed class GitRepositoryListFilesWithLastChangeTests
     }
 
     [Fact]
-    public async Task ListFilesWithLastChangeAsync_AllFilesRemovedAndReAdded_ReturnsLatestVersion()
+    public async Task GetFilesWithLastChangeAsync_AllFilesRemovedAndReAdded_ReturnsLatestVersion()
     {
         using var repo = GitTestRepository.Create();
         repo.Commit("Add file", ("file.txt", "v1"));
@@ -396,28 +395,28 @@ public sealed class GitRepositoryListFilesWithLastChangeTests
         var reAddCommit = repo.Commit("Re-add file", ("file.txt", "v2"));
 
         var gitRepository = GitRepository.Open(repo.WorkingDirectory);
-        var result = await gitRepository.ListFilesWithLastChangeAsync();
+        var result = await gitRepository.GetFilesWithLastChangeAsync();
 
         Assert.Contains(result, e => e.Path == "file.txt");
         Assert.Equal(reAddCommit, result.Single(e => e.Path == "file.txt").Commit.Id);
     }
 
     [Fact]
-    public async Task ListFilesWithLastChangeAsync_FilteredFileRemoved_NotInResult()
+    public async Task GetFilesWithLastChangeAsync_FilteredFileRemoved_NotInResult()
     {
         using var repo = GitTestRepository.Create();
         repo.Commit("Add files", ("a.txt", "txt"), ("b.md", "md"));
         var removeCommit = repo.RemoveFiles("Remove a.txt", "a.txt");
 
         var gitRepository = GitRepository.Open(repo.WorkingDirectory);
-        var result = await gitRepository.ListFilesWithLastChangeAsync(
-            fileFilter: path => path.EndsWith(".txt", StringComparison.Ordinal));
+        var result = await gitRepository.GetFilesWithLastChangeAsync(
+            predicate: path => path.EndsWith(".txt", StringComparison.Ordinal));
 
         Assert.Empty(result);
     }
 
     [Fact]
-    public async Task ListFilesWithLastChangeAsync_ComplexHistory_OptimizesCorrectly()
+    public async Task GetFilesWithLastChangeAsync_ComplexHistory_OptimizesCorrectly()
     {
         using var repo = GitTestRepository.Create();
         var add = repo.Commit("Add files", ("a.txt", "a"), ("b.txt", "b"), ("c.txt", "c"), ("d.txt", "d"));
@@ -426,7 +425,7 @@ public sealed class GitRepositoryListFilesWithLastChangeTests
         var updateD = repo.Commit("Update d", ("d.txt", "d2"));
 
         var gitRepository = GitRepository.Open(repo.WorkingDirectory);
-        var result = await gitRepository.ListFilesWithLastChangeAsync();
+        var result = await gitRepository.GetFilesWithLastChangeAsync();
 
         Assert.Equal(4, result.Count);
         Assert.Equal(add, result.Single(e => e.Path == "a.txt").Commit.Id);
@@ -436,7 +435,7 @@ public sealed class GitRepositoryListFilesWithLastChangeTests
     }
 
     [Fact]
-    public async Task ListFilesWithLastChangeAsync_FileRemovedInMiddleOfHistory_TracksCorrectly()
+    public async Task GetFilesWithLastChangeAsync_FileRemovedInMiddleOfHistory_TracksCorrectly()
     {
         using var repo = GitTestRepository.Create();
         var add = repo.Commit("Add files", ("a.txt", "a"), ("b.txt", "b"));
@@ -444,7 +443,7 @@ public sealed class GitRepositoryListFilesWithLastChangeTests
         var reAdd = repo.Commit("Re-add a.txt", ("a.txt", "a2"));
 
         var gitRepository = GitRepository.Open(repo.WorkingDirectory);
-        var result = await gitRepository.ListFilesWithLastChangeAsync();
+        var result = await gitRepository.GetFilesWithLastChangeAsync();
 
         Assert.Equal(3, result.Count);
         Assert.Contains(result, e => e.Path == "README.md");
@@ -453,7 +452,7 @@ public sealed class GitRepositoryListFilesWithLastChangeTests
     }
 
     [Fact]
-    public async Task ListFilesWithLastChangeAsync_AllFilesRemovedInMiddleCommit_TracksCorrectly()
+    public async Task GetFilesWithLastChangeAsync_AllFilesRemovedInMiddleCommit_TracksCorrectly()
     {
         using var repo = GitTestRepository.Create();
         var add1 = repo.Commit("Add file1", ("file1.txt", "v1"));
@@ -461,7 +460,7 @@ public sealed class GitRepositoryListFilesWithLastChangeTests
         var add2 = repo.Commit("Add file2", ("file2.txt", "v1"));
 
         var gitRepository = GitRepository.Open(repo.WorkingDirectory);
-        var result = await gitRepository.ListFilesWithLastChangeAsync();
+        var result = await gitRepository.GetFilesWithLastChangeAsync();
 
         Assert.Equal(2, result.Count);
         Assert.Contains(result, e => e.Path == "README.md");
@@ -470,7 +469,7 @@ public sealed class GitRepositoryListFilesWithLastChangeTests
     }
 
     [Fact]
-    public async Task ListFilesWithLastChangeAsync_SameContentDifferentPath_TracksIndependently()
+    public async Task GetFilesWithLastChangeAsync_SameContentDifferentPath_TracksIndependently()
     {
         using var repo = GitTestRepository.Create();
         var add = repo.Commit("Add files", ("dir1/file.txt", "same"), ("dir2/file.txt", "same"));
@@ -478,7 +477,7 @@ public sealed class GitRepositoryListFilesWithLastChangeTests
         var update = repo.Commit("Update dir2/file.txt", ("dir2/file.txt", "different"));
 
         var gitRepository = GitRepository.Open(repo.WorkingDirectory);
-        var result = await gitRepository.ListFilesWithLastChangeAsync();
+        var result = await gitRepository.GetFilesWithLastChangeAsync();
 
         Assert.Equal(2, result.Count);
         Assert.Contains(result, e => e.Path == "README.md");
@@ -487,7 +486,7 @@ public sealed class GitRepositoryListFilesWithLastChangeTests
     }
 
     [Fact]
-    public async Task ListFilesWithLastChangeAsync_FileRemovedAndReAddedWithSameContent_ReturnsLatestAdd()
+    public async Task GetFilesWithLastChangeAsync_FileRemovedAndReAddedWithSameContent_ReturnsLatestAdd()
     {
         using var repo = GitTestRepository.Create();
         var add1 = repo.Commit("Add file", ("file.txt", "content"));
@@ -495,7 +494,7 @@ public sealed class GitRepositoryListFilesWithLastChangeTests
         var add2 = repo.Commit("Re-add file with same content", ("file.txt", "content"));
 
         var gitRepository = GitRepository.Open(repo.WorkingDirectory);
-        var result = await gitRepository.ListFilesWithLastChangeAsync();
+        var result = await gitRepository.GetFilesWithLastChangeAsync();
 
         Assert.Equal(2, result.Count);
         Assert.Contains(result, e => e.Path == "README.md");
@@ -503,7 +502,7 @@ public sealed class GitRepositoryListFilesWithLastChangeTests
     }
 
     [Fact]
-    public async Task ListFilesWithLastChangeAsync_MultipleFilesRemovedInSingleCommit_TracksRemainingFiles()
+    public async Task GetFilesWithLastChangeAsync_MultipleFilesRemovedInSingleCommit_TracksRemainingFiles()
     {
         using var repo = GitTestRepository.Create();
         var add = repo.Commit("Add files", ("a.txt", "a"), ("b.txt", "b"), ("c.txt", "c"), ("d.txt", "d"));
@@ -511,7 +510,7 @@ public sealed class GitRepositoryListFilesWithLastChangeTests
         var update = repo.Commit("Update b", ("b.txt", "b2"));
 
         var gitRepository = GitRepository.Open(repo.WorkingDirectory);
-        var result = await gitRepository.ListFilesWithLastChangeAsync();
+        var result = await gitRepository.GetFilesWithLastChangeAsync();
 
         Assert.Equal(3, result.Count);
         Assert.DoesNotContain(result, e => e.Path == "a.txt");
@@ -523,14 +522,14 @@ public sealed class GitRepositoryListFilesWithLastChangeTests
     }
 
     [Fact]
-    public async Task ListFilesWithLastChangeAsync_FileUnchangedAfterRemovalOfOther_ReturnsOriginalCommit()
+    public async Task GetFilesWithLastChangeAsync_FileUnchangedAfterRemovalOfOther_ReturnsOriginalCommit()
     {
         using var repo = GitTestRepository.Create();
         var add = repo.Commit("Add files", ("keep.txt", "keep"), ("remove1.txt", "r1"), ("remove2.txt", "r2"));
         repo.RemoveFiles("Remove files", "remove1.txt", "remove2.txt");
 
         var gitRepository = GitRepository.Open(repo.WorkingDirectory);
-        var result = await gitRepository.ListFilesWithLastChangeAsync();
+        var result = await gitRepository.GetFilesWithLastChangeAsync();
 
         Assert.Equal(2, result.Count);
         Assert.Contains(result, e => e.Path == "README.md");
@@ -539,7 +538,7 @@ public sealed class GitRepositoryListFilesWithLastChangeTests
     }
 
     [Fact]
-    public async Task ListFilesWithLastChangeAsync_FilterWithRemovedFiles_OnlyTracksMatchingFiles()
+    public async Task GetFilesWithLastChangeAsync_FilterWithRemovedFiles_OnlyTracksMatchingFiles()
     {
         using var repo = GitTestRepository.Create();
         var add = repo.Commit("Add files", ("a.txt", "txt"), ("b.md", "md"), ("c.txt", "txt"));
@@ -547,8 +546,8 @@ public sealed class GitRepositoryListFilesWithLastChangeTests
         var update = repo.Commit("Update c.txt", ("c.txt", "txt2"));
 
         var gitRepository = GitRepository.Open(repo.WorkingDirectory);
-        var result = await gitRepository.ListFilesWithLastChangeAsync(
-            fileFilter: path => path.EndsWith(".txt", StringComparison.Ordinal));
+        var result = await gitRepository.GetFilesWithLastChangeAsync(
+            predicate: path => path.EndsWith(".txt", StringComparison.Ordinal));
 
         Assert.Single(result);
         Assert.DoesNotContain(result, e => e.Path == "a.txt");
@@ -557,7 +556,7 @@ public sealed class GitRepositoryListFilesWithLastChangeTests
     }
 
     [Fact]
-    public async Task ListFilesWithLastChangeAsync_DirectoryRemovedInOlderCommit_StopsAtRemoval()
+    public async Task GetFilesWithLastChangeAsync_DirectoryRemovedInOlderCommit_StopsAtRemoval()
     {
         using var repo = GitTestRepository.Create();
         var add = repo.Commit("Add docs", ("docs/a.md", "a"), ("other.txt", "other"));
@@ -568,11 +567,11 @@ public sealed class GitRepositoryListFilesWithLastChangeTests
         var gitRepository = GitRepository.Open(repo.WorkingDirectory);
         
         await Assert.ThrowsAsync<DirectoryNotFoundException>(
-            () => gitRepository.ListFilesWithLastChangeAsync(path: "docs"));
+            () => gitRepository.GetFilesWithLastChangeAsync(path: "docs"));
     }
 
     [Fact]
-    public async Task ListFilesWithLastChangeAsync_EmptyDirectoryAfterAllFilesRemoved_ThrowsDirectoryNotFoundException()
+    public async Task GetFilesWithLastChangeAsync_EmptyDirectoryAfterAllFilesRemoved_ThrowsDirectoryNotFoundException()
     {
         using var repo = GitTestRepository.Create();
         repo.Commit("Add docs", ("docs/a.md", "a"), ("docs/b.md", "b"));
@@ -582,30 +581,30 @@ public sealed class GitRepositoryListFilesWithLastChangeTests
         var gitRepository = GitRepository.Open(repo.WorkingDirectory);
         
         await Assert.ThrowsAsync<DirectoryNotFoundException>(
-            () => gitRepository.ListFilesWithLastChangeAsync(path: "docs"));
+            () => gitRepository.GetFilesWithLastChangeAsync(path: "docs"));
     }
 
     [Fact]
-    public async Task ListFilesWithLastChangeAsync_ResultIsSortedByPathOrdinal()
+    public async Task GetFilesWithLastChangeAsync_ResultIsSortedByPathOrdinal()
     {
         using var repo = GitTestRepository.Create();
         repo.Commit("Add files", ("z.txt", "z"), ("a.txt", "a"), ("m.txt", "m"), ("B.txt", "B"));
 
         var gitRepository = GitRepository.Open(repo.WorkingDirectory);
-        var result = await gitRepository.ListFilesWithLastChangeAsync();
+        var result = await gitRepository.GetFilesWithLastChangeAsync();
 
         var paths = result.Select(e => e.Path).ToList();
         Assert.Equal(paths.OrderBy(p => p, StringComparer.Ordinal), paths);
     }
 
     [Fact]
-    public async Task ListFilesWithLastChangeAsync_TopDirectoryOnly_ExcludesFilesInSubDirectories()
+    public async Task GetFilesWithLastChangeAsync_TopDirectoryOnly_ExcludesFilesInSubDirectories()
     {
         using var repo = GitTestRepository.Create();
         var rootCommit = repo.Commit("Add files", ("root.txt", "root"), ("sub/nested.txt", "nested"));
 
         var gitRepository = GitRepository.Open(repo.WorkingDirectory);
-        var result = await gitRepository.ListFilesWithLastChangeAsync(searchOption: SearchOption.TopDirectoryOnly);
+        var result = await gitRepository.GetFilesWithLastChangeAsync(searchOption: SearchOption.TopDirectoryOnly);
 
         Assert.Contains(result, e => e.Path == "root.txt");
         Assert.Contains(result, e => e.Path == "README.md");
@@ -613,7 +612,7 @@ public sealed class GitRepositoryListFilesWithLastChangeTests
     }
 
     [Fact]
-    public async Task ListFilesWithLastChangeAsync_TopDirectoryOnly_WithPath_OnlyReturnsDirectChildren()
+    public async Task GetFilesWithLastChangeAsync_TopDirectoryOnly_WithPath_OnlyReturnsDirectChildren()
     {
         using var repo = GitTestRepository.Create();
         var addCommit = repo.Commit("Add files",
@@ -622,7 +621,7 @@ public sealed class GitRepositoryListFilesWithLastChangeTests
             ("docs/api/advanced/guide.md", "guide"));
 
         var gitRepository = GitRepository.Open(repo.WorkingDirectory);
-        var result = await gitRepository.ListFilesWithLastChangeAsync(path: "docs", searchOption: SearchOption.TopDirectoryOnly);
+        var result = await gitRepository.GetFilesWithLastChangeAsync(path: "docs", searchOption: SearchOption.TopDirectoryOnly);
 
         Assert.Contains(result, e => e.Path == "docs/intro.md");
         Assert.DoesNotContain(result, e => e.Path == "docs/api/reference.md");
@@ -630,14 +629,14 @@ public sealed class GitRepositoryListFilesWithLastChangeTests
     }
 
     [Fact]
-    public async Task ListFilesWithLastChangeAsync_TopDirectoryOnly_WithPath_UpdatedDirectChild_ReturnsNewestCommit()
+    public async Task GetFilesWithLastChangeAsync_TopDirectoryOnly_WithPath_UpdatedDirectChild_ReturnsNewestCommit()
     {
         using var repo = GitTestRepository.Create();
         repo.Commit("Add files", ("docs/intro.md", "v1"), ("docs/sub/other.md", "other"));
         var updateCommit = repo.Commit("Update intro", ("docs/intro.md", "v2"));
 
         var gitRepository = GitRepository.Open(repo.WorkingDirectory);
-        var result = await gitRepository.ListFilesWithLastChangeAsync(path: "docs", searchOption: SearchOption.TopDirectoryOnly);
+        var result = await gitRepository.GetFilesWithLastChangeAsync(path: "docs", searchOption: SearchOption.TopDirectoryOnly);
 
         Assert.Single(result);
         Assert.Equal("docs/intro.md", result[0].Path);
@@ -645,7 +644,7 @@ public sealed class GitRepositoryListFilesWithLastChangeTests
     }
 
     [Fact]
-    public async Task ListFilesWithLastChangeAsync_AllDirectories_WithPath_IncludesAllDescendants()
+    public async Task GetFilesWithLastChangeAsync_AllDirectories_WithPath_IncludesAllDescendants()
     {
         using var repo = GitTestRepository.Create();
         var addCommit = repo.Commit("Add files",
@@ -654,7 +653,7 @@ public sealed class GitRepositoryListFilesWithLastChangeTests
             ("src/sub/deep/deep.cs", "d"));
 
         var gitRepository = GitRepository.Open(repo.WorkingDirectory);
-        var result = await gitRepository.ListFilesWithLastChangeAsync(path: "src", searchOption: SearchOption.AllDirectories);
+        var result = await gitRepository.GetFilesWithLastChangeAsync(path: "src", searchOption: SearchOption.AllDirectories);
 
         Assert.Contains(result, e => e.Path == "src/file.cs");
         Assert.Contains(result, e => e.Path == "src/sub/other.cs");
@@ -662,14 +661,14 @@ public sealed class GitRepositoryListFilesWithLastChangeTests
     }
 
     [Fact]
-    public async Task ListFilesWithLastChangeAsync_TopDirectoryOnly_RemovedDirectChildFile_NotInResult()
+    public async Task GetFilesWithLastChangeAsync_TopDirectoryOnly_RemovedDirectChildFile_NotInResult()
     {
         using var repo = GitTestRepository.Create();
         repo.Commit("Add files", ("a.txt", "a"), ("b.txt", "b"), ("sub/c.txt", "c"));
         repo.RemoveFiles("Remove b.txt", "b.txt");
 
         var gitRepository = GitRepository.Open(repo.WorkingDirectory);
-        var result = await gitRepository.ListFilesWithLastChangeAsync(searchOption: SearchOption.TopDirectoryOnly);
+        var result = await gitRepository.GetFilesWithLastChangeAsync(searchOption: SearchOption.TopDirectoryOnly);
 
         Assert.Contains(result, e => e.Path == "a.txt");
         Assert.DoesNotContain(result, e => e.Path == "b.txt");
@@ -677,14 +676,14 @@ public sealed class GitRepositoryListFilesWithLastChangeTests
     }
 
     [Fact]
-    public async Task ListFilesWithLastChangeAsync_TopDirectoryOnly_WithFileFilter_AppliesFilterToDirectChildren()
+    public async Task GetFilesWithLastChangeAsync_TopDirectoryOnly_WithFileFilter_AppliesFilterToDirectChildren()
     {
         using var repo = GitTestRepository.Create();
         repo.Commit("Add files", ("a.cs", "cs"), ("b.txt", "txt"), ("sub/c.cs", "cs"));
 
         var gitRepository = GitRepository.Open(repo.WorkingDirectory);
-        var result = await gitRepository.ListFilesWithLastChangeAsync(
-            fileFilter: p => p.EndsWith(".cs", StringComparison.Ordinal),
+        var result = await gitRepository.GetFilesWithLastChangeAsync(
+            predicate: p => p.EndsWith(".cs", StringComparison.Ordinal),
             searchOption: SearchOption.TopDirectoryOnly);
 
         Assert.Contains(result, e => e.Path == "a.cs");

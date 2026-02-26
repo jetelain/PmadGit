@@ -68,7 +68,6 @@ public sealed class GitObjectStoreTests
         await using var objectStream = await store.ReadObjectStreamAsync(repo.Head);
 
         Assert.Equal(GitObjectType.Commit, objectStream.Type);
-        Assert.NotNull(objectStream.Length);
         
         using var reader = new StreamReader(objectStream.Content, Encoding.UTF8);
         var content = await reader.ReadToEndAsync();
@@ -105,7 +104,6 @@ public sealed class GitObjectStoreTests
         await using var objectStream = await store.ReadObjectStreamAsync(commit);
 
         Assert.Equal(GitObjectType.Commit, objectStream.Type);
-        Assert.NotNull(objectStream.Length);
         
         using var reader = new StreamReader(objectStream.Content, Encoding.UTF8);
         var content = await reader.ReadToEndAsync();

@@ -43,10 +43,9 @@ var metadata = new GitCommitMetadata(
 
 var commitId = await repository.CreateCommitAsync(
     branchName: "main",
-    operations: new GitRepository.GitCommitOperation[]
-    {
-        new GitRepository.AddFileOperation("src/NewFile.txt", Encoding.UTF8.GetBytes("payload"))
-    },
+    operations: [
+        new AddFileOperation("src/NewFile.txt", Encoding.UTF8.GetBytes("payload"))
+    ],
     metadata);
 
 Console.WriteLine($"Created commit {commitId.Value}");
@@ -63,17 +62,40 @@ Console.WriteLine($"Created commit {commitId.Value}");
 
 ### Reading commits and trees
 - `GetCommitAsync()` resolves `HEAD` or any reference/commit hash without blocking threads.
-- `EnumerateCommitsAsync()` walks parents depth-first while avoiding duplicates as an async stream.
-- `EnumerateCommitTreeAsync(reference, path)` iterates the full tree or a subtree, exposing `GitTreeItem` entries asynchronously.
+- `EnumerateCommitsAsync()` yields commits reachable from the starting reference in reverse chronological (newest-first) order as an async stream.
+- `EnumerateCommitTreeAsync(reference, path, searchOption)` iterates the full tree or a subtree, exposing `GitTreeItem` entries asynchronously.
+
+### Checking path existence
+- `PathExistsAsync(path, reference)` returns `true` if a path (file or directory) exists in the given commit.
+- `FileExistsAsync(filePath, reference)` returns `true` if a blob exists at the path.
+- `DirectoryExistsAsync(directoryPath, reference)` returns `true` if a tree exists at the path.
+- `GetPathTypeAsync(path, reference)` returns the `GitTreeEntryKind` (`Blob` or `Tree`) of the path, or `null` if it does not exist.
 
 ### Reading file contents
 - `ReadFileAsync(path, reference)` returns the blob content at a path for a given commit/reference.
-- `GetFileHistoryAsync(path, reference)` yields commits where the blob hash changes.
+- `ReadFileAndHashAsync(path, reference)` returns both the blob content and its `GitHash` as a `GitFileContentAndHash`.
+- `ReadFileStreamAsync(path, reference)` returns a `GitObjectStream` that exposes the blob as a `Stream` without buffering the full content for loose objects. Dispose the stream after use (supports both `using` and `await using`).
+- `EnumerateFileHistoryAsync(path, reference)` yields commits where the blob hash changes.
+
+### Querying last changes
+- `GetFilesWithLastChangeAsync(reference, path, predicate, searchOption)` traverses the commit graph once and returns a sorted list of `GitFileLastChange` entries, each pairing a file path with the most recent commit that changed it. More efficient than calling `EnumerateFileHistoryAsync` per file.
 
 ### Creating commits
-- `CreateCommitAsync(branch, operations, metadata)` applies add/update/remove operations directly to the Git object store and updates the provided branch reference without invoking the CLI.
-- Available operations derive from `GitCommitOperation` (`AddFileOperation`, `UpdateFileOperation`, `RemoveFileOperation`).
+- `CreateCommitAsync(branch, operations, metadata)` applies operations directly to the Git object store and updates the branch reference without invoking the CLI. The method is thread-safe against concurrent commits to the same branch.
+- Available operations derive from `GitCommitOperation`:
+  - `AddFileOperation(path, byte[])` — adds a new file from a byte array.
+  - `AddFileStreamOperation(path, Stream)` — adds a new file from a stream.
+  - `UpdateFileOperation(path, byte[], expectedPreviousHash?)` — updates an existing file from a byte array.
+  - `UpdateFileStreamOperation(path, Stream, expectedPreviousHash?)` — updates an existing file from a stream.
+  - `RemoveFileOperation(path)` — removes an existing file.
+  - `MoveFileOperation(sourcePath, destinationPath)` — moves or renames an existing file.
 - `GitCommitMetadata` captures the commit message plus author/committer identity and timestamps used to build the commit object.
+
+### Cache management
+- `InvalidateCaches(clearAllData)` clears cached references and loose-object metadata so subsequent operations reflect the current on-disk state. Pass `true` to also clear structural metadata such as the pack index.
+
+### Reachability
+- `IsCommitReachableAsync(from, to)` returns `true` if the `to` commit is an ancestor of (or equal to) `from`; useful for fast-forward validation.
 
 ## Testing
 

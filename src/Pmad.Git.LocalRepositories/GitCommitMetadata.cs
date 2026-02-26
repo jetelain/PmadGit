@@ -3,7 +3,7 @@ namespace Pmad.Git.LocalRepositories;
 /// <summary>
 /// Describes the metadata recorded in a commit object.
 /// </summary>
-public sealed class GitCommitMetadata
+public sealed record GitCommitMetadata
 {
     /// <summary>
     /// Initializes a new instance of the <see cref="GitCommitMetadata"/> class.

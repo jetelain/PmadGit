@@ -9,10 +9,9 @@
 
 ```csharp
 var builder = WebApplication.CreateBuilder(args);
-builder.Services.AddGitSmartHttp(new GitSmartHttpOptions
+builder.Services.AddGitSmartHttp(options =>
 {
-    RepositoryRoot = "/srv/git",
-    EnableUploadPack = true
+    options.RepositoryRoot = "/srv/git";
 });
 
 var app = builder.Build();
@@ -20,7 +19,7 @@ app.MapGitSmartHttp();
 app.Run();
 ```
 
-With the sample above, git clients can clone/fetch repositories stored under `/srv/git` using the Smart HTTP endpoints (`/git/{repo}/info/refs`, `/git/{repo}/git-upload-pack`).
+With the sample above, git clients can clone/fetch repositories stored under `/srv/git` using the Smart HTTP endpoints (`/git/{repository}.git/info/refs`, `/git/{repository}.git/git-upload-pack`).
 
 ## Configuration
 
@@ -31,9 +30,10 @@ With the sample above, git clients can clone/fetch repositories stored under `/s
 - `EnableReceivePack`: Allows `git-receive-pack` (push). Disabled by default.
 - `Agent`: String advertised to clients (shown by `git clone --verbose`).
 - `AuthorizeAsync`: Optional callback to allow/deny access per request. Receives the operation type (Read or Write) to distinguish between fetch/clone and push operations. By default, only read operations are allowed.
-- `RepositoryNameNormalizer`: Optional sanitizer for custom routing schemes.
+- `RepositoryNameNormalizer`: Optional callback to sanitize or transform repository names before file-system access. Applied after the `.git` suffix is removed from the repository name.
 - `RepositoryResolver`: Callback to resolve the repository name from the HTTP context. By default, extracts the `repository` route parameter.
-- `OnReceivePackCompleted`: Optional callback invoked after a successful push operation. This allows the host application to perform cache invalidation or trigger other post-push actions.
+- `OnReceivePackCompleted`: Optional callback invoked after a push operation whenever at least one reference update succeeds (including partial success). The list passed to the callback contains only the successfully updated references. This allows the host application to perform cache invalidation or trigger other post-push actions.
+- `RepositoryNameValidator`: Optional callback to validate repository names for security. By default only allows alphanumeric characters, hyphens, underscores, and forward slashes (no leading, trailing, or repeated slashes). Host applications can override this to allow additional characters.
 
 ### Enabling Push Operations
 
@@ -60,7 +60,7 @@ builder.Services.AddGitSmartHttp(options =>
 
 ## Push Notification
 
-When push operations are enabled, you can be notified when a push completes successfully to invalidate application caches or trigger webhooks:
+When push operations are enabled, you can be notified when a push completes (including partial success) to invalidate application caches or trigger webhooks:
 
 ```csharp
 builder.Services.AddGitSmartHttp(options =>

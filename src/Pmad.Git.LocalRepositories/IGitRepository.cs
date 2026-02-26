@@ -42,7 +42,7 @@ public interface IGitRepository
     Task<GitCommit> GetCommitAsync(string? reference = null, CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Enumerates commits reachable from <paramref name="reference"/> in depth-first order.
+    /// Enumerates commits reachable from <paramref name="reference"/> in reverse chronological (newest-first) order.
     /// </summary>
     /// <param name="reference">Starting reference or commit hash; defaults to HEAD.</param>
     /// <param name="cancellationToken">Token used to cancel the async iteration.</param>
@@ -121,7 +121,7 @@ public interface IGitRepository
     /// Reads the blob content at <paramref name="filePath"/> from the specified <paramref name="reference"/> as a stream.
     /// For loose objects, the stream reads directly from disk without buffering the entire content.
     /// For pack objects, the stream is backed by a <see cref="System.IO.MemoryStream"/>.
-    /// The caller is responsible for disposing the returned <see cref="GitObjectStream"/>.
+    /// The caller is responsible for disposing the returned <see cref="GitObjectStream"/> (supports both <see langword="using"/> and <see langword="await using"/>).
     /// </summary>
     /// <param name="filePath">Repository-relative file path using / separators.</param>
     /// <param name="reference">Commit hash or ref to read from; defaults to HEAD.</param>
@@ -136,7 +136,7 @@ public interface IGitRepository
     /// <param name="reference">Starting reference or commit hash; defaults to HEAD.</param>
     /// <param name="cancellationToken">Token used to cancel the async iteration.</param>
     /// <returns>An async stream of commits affecting the file.</returns>
-    IAsyncEnumerable<GitCommit> GetFileHistoryAsync(
+    IAsyncEnumerable<GitCommit> EnumerateFileHistoryAsync(
         string filePath,
         string? reference = null,
         CancellationToken cancellationToken = default);
@@ -158,26 +158,27 @@ public interface IGitRepository
 
     /// <summary>
     /// Lists files under the optional <paramref name="path"/> in the specified <paramref name="reference"/> along with the last commit that changed each file.
-    /// This is more efficient than calling <see cref="EnumerateCommitTreeAsync"/> followed by <see cref="GetFileHistoryAsync"/> for each file
+    /// This is more efficient than calling <see cref="EnumerateCommitTreeAsync"/> followed by <see cref="EnumerateFileHistoryAsync"/> for each file
     /// because the commit graph is traversed only once.
     /// </summary>
     /// <param name="reference">Starting reference or commit hash; defaults to HEAD.</param>
     /// <param name="path">Optional directory path to scope the result; all files when omitted.</param>
-    /// <param name="fileFilter">Optional predicate applied to each file path; only files for which it returns <see langword="true"/> are included. All files are included when omitted.</param>
     /// <param name="searchOption">Whether to include files in all subdirectories or only the specified directory; defaults to <see cref="SearchOption.AllDirectories"/>.</param>
+    /// <param name="predicate">Optional predicate applied to each file path; only files for which it returns <see langword="true"/> are included. All files are included when omitted.</param>
     /// <param name="cancellationToken">Token used to cancel the async operation.</param>
     /// <returns>A list of <see cref="GitFileLastChange"/> entries, one per file, sorted by path in ordinal order, each pairing the file path with its most recent modifying commit.</returns>
-    Task<IReadOnlyList<GitFileLastChange>> ListFilesWithLastChangeAsync(
+    Task<IReadOnlyList<GitFileLastChange>> GetFilesWithLastChangeAsync(
         string? reference = null,
         string? path = null,
-        Func<string, bool>? fileFilter = null,
         SearchOption searchOption = SearchOption.AllDirectories,
+        Func<string, bool>? predicate = null,
         CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Clears cached git metadata so subsequent operations reflect the current repository state.
     /// </summary>
-    /// <param name="clearAllData">Clears all cached data, including data that should not change on normal git operations</param>
+    /// <param name="clearAllData">When <see langword="true"/>, clears all cached data including structural metadata
+    /// (e.g. pack index). When <see langword="false"/>, only volatile data such as references and loose objects are cleared.</param>
     void InvalidateCaches(bool clearAllData = false);
 
     /// <summary>

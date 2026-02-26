@@ -320,7 +320,7 @@ public sealed class GitHashHelperTests
     #region Edge Cases and Thread Safety
 
     [Fact]
-    public void CreateHashAlgorithm_CanBeCalledConcurrently()
+    public async Task CreateHashAlgorithm_CanBeCalledConcurrently()
     {
         // Arrange
         const int threadCount = 10;
@@ -338,11 +338,11 @@ public sealed class GitHashHelperTests
         }
 
         // Assert
-        Task.WaitAll(tasks);
+        await Task.WhenAll(tasks);
     }
 
     [Fact]
-    public void GetAlgorithmName_CanBeCalledConcurrently()
+    public async Task GetAlgorithmName_CanBeCalledConcurrently()
     {
         // Arrange
         const int threadCount = 10;
@@ -360,7 +360,7 @@ public sealed class GitHashHelperTests
         }
 
         // Assert
-        Task.WaitAll(tasks);
+        await Task.WhenAll(tasks);
     }
 
     [Fact]

@@ -125,10 +125,10 @@ public sealed class GitRepositoryHistoryTests
 
 	#endregion
 
-	#region GetFileHistoryAsync
+	#region EnumerateFileHistoryAsync
 
 	[Fact]
-	public async Task GetFileHistoryAsync_ReturnsCommitsThatModifyFile()
+	public async Task EnumerateFileHistoryAsync_ReturnsCommitsThatModifyFile()
 	{
 		using var repo = GitTestRepository.Create();
 		var addCommit = repo.Commit("Add tracked file", ("app.txt", "v1"));
@@ -136,7 +136,7 @@ public sealed class GitRepositoryHistoryTests
 
 		var gitRepository = GitRepository.Open(repo.WorkingDirectory);
 		var history = new List<GitCommit>();
-		await foreach (var commit in gitRepository.GetFileHistoryAsync("app.txt"))
+		await foreach (var commit in gitRepository.EnumerateFileHistoryAsync("app.txt"))
 		{
 			history.Add(commit);
 		}
@@ -148,7 +148,7 @@ public sealed class GitRepositoryHistoryTests
 	}
 
 	[Fact]
-	public async Task GetFileHistoryAsync_FileNeverChanged_ReturnsSingleCommit()
+	public async Task EnumerateFileHistoryAsync_FileNeverChanged_ReturnsSingleCommit()
 	{
 		using var repo = GitTestRepository.Create();
 		repo.Commit("Add file", ("static.txt", "unchanged"));
@@ -157,7 +157,7 @@ public sealed class GitRepositoryHistoryTests
 		var gitRepository = GitRepository.Open(repo.WorkingDirectory);
 
 		var history = new List<GitCommit>();
-		await foreach (var commit in gitRepository.GetFileHistoryAsync("static.txt"))
+		await foreach (var commit in gitRepository.EnumerateFileHistoryAsync("static.txt"))
 		{
 			history.Add(commit);
 		}
@@ -167,7 +167,7 @@ public sealed class GitRepositoryHistoryTests
 	}
 
 	[Fact]
-	public async Task GetFileHistoryAsync_FileDeletedAndRecreated_ReturnsAllVersions()
+	public async Task EnumerateFileHistoryAsync_FileDeletedAndRecreated_ReturnsAllVersions()
 	{
 		using var repo = GitTestRepository.Create();
 		repo.Commit("Add file", ("file.txt", "v1"));
@@ -177,7 +177,7 @@ public sealed class GitRepositoryHistoryTests
 		var gitRepository = GitRepository.Open(repo.WorkingDirectory);
 
 		var history = new List<GitCommit>();
-		await foreach (var commit in gitRepository.GetFileHistoryAsync("file.txt"))
+		await foreach (var commit in gitRepository.EnumerateFileHistoryAsync("file.txt"))
 		{
 			history.Add(commit);
 		}
@@ -186,7 +186,7 @@ public sealed class GitRepositoryHistoryTests
 	}
 
 	[Fact]
-	public async Task GetFileHistoryAsync_WithStartingCommit_LimitsHistory()
+	public async Task EnumerateFileHistoryAsync_WithStartingCommit_LimitsHistory()
 	{
 		using var repo = GitTestRepository.Create();
 		repo.Commit("V1", ("file.txt", "v1"));
@@ -195,7 +195,7 @@ public sealed class GitRepositoryHistoryTests
 		var gitRepository = GitRepository.Open(repo.WorkingDirectory);
 
 		var history = new List<GitCommit>();
-		await foreach (var commit in gitRepository.GetFileHistoryAsync("file.txt", startCommit.Value))
+		await foreach (var commit in gitRepository.EnumerateFileHistoryAsync("file.txt", startCommit.Value))
 		{
 			history.Add(commit);
 		}

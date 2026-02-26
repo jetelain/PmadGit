@@ -21,6 +21,9 @@ public sealed class GitSmartHttpOptions
     /// <summary>
     /// Allows enabling push operations. Disabled by default for security.
     /// </summary>
+    /// <remarks>
+    /// To enable push operations, set EnableReceivePack to true and override the AuthorizeAsync callback to allow write operations as needed.
+    /// </remarks>
     public bool EnableReceivePack { get; set; } = false;
 
     /// <summary>
@@ -33,6 +36,9 @@ public sealed class GitSmartHttpOptions
     /// Parameters are the current HTTP context, the normalized repository name, the operation type (Read or Write), and a cancellation token.
     /// By default, only read operations (fetch/clone) are allowed. Write operations (push) are denied for security.
     /// </summary>
+    /// <remarks>
+    /// To enable push operations, set EnableReceivePack to true and override the AuthorizeAsync callback to allow write operations as needed.
+    /// </remarks>
     public Func<HttpContext, string, GitOperation, CancellationToken, ValueTask<bool>>? AuthorizeAsync { get; set; }
         = static (_, _, operation, _) => ValueTask.FromResult(operation == GitOperation.Read);
 
@@ -81,4 +87,17 @@ public sealed class GitSmartHttpOptions
     /// own logging and error handling as needed.
     /// </summary>
     public Func<HttpContext, string, IReadOnlyList<string>, ValueTask>? OnReceivePackCompleted { get; set; }
+
+    internal void CopyTo(GitSmartHttpOptions target)
+    {
+        target.RepositoryRoot = RepositoryRoot;
+        target.EnableUploadPack = EnableUploadPack;
+        target.EnableReceivePack = EnableReceivePack;
+        target.Agent = Agent;
+        target.AuthorizeAsync = AuthorizeAsync;
+        target.RepositoryNameNormalizer = RepositoryNameNormalizer;
+        target.RepositoryResolver = RepositoryResolver;
+        target.OnReceivePackCompleted = OnReceivePackCompleted;
+        target.RepositoryNameValidator = RepositoryNameValidator;
+    }
 }
