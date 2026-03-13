@@ -1,5 +1,6 @@
 using System.Runtime.CompilerServices;
 using System.Text;
+using Pmad.Git.LocalRepositories.Helpers;
 
 namespace Pmad.Git.LocalRepositories;
 
@@ -14,6 +15,7 @@ public sealed class GitRepository : IGitRepository
     private readonly Dictionary<GitHash, GitTree> _treeCache = new();
     private readonly object _commitLock = new();
     private readonly object _treeLock = new();
+    private readonly GitLastChangeCache _lastChangeCache;
     private const int RegularFileMode = 33188; // 100644 in octal
     private const int DirectoryMode = 16384;   // 040000 in octal
 
@@ -23,6 +25,7 @@ public sealed class GitRepository : IGitRepository
         GitDirectory = gitDirectory;
         _objectStore = new GitObjectStore(gitDirectory);
         _referenceStore = new GitReferenceStore(gitDirectory);
+        _lastChangeCache = new GitLastChangeCache(gitDirectory);
     }
 
     /// <summary>
@@ -505,9 +508,10 @@ public sealed class GitRepository : IGitRepository
     /// Lists files under the optional <paramref name="path"/> in the specified <paramref name="reference"/> along with the last commit that changed each file.
     /// This is more efficient than calling <see cref="EnumerateCommitTreeAsync"/> followed by <see cref="EnumerateFileHistoryAsync"/> for each file
     /// because the commit graph is traversed only once.
+    /// Results are cached on disk (one JSON file per commit) so repeated calls for the same commit are served instantly.
     /// </summary>
     /// <param name="reference">Starting reference or commit hash; defaults to HEAD.</param>
-    /// <param name="path">Optional directory path to scope the result; all files when omitted.</param>
+    /// <param name="path">Optional directory path to scope the result; all files when omitted. Returns an empty list if the path does not exist in the start commit.</param>
     /// <param name="searchOption">Whether to include files in all subdirectories or only the specified directory; defaults to <see cref="SearchOption.AllDirectories"/>.</param>
     /// <param name="predicate">Optional predicate applied to each file path; only files for which it returns <see langword="true"/> are included. All files are included when omitted.</param>
     /// <param name="cancellationToken">Token used to cancel the async operation.</param>
@@ -520,7 +524,31 @@ public sealed class GitRepository : IGitRepository
         CancellationToken cancellationToken = default)
     {
         var prefix = NormalizePathAllowEmpty(path);
+        var startHash = await ResolveReferenceAsync(reference, cancellationToken).ConfigureAwait(false);
 
+        var cached = await _lastChangeCache.TryReadAsync(
+            startHash,
+            h => GetCommitAsync(h, cancellationToken),
+            cancellationToken).ConfigureAwait(false);
+
+        if (cached != null)
+        {
+            return GitFileLastChangeHelper.ApplyFilters(cached, prefix, searchOption, predicate);
+        }
+
+        // Compute the full result without path scope or predicate so the single cache entry
+        // is reusable for any path, search depth, or predicate supplied by future callers.
+        var fullResult = await ComputeFilesWithLastChangeAsync(startHash, cancellationToken).ConfigureAwait(false);
+
+        await _lastChangeCache.WriteAsync(startHash, fullResult, cancellationToken).ConfigureAwait(false);
+
+        return GitFileLastChangeHelper.ApplyFilters(fullResult, prefix, searchOption, predicate);
+    }
+
+    private async Task<IReadOnlyList<GitFileLastChange>> ComputeFilesWithLastChangeAsync(
+        GitHash startHash,
+        CancellationToken cancellationToken)
+    {
         // file path -> blob hash recorded in the current commit (used to detect changes compared to older commits)
         var initialBlobPerFile = new Dictionary<string, GitHash>(StringComparer.Ordinal);
 
@@ -532,13 +560,13 @@ public sealed class GitRepository : IGitRepository
 
         bool isFirst = true;
 
-        await foreach (var commit in EnumerateCommitsAsync(reference, cancellationToken).ConfigureAwait(false))
+        await foreach (var commit in EnumerateCommitsAsync(startHash.Value, cancellationToken).ConfigureAwait(false))
         {
             if (isFirst)
             {
-                await foreach (var item in EnumerateCommitTreeAsync(commit.Id.Value, prefix, searchOption, cancellationToken).ConfigureAwait(false))
+                await foreach (var item in EnumerateCommitTreeAsync(commit.Id.Value, null, SearchOption.AllDirectories, cancellationToken).ConfigureAwait(false))
                 {
-                    if (item.Entry.Kind != GitTreeEntryKind.Blob || (predicate != null && !predicate(item.Path)))
+                    if (item.Entry.Kind != GitTreeEntryKind.Blob)
                     {
                         continue;
                     }
@@ -555,11 +583,15 @@ public sealed class GitRepository : IGitRepository
             }
             else
             {
+                // Check if this ancestor commit already has a cached result; if so, files whose
+                // blob is unchanged can be resolved directly without walking further back.
+                var ancestorCache = await _lastChangeCache.TryReadRawAsync(commit.Id, cancellationToken).ConfigureAwait(false);
+
                 try
                 {
                     var seen = new HashSet<string>(StringComparer.Ordinal);
 
-                    await foreach (var item in EnumerateCommitTreeAsync(commit.Id.Value, prefix, searchOption, cancellationToken).ConfigureAwait(false))
+                    await foreach (var item in EnumerateCommitTreeAsync(commit.Id.Value, null, SearchOption.AllDirectories, cancellationToken).ConfigureAwait(false))
                     {
                         if (item.Entry.Kind == GitTreeEntryKind.Blob && result.ContainsKey(item.Path) && !done.Contains(item.Path))
                         {
@@ -571,6 +603,14 @@ public sealed class GitRepository : IGitRepository
                                     // File has changed content compared to the previous (newer) commit
                                     // newer commit is the last one that changed it, so we can finalise the result for this file and stop tracking it
                                     done.Add(item.Path);
+                                }
+                                else if (ancestorCache != null && ancestorCache.TryGetValue(item.Path, out var cachedHash))
+                                {
+                                    // Same blob and this ancestor has a cached result: the cached last-change
+                                    // commit is valid for the current traversal too, so finalise immediately.
+                                    result[item.Path] = await GetCommitAsync(new GitHash(cachedHash), cancellationToken).ConfigureAwait(false);
+                                    done.Add(item.Path);
+                                    seen.Add(item.Path);
                                 }
                                 else
                                 {
