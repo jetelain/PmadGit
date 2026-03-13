@@ -1,3 +1,4 @@
+using System.IO.Compression;
 using System.Text.Json;
 
 namespace Pmad.Git.LocalRepositories.Test;
@@ -29,6 +30,14 @@ public sealed class GitLastChangeCacheTests : IDisposable
     private static Task<GitCommit> GetCommitStub(GitHash hash)
     {
         return Task.FromResult(MakeCommit(hash.Value));
+    }
+
+    private static async Task WriteGzipJsonAsync(string filePath, string json)
+    {
+        using var stream = File.Create(filePath);
+        using var gz = new GZipStream(stream, CompressionLevel.Fastest);
+        using var writer = new StreamWriter(gz);
+        await writer.WriteAsync(json);
     }
 
     // --------------- TryReadAsync ---------------
@@ -92,7 +101,7 @@ public sealed class GitLastChangeCacheTests : IDisposable
         var hash = new GitHash("3333333333333333333333333333333333333333");
         var cacheDir = Path.Combine(_gitDirectory, "pmad-cache", "last-change", "33");
         Directory.CreateDirectory(cacheDir);
-        await File.WriteAllTextAsync(Path.Combine(cacheDir, "33333333333333333333333333333333333333.json"), "not-valid-json");
+        await File.WriteAllBytesAsync(Path.Combine(cacheDir, "33333333333333333333333333333333333333.json.gz"), [0x00, 0x01, 0x02]);
 
         var result = await _cache.TryReadAsync(hash, GetCommitStub, CancellationToken.None);
 
@@ -106,7 +115,7 @@ public sealed class GitLastChangeCacheTests : IDisposable
         var cacheDir = Path.Combine(_gitDirectory, "pmad-cache", "last-change", "44");
         Directory.CreateDirectory(cacheDir);
         var json = JsonSerializer.Serialize(new { v = 99, f = new[] { new { p = "file.txt", c = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" } } });
-        await File.WriteAllTextAsync(Path.Combine(cacheDir, "44444444444444444444444444444444444444.json"), json);
+        await WriteGzipJsonAsync(Path.Combine(cacheDir, "44444444444444444444444444444444444444.json.gz"), json);
 
         var result = await _cache.TryReadAsync(hash, GetCommitStub, CancellationToken.None);
 
@@ -151,7 +160,7 @@ public sealed class GitLastChangeCacheTests : IDisposable
         var hash = new GitHash("7777777777777777777777777777777777777777");
         var cacheDir = Path.Combine(_gitDirectory, "pmad-cache", "last-change", "77");
         Directory.CreateDirectory(cacheDir);
-        await File.WriteAllTextAsync(Path.Combine(cacheDir, "77777777777777777777777777777777777777.json"), "{{{{");
+        await File.WriteAllBytesAsync(Path.Combine(cacheDir, "77777777777777777777777777777777777777.json.gz"), [0x00, 0x01, 0x02]);
 
         var result = await _cache.TryReadRawAsync(hash, CancellationToken.None);
 
@@ -171,7 +180,7 @@ public sealed class GitLastChangeCacheTests : IDisposable
 
         // Cache files are sharded by the first two hex chars of the commit hash.
         var shardDir = Path.Combine(_gitDirectory, "pmad-cache", "last-change", "88");
-        var files = Directory.GetFiles(shardDir, "*.json");
+        var files = Directory.GetFiles(shardDir, "*.json.gz");
         Assert.Single(files);
     }
 

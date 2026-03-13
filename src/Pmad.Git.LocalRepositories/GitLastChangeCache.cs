@@ -86,12 +86,17 @@ internal sealed class GitLastChangeCache
                 }).ToList()
             };
 
-            var json = JsonSerializer.Serialize(data, GitLastChangeCacheContext.Default.GitLastChangeCacheData);
 
             // Write to a temp file then rename for atomicity so a concurrent reader never
             // sees a partially-written file.
+
             var tmpPath = filePath + ".tmp";
-            await File.WriteAllTextAsync(tmpPath, json, cancellationToken).ConfigureAwait(false);
+            using(var stream = File.Create(tmpPath))
+            {
+                using var gz = new System.IO.Compression.GZipStream(stream, System.IO.Compression.CompressionLevel.Fastest);
+                await JsonSerializer.SerializeAsync(gz, data, GitLastChangeCacheContext.Default.GitLastChangeCacheData, cancellationToken).ConfigureAwait(false);
+            }
+
             File.Move(tmpPath, filePath, overwrite: true);
         }
         catch
@@ -110,8 +115,9 @@ internal sealed class GitLastChangeCache
 
         try
         {
-            var json = await File.ReadAllTextAsync(filePath, cancellationToken).ConfigureAwait(false);
-            var data = JsonSerializer.Deserialize(json, GitLastChangeCacheContext.Default.GitLastChangeCacheData);
+            using var stream = File.OpenRead(filePath);
+            using var gz = new System.IO.Compression.GZipStream(stream, System.IO.Compression.CompressionMode.Decompress);
+            var data = await JsonSerializer.DeserializeAsync(gz, GitLastChangeCacheContext.Default.GitLastChangeCacheData);
             return data?.Version == CacheVersion && data.Files is not null ? data : null;
         }
         catch
@@ -125,7 +131,7 @@ internal sealed class GitLastChangeCache
     {
         var prefix = commitHash.Value[..2];
         var rest = commitHash.Value[2..];
-        return Path.Combine(_cacheDirectory, prefix, $"{rest}.json");
+        return Path.Combine(_cacheDirectory, prefix, $"{rest}.json.gz");
     }
 }
 
