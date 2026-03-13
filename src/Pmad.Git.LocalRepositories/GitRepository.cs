@@ -627,7 +627,6 @@ public sealed class GitRepository : IGitRepository
                     done.Add(missingPath);
                 }
 
-
                 // All known files are finalised - no older commit can affect the result.
                 if (done.Count == initialBlobPerFile.Count)
                 {

@@ -86,12 +86,11 @@ internal sealed class GitLastChangeCache
                 }).ToList()
             };
 
-
             // Write to a temp file then rename for atomicity so a concurrent reader never
             // sees a partially-written file.
 
             var tmpPath = filePath + ".tmp";
-            using(var stream = File.Create(tmpPath))
+            using (var stream = File.Create(tmpPath))
             {
                 using var gz = new System.IO.Compression.GZipStream(stream, System.IO.Compression.CompressionLevel.Fastest);
                 await JsonSerializer.SerializeAsync(gz, data, GitLastChangeCacheContext.Default.GitLastChangeCacheData, cancellationToken).ConfigureAwait(false);
@@ -99,9 +98,22 @@ internal sealed class GitLastChangeCache
 
             File.Move(tmpPath, filePath, overwrite: true);
         }
-        catch
+        catch (System.Exception ex) when (ex is not System.OperationCanceledException)
         {
-            // Cache write is best-effort; ignore all failures.
+            try
+            {
+                var tmpPath = filePath + ".tmp";
+                if (File.Exists(tmpPath))
+                {
+                    File.Delete(tmpPath);
+                }
+            }
+            catch
+            {
+                // Ignore cleanup failures as well.
+            }
+
+            // Cache write is best-effort; ignore all non-cancellation failures.
         }
     }
 
@@ -117,7 +129,7 @@ internal sealed class GitLastChangeCache
         {
             using var stream = File.OpenRead(filePath);
             using var gz = new System.IO.Compression.GZipStream(stream, System.IO.Compression.CompressionMode.Decompress);
-            var data = await JsonSerializer.DeserializeAsync(gz, GitLastChangeCacheContext.Default.GitLastChangeCacheData);
+            var data = await JsonSerializer.DeserializeAsync(gz, GitLastChangeCacheContext.Default.GitLastChangeCacheData, cancellationToken);
             return data?.Version == CacheVersion && data.Files is not null ? data : null;
         }
         catch
