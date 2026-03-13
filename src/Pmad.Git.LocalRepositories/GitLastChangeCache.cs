@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using Pmad.Git.LocalRepositories.Utilities;
 
 namespace Pmad.Git.LocalRepositories;
 
@@ -72,6 +73,7 @@ internal sealed class GitLastChangeCache
         CancellationToken cancellationToken)
     {
         var filePath = GetCacheFilePath(commitHash);
+        var tmpPath = filePath + ".tmp";
         try
         {
             Directory.CreateDirectory(Path.GetDirectoryName(filePath)!);
@@ -89,7 +91,6 @@ internal sealed class GitLastChangeCache
             // Write to a temp file then rename for atomicity so a concurrent reader never
             // sees a partially-written file.
 
-            var tmpPath = filePath + ".tmp";
             using (var stream = File.Create(tmpPath))
             {
                 using var gz = new System.IO.Compression.GZipStream(stream, System.IO.Compression.CompressionLevel.Fastest);
@@ -98,21 +99,9 @@ internal sealed class GitLastChangeCache
 
             File.Move(tmpPath, filePath, overwrite: true);
         }
-        catch (System.Exception ex) when (ex is not System.OperationCanceledException)
+        catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            try
-            {
-                var tmpPath = filePath + ".tmp";
-                if (File.Exists(tmpPath))
-                {
-                    File.Delete(tmpPath);
-                }
-            }
-            catch
-            {
-                // Ignore cleanup failures as well.
-            }
-
+            FileHelper.SafeDelete(tmpPath);
             // Cache write is best-effort; ignore all non-cancellation failures.
         }
     }
@@ -129,10 +118,10 @@ internal sealed class GitLastChangeCache
         {
             using var stream = File.OpenRead(filePath);
             using var gz = new System.IO.Compression.GZipStream(stream, System.IO.Compression.CompressionMode.Decompress);
-            var data = await JsonSerializer.DeserializeAsync(gz, GitLastChangeCacheContext.Default.GitLastChangeCacheData, cancellationToken);
+            var data = await JsonSerializer.DeserializeAsync(gz, GitLastChangeCacheContext.Default.GitLastChangeCacheData, cancellationToken).ConfigureAwait(false);
             return data?.Version == CacheVersion && data.Files is not null ? data : null;
         }
-        catch
+        catch (Exception ex) when (ex is not OperationCanceledException)
         {
             // If the cache file is corrupt or unreadable, fall back to recomputing.
             return null;
