@@ -587,53 +587,46 @@ public sealed class GitRepository : IGitRepository
                 // blob is unchanged can be resolved directly without walking further back.
                 var ancestorCache = await _lastChangeCache.TryReadRawAsync(commit.Id, cancellationToken).ConfigureAwait(false);
 
-                try
-                {
-                    var seen = new HashSet<string>(StringComparer.Ordinal);
+                var seen = new HashSet<string>(StringComparer.Ordinal);
 
-                    await foreach (var item in EnumerateCommitTreeAsync(commit.Id.Value, null, SearchOption.AllDirectories, cancellationToken).ConfigureAwait(false))
+                await foreach (var item in EnumerateCommitTreeAsync(commit.Id.Value, null, SearchOption.AllDirectories, cancellationToken).ConfigureAwait(false))
+                {
+                    if (item.Entry.Kind == GitTreeEntryKind.Blob && result.ContainsKey(item.Path) && !done.Contains(item.Path))
                     {
-                        if (item.Entry.Kind == GitTreeEntryKind.Blob && result.ContainsKey(item.Path) && !done.Contains(item.Path))
+                        if (initialBlobPerFile.TryGetValue(item.Path, out var previousHash))
                         {
-                            if (initialBlobPerFile.TryGetValue(item.Path, out var previousHash))
+                            // File has interest
+                            if (!previousHash.Equals(item.Entry.Hash))
                             {
-                                // File has interest
-                                if (!previousHash.Equals(item.Entry.Hash))
-                                {
-                                    // File has changed content compared to the previous (newer) commit
-                                    // newer commit is the last one that changed it, so we can finalise the result for this file and stop tracking it
-                                    done.Add(item.Path);
-                                }
-                                else if (ancestorCache != null && ancestorCache.TryGetValue(item.Path, out var cachedHash))
-                                {
-                                    // Same blob and this ancestor has a cached result: the cached last-change
-                                    // commit is valid for the current traversal too, so finalise immediately.
-                                    result[item.Path] = await GetCommitAsync(new GitHash(cachedHash), cancellationToken).ConfigureAwait(false);
-                                    done.Add(item.Path);
-                                    seen.Add(item.Path);
-                                }
-                                else
-                                {
-                                    // Update the commit for this file to the current (older) commit, as it is still the same blob
-                                    result[item.Path] = commit;
-                                    seen.Add(item.Path);
-                                }
+                                // File has changed content compared to the previous (newer) commit
+                                // newer commit is the last one that changed it, so we can finalise the result for this file and stop tracking it
+                                done.Add(item.Path);
+                            }
+                            else if (ancestorCache != null && ancestorCache.TryGetValue(item.Path, out var cachedHash))
+                            {
+                                // Same blob and this ancestor has a cached result: the cached last-change
+                                // commit is valid for the current traversal too, so finalise immediately.
+                                result[item.Path] = await GetCommitAsync(new GitHash(cachedHash), cancellationToken).ConfigureAwait(false);
+                                done.Add(item.Path);
+                                seen.Add(item.Path);
+                            }
+                            else
+                            {
+                                // Update the commit for this file to the current (older) commit, as it is still the same blob
+                                result[item.Path] = commit;
+                                seen.Add(item.Path);
                             }
                         }
                     }
+                }
 
-                    foreach (var missingPath in initialBlobPerFile.Keys.Where(p => !seen.Contains(p) && !done.Contains(p)))
-                    {
-                        // File that existed in the previous (newer) commit is not present in this older commit, meaning this commit predates the file's introduction
-                        // The newer commit is therefore the last one that affected it, so we can finalise the result for this file and stop tracking it
-                        done.Add(missingPath);
-                    }
-                }
-                catch (DirectoryNotFoundException)
+                foreach (var missingPath in initialBlobPerFile.Keys.Where(p => !seen.Contains(p) && !done.Contains(p)))
                 {
-                    // Requested directory does not exist in this commit (we have reached a point in history before it was introduced)
-                    return BuildResult(result);
+                    // File that existed in the previous (newer) commit is not present in this older commit, meaning this commit predates the file's introduction
+                    // The newer commit is therefore the last one that affected it, so we can finalise the result for this file and stop tracking it
+                    done.Add(missingPath);
                 }
+
 
                 // All known files are finalised - no older commit can affect the result.
                 if (done.Count == initialBlobPerFile.Count)
