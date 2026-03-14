@@ -1,8 +1,7 @@
 using System.Text.Json;
-using System.Text.Json.Serialization;
 using Pmad.Git.LocalRepositories.Utilities;
 
-namespace Pmad.Git.LocalRepositories;
+namespace Pmad.Git.LocalRepositories.Caching;
 
 /// <summary>
 /// Incremental on-disk cache for <see cref="GitRepository.GetFilesWithLastChangeAsync"/>.
@@ -135,24 +134,3 @@ internal sealed class GitLastChangeCache
         return Path.Combine(_cacheDirectory, prefix, $"{rest}.json.gz");
     }
 }
-
-internal sealed class GitLastChangeCacheData
-{
-    [JsonPropertyName("v")]
-    public int Version { get; set; }
-
-    [JsonPropertyName("f")]
-    public List<GitLastChangeCacheEntry>? Files { get; set; }
-}
-
-internal sealed class GitLastChangeCacheEntry
-{
-    [JsonPropertyName("p")]
-    public string Path { get; set; } = string.Empty;
-
-    [JsonPropertyName("c")]
-    public string Commit { get; set; } = string.Empty;
-}
-
-[JsonSerializable(typeof(GitLastChangeCacheData))]
-internal partial class GitLastChangeCacheContext : JsonSerializerContext { }

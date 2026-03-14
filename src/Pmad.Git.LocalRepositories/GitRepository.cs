@@ -1,5 +1,6 @@
 using System.Runtime.CompilerServices;
 using System.Text;
+using Pmad.Git.LocalRepositories.Caching;
 using Pmad.Git.LocalRepositories.Helpers;
 
 namespace Pmad.Git.LocalRepositories;

@@ -1,7 +1,8 @@
 using System.IO.Compression;
 using System.Text.Json;
+using Pmad.Git.LocalRepositories.Caching;
 
-namespace Pmad.Git.LocalRepositories.Test;
+namespace Pmad.Git.LocalRepositories.Test.Caching;
 
 public sealed class GitLastChangeCacheTests : IDisposable
 {
