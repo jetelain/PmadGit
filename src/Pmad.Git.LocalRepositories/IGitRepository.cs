@@ -162,7 +162,7 @@ public interface IGitRepository
     /// because the commit graph is traversed only once.
     /// </summary>
     /// <param name="reference">Starting reference or commit hash; defaults to HEAD.</param>
-    /// <param name="path">Optional directory path to scope the result; all files when omitted.</param>
+    /// <param name="path">Optional directory path to scope the result; all files when omitted. Returns an empty list if the path does not exist in the start commit.</param>
     /// <param name="searchOption">Whether to include files in all subdirectories or only the specified directory; defaults to <see cref="SearchOption.AllDirectories"/>.</param>
     /// <param name="predicate">Optional predicate applied to each file path; only files for which it returns <see langword="true"/> are included. All files are included when omitted.</param>
     /// <param name="cancellationToken">Token used to cancel the async operation.</param>
