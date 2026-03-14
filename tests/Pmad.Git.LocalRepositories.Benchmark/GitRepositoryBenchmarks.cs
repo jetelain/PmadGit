@@ -27,8 +27,8 @@ public class GitRepositoryBenchmarks
         await _repo.GetFilesWithLastChangeAsync();
     }
 
-    [IterationSetup(Target = nameof(NoDiskCache))]
-    public void SetupNoDiskCache()
+    [IterationSetup(Target = nameof(NoCache))]
+    public void SetupNoCache()
     {
         if (Directory.Exists(_diskCachePath))
         {
@@ -43,17 +43,31 @@ public class GitRepositoryBenchmarks
         _repo.InvalidateCaches(true);
     }
 
-    /// <summary>No disk cache, no in-memory cache — full traversal every time.</summary>
+    [IterationSetup(Target = nameof(MemoryCacheOnly))]
+    public void SetupMemoryCacheOnly()
+    {
+        if (Directory.Exists(_diskCachePath))
+        {
+            Directory.Delete(_diskCachePath, recursive: true);
+        }
+    }
+
+    /// <summary>No disk cache, no in-memory cache.</summary>
     [Benchmark(Baseline = true)]
     [IterationCount(5)]
     [WarmupCount(1)]
-    public Task<IReadOnlyList<GitFileLastChange>> NoDiskCache() => _repo.GetFilesWithLastChangeAsync();
+    public Task<IReadOnlyList<GitFileLastChange>> NoCache() => _repo.GetFilesWithLastChangeAsync();
 
-    /// <summary>Disk cache present, in-memory cache cleared — reads JSON from disk.</summary>
+    /// <summary>Disk cache, no in-memory cache.</summary>
     [Benchmark]
     public Task<IReadOnlyList<GitFileLastChange>> DiskCacheOnly() => _repo.GetFilesWithLastChangeAsync();
 
-    /// <summary>Both caches hot — returns the in-memory result immediately.</summary>
+    /// <summary>No disk cache, in-memory cache.</summary>
+    [Benchmark]
+    public Task<IReadOnlyList<GitFileLastChange>> MemoryCacheOnly() => _repo.GetFilesWithLastChangeAsync();
+
+    /// <summary>Both caches.</summary>
     [Benchmark]
     public Task<IReadOnlyList<GitFileLastChange>> AllCaches() => _repo.GetFilesWithLastChangeAsync();
+
 }
