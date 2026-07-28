@@ -23,4 +23,12 @@
     <ProjectReference Include="..\Pmad.Git.LocalRepositories\Pmad.Git.LocalRepositories.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <None Include="README.md" Pack="true" PackagePath="\" />
+  </ItemGroup>
+	
+	<ItemGroup>
+		<InternalsVisibleTo Include="Pmad.Git.Cli.Test" />
+	</ItemGroup>
+
 </Project>
