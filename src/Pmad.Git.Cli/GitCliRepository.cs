@@ -1,4 +1,6 @@
-﻿namespace Pmad.Git.Cli;
+﻿using Pmad.Git.LocalRepositories;
+
+namespace Pmad.Git.Cli;
 
 /// <summary>
 /// 
@@ -16,11 +18,55 @@ public class GitCliRepository
     public string GitCliPath => _gitRunner.GitCliPath;
 
     private readonly IGitRunner _gitRunner;
+    private readonly IGitRepositoryLockManager? _lockManager;
+    private readonly IGitRepositoryCacheInvalidator? _cacheInvalidator;
 
-    public GitCliRepository(string rootPath, string gitCliPath = "git") 
-        : this (rootPath, new GitRunner(gitCliPath))
+    public GitCliRepository(string rootPath, string gitCliPath = "git")
+        : this(rootPath, new GitRunner(gitCliPath))
     {
 
+    }
+
+    /// <summary>
+    /// Creates a wrapper around the Git CLI, synchronizing its write operations with a
+    /// <see cref="GitRepository"/> operating on the same directory within the same process.
+    /// </summary>
+    /// <param name="rootPath">Absolute path to the repository working tree root.</param>
+    /// <param name="lockManager">
+    /// Lock manager shared with the <see cref="GitRepository"/> instance (e.g. via its
+    /// <c>LockManager</c> property) that operates on the same repository directory.
+    /// </param>
+    /// <param name="cacheInvalidator">
+    /// Optional cache invalidator to notify (e.g. the <see cref="GitRepository"/> instance itself, which
+    /// implements <see cref="IGitRepositoryCacheInvalidator"/>) after each write operation completes,
+    /// so its cached references/objects are cleared while the write lock is still held. When omitted,
+    /// the caller is responsible for calling <c>InvalidateCaches()</c> manually after using this wrapper.
+    /// </param>
+    /// <param name="gitCliPath">Path to the Git CLI executable.</param>
+    /// <remarks>
+    /// This only protects against concurrent writes performed by the current process; it does not
+    /// synchronize with external <c>git</c> processes (e.g. run from a terminal).
+    /// </remarks>
+    public GitCliRepository(string rootPath, IGitRepositoryLockManager lockManager, IGitRepositoryCacheInvalidator? cacheInvalidator = null, string gitCliPath = "git")
+        : this(rootPath, new GitRunner(gitCliPath))
+    {
+        _lockManager = lockManager ?? throw new ArgumentNullException(nameof(lockManager));
+        _cacheInvalidator = cacheInvalidator;
+    }
+
+    /// <summary>
+    /// Creates a wrapper around the Git CLI, sharing the lock manager and cache invalidation of an
+    /// existing <see cref="GitRepository"/> operating on the same repository directory within the
+    /// same process. This is the recommended way to combine both when using the two libraries together:
+    /// every write operation of this wrapper is synchronized with <paramref name="repository"/> and
+    /// automatically invalidates its caches.
+    /// </summary>
+    /// <param name="rootPath">Absolute path to the repository working tree root.</param>
+    /// <param name="repository"><see cref="GitRepository"/> instance operating on the same repository directory.</param>
+    /// <param name="gitCliPath">Path to the Git CLI executable.</param>
+    public GitCliRepository(string rootPath, GitRepository repository, string gitCliPath = "git")
+        : this(rootPath, (repository ?? throw new ArgumentNullException(nameof(repository))).LockManager, repository, gitCliPath)
+    {
     }
 
     internal GitCliRepository(string rootPath, IGitRunner gitRunner)
@@ -31,6 +77,29 @@ public class GitCliRepository
         }
         RootPath = rootPath;
         _gitRunner = gitRunner;
+    }
+
+    /// <summary>
+    /// Acquires the global write lock of the shared lock manager, if one was provided, blocking
+    /// until all in-flight reference-level operations of the associated <see cref="GitRepository"/>
+    /// complete and preventing new ones from starting until disposed.
+    /// </summary>
+    private async Task<IDisposable?> LockWriteAsync(CancellationToken cancellationToken)
+    {
+        if (_lockManager is null)
+        {
+            return null;
+        }
+        return await _lockManager.LockAllAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Notifies the shared cache invalidator, if one was provided, that a write operation just
+    /// completed. Must be called while the write lock (if any) is still held.
+    /// </summary>
+    private void InvalidateCaches()
+    {
+        _cacheInvalidator?.InvalidateCaches();
     }
 
     /// <summary>
@@ -56,8 +125,10 @@ public class GitCliRepository
             }
         }
 
+        using var writeLock = await LockWriteAsync(cancellationToken).ConfigureAwait(false);
         var result = await RunGit(cancellationToken, arguments.ToArray());
         result.EnsureSuccess();
+        InvalidateCaches();
     }
 
     /// <summary>
@@ -84,9 +155,11 @@ public class GitCliRepository
             }
         }
 
+        using var writeLock = await LockWriteAsync(cancellationToken).ConfigureAwait(false);
         var result = await RunGit(cancellationToken, arguments.ToArray());
         if (result.ExitCode == 0)
         {
+            InvalidateCaches();
             return new GitMergeResult(true, Array.Empty<string>());
         }
 
@@ -128,8 +201,10 @@ public class GitCliRepository
             }
         }
 
+        using var writeLock = await LockWriteAsync(cancellationToken).ConfigureAwait(false);
         var result = await RunGit(cancellationToken, arguments.ToArray());
         result.EnsureSuccess();
+        InvalidateCaches();
     }
 
     /// <summary>
@@ -172,8 +247,10 @@ public class GitCliRepository
         {
             arguments.Add(startPoint);
         }
+        using var writeLock = await LockWriteAsync(cancellationToken).ConfigureAwait(false);
         var result = await RunGit(cancellationToken, arguments.ToArray());
         result.EnsureSuccess();
+        InvalidateCaches();
     }
 
     /// <summary>
@@ -182,9 +259,26 @@ public class GitCliRepository
     /// <param name="branchName">Name of the branch to check out.</param>
     /// <param name="createNew">When <c>true</c>, creates the branch before checking it out.</param>
     /// <param name="startPoint">Commit-ish to start the branch from when <paramref name="createNew"/> is <c>true</c>.</param>
+    /// <param name="updateWorkingTree">
+    /// When <c>false</c> and <paramref name="createNew"/> is <c>false</c>, only moves <c>HEAD</c> to the
+    /// target branch (via <c>git symbolic-ref</c>) without touching the working tree or index files,
+    /// which avoids unnecessary/costly file updates when the caller does not need the working tree to
+    /// be in sync. Has no effect when <paramref name="createNew"/> is <c>true</c>, since a new branch
+    /// always requires a regular checkout.
+    /// </param>
     /// <param name="cancellationToken"></param>
-    public async Task CheckoutAsync(string branchName, bool createNew = false, string? startPoint = null, CancellationToken cancellationToken = default)
+    public async Task CheckoutAsync(string branchName, bool createNew = false, string? startPoint = null, bool updateWorkingTree = true, CancellationToken cancellationToken = default)
     {
+        using var writeLock = await LockWriteAsync(cancellationToken).ConfigureAwait(false);
+
+        if (!createNew && !updateWorkingTree)
+        {
+            var refResult = await RunGit(cancellationToken, "symbolic-ref", "HEAD", $"refs/heads/{branchName}");
+            refResult.EnsureSuccess();
+            InvalidateCaches();
+            return;
+        }
+
         var arguments = new List<string> { "checkout" };
         if (createNew)
         {
@@ -197,6 +291,7 @@ public class GitCliRepository
         }
         var result = await RunGit(cancellationToken, arguments.ToArray());
         result.EnsureSuccess();
+        InvalidateCaches();
     }
 
     /// <summary>
@@ -207,8 +302,10 @@ public class GitCliRepository
     /// <param name="cancellationToken"></param>
     public async Task DeleteBranchAsync(string branchName, bool force = false, CancellationToken cancellationToken = default)
     {
+        using var writeLock = await LockWriteAsync(cancellationToken).ConfigureAwait(false);
         var result = await RunGit(cancellationToken, "branch", force ? "-D" : "-d", branchName);
         result.EnsureSuccess();
+        InvalidateCaches();
     }
 
     /// <summary>
@@ -219,8 +316,10 @@ public class GitCliRepository
     /// <param name="cancellationToken"></param>
     public async Task RenameBranchAsync(string oldName, string newName, CancellationToken cancellationToken = default)
     {
+        using var writeLock = await LockWriteAsync(cancellationToken).ConfigureAwait(false);
         var result = await RunGit(cancellationToken, "branch", "-m", oldName, newName);
         result.EnsureSuccess();
+        InvalidateCaches();
     }
 
     /// <summary>
@@ -231,9 +330,11 @@ public class GitCliRepository
     /// <returns>A <see cref="GitMergeResult"/> describing whether the merge succeeded or stopped because of conflicts.</returns>
     public async Task<GitMergeResult> MergeAsync(string branch, CancellationToken cancellationToken = default)
     {
+        using var writeLock = await LockWriteAsync(cancellationToken).ConfigureAwait(false);
         var result = await RunGit(cancellationToken, "merge", "--no-edit", branch);
         if (result.ExitCode == 0)
         {
+            InvalidateCaches();
             return new GitMergeResult(true, Array.Empty<string>());
         }
 
@@ -273,8 +374,10 @@ public class GitCliRepository
     /// <param name="cancellationToken"></param>
     public async Task ResolveConflictAsync(string relativeFilePath, CancellationToken cancellationToken = default)
     {
+        using var writeLock = await LockWriteAsync(cancellationToken).ConfigureAwait(false);
         var result = await RunGit(cancellationToken, "add", "--", relativeFilePath);
         result.EnsureSuccess();
+        InvalidateCaches();
     }
 
     /// <summary>
@@ -294,8 +397,10 @@ public class GitCliRepository
         {
             arguments.Add("--no-edit");
         }
+        using var writeLock = await LockWriteAsync(cancellationToken).ConfigureAwait(false);
         var result = await RunGit(cancellationToken, arguments.ToArray());
         result.EnsureSuccess();
+        InvalidateCaches();
     }
 
     /// <summary>
@@ -303,6 +408,7 @@ public class GitCliRepository
     /// </summary>
     public async Task AbortMergeAsync(CancellationToken cancellationToken = default)
     {
+        using var writeLock = await LockWriteAsync(cancellationToken).ConfigureAwait(false);
         var result = await RunGit(cancellationToken, "merge", "--abort");
         result.EnsureSuccess();
     }

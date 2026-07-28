@@ -48,7 +48,7 @@ Console.WriteLine(log);
 - `GetCurrentBranchAsync()` returns the name of the currently checked out branch.
 - `GetBranchesAsync(includeRemote)` lists local branches, optionally including remote-tracking branches.
 - `CreateBranchAsync(branchName, startPoint)` creates a branch without checking it out.
-- `CheckoutAsync(branchName, createNew, startPoint)` checks out an existing branch, or creates and checks out a new one.
+- `CheckoutAsync(branchName, createNew, startPoint)` checks out an existing branch, or creates and checks out a new one. Pass `updateWorkingTree: false` to only move `HEAD` (via `git symbolic-ref`) without touching the working tree, when switching branches on a repository whose files are not otherwise used.
 - `DeleteBranchAsync(branchName, force)` deletes a local branch.
 - `RenameBranchAsync(oldName, newName)` renames a local branch.
 
@@ -64,3 +64,40 @@ Console.WriteLine(log);
 ## Limitations & roadmap
 - Requires the `git` executable; it is not a managed re-implementation of Git.
 - Authentication for remote operations (credentials, SSH keys) relies on the local Git/OS configuration and is not managed by this library.
+
+## Using alongside `Pmad.Git.LocalRepositories`
+
+`GitCliRepository` (this library) and `GitRepository` (from `Pmad.Git.LocalRepositories`) can safely operate on the same repository directory within the same process if they share the same lock manager, and `GitRepository` needs to be told to invalidate its cached references/objects after `GitCliRepository` writes to the repository. The easiest way to combine both is to pass the `GitRepository` instance directly:
+
+```csharp
+using Pmad.Git.LocalRepositories;
+using Pmad.Git.Cli;
+
+var repository = GitRepository.Open("/path/to/repo");
+var cliRepository = new GitCliRepository("/path/to/repo", repository);
+
+// repository's caches are automatically invalidated after this call
+await cliRepository.PullAsync();
+
+var head = await repository.GetCommitAsync();
+```
+
+This constructor uses `repository.LockManager` for synchronization and `repository` itself (which implements `IGitRepositoryCacheInvalidator`) to clear caches, so you never have to remember to call `InvalidateCaches()` manually.
+
+If you only need one of the two behaviors, or want more control, use the other constructors instead:
+
+```csharp
+// Lock synchronization only, no automatic cache invalidation
+var cliRepository = new GitCliRepository("/path/to/repo", repository.LockManager);
+
+// Lock synchronization and a custom (or explicit) cache invalidator
+var cliRepository = new GitCliRepository("/path/to/repo", repository.LockManager, repository);
+```
+
+In that case, remember to call `repository.InvalidateCaches()` yourself after any `GitCliRepository` write operation, otherwise `GitRepository` may keep returning stale references, commits or trees.
+
+When a shared lock manager is provided, every write operation performed by `GitCliRepository` (fetch, pull, push, checkout, merge, branch management, ...) acquires the same global lock used by `GitRepository` for reference writes, preventing interleaved writes to refs/objects between the two. Cache invalidation (automatic or manual) always happens while that lock is still held, so no reader can observe stale data in between.
+
+This only protects concurrent writes performed by the current process. It does not protect against a `git` process started independently (e.g. from a terminal or another application), nor against concurrent writes across multiple processes.
+
+Additionally, `GitRepository` never touches the working tree, while `git` CLI commands like `checkout`, `merge` and `pull` update it by default. When this is unnecessary (e.g. a server-side repository whose working tree files are not consumed), prefer `CheckoutAsync(branchName, updateWorkingTree: false)` to move `HEAD` without writing files, and prefer `FetchAsync` (which never touches the working tree) over `PullAsync` when you intend to integrate changes through `Pmad.Git.LocalRepositories` instead of `MergeAsync`.

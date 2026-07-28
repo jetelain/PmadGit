@@ -6,7 +6,12 @@ namespace Pmad.Git.LocalRepositories;
 /// <summary>
 /// Manages locks for git repository operations to prevent race conditions and data loss.
 /// </summary>
-internal sealed class GitRepositoryLockManager
+/// <remarks>
+/// Instances can be shared between a <see cref="GitRepository"/> and other components (e.g. a CLI-based
+/// wrapper) operating on the same repository directory within the same process, in order to synchronize
+/// their access to references/objects. See <see cref="IGitRepositoryLockManager"/>.
+/// </remarks>
+public sealed class GitRepositoryLockManager : IGitRepositoryLockManager
 {
     private readonly ConcurrentDictionary<string, SemaphoreSlim> _referenceLocks = new(StringComparer.Ordinal);
 
@@ -26,6 +31,11 @@ internal sealed class GitRepositoryLockManager
     /// <returns>A disposable lock that must be released after the operation completes.</returns>
     public async Task<IDisposable> AcquireReferenceLockAsync(string referencePath, CancellationToken cancellationToken = default)
     {
+        if (referencePath is null)
+        {
+            throw new ArgumentNullException(nameof(referencePath));
+        }
+
         await EnterReadAsync(cancellationToken).ConfigureAwait(false);
         try
         {

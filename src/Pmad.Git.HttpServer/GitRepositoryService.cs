@@ -26,7 +26,7 @@ internal sealed class GitRepositoryService : IGitRepositoryService
             throw new DirectoryNotFoundException($"Repository not found at path: {normalizedPath}");
         }
 
-        return _repositories.GetOrAddSingleton(normalizedPath, GitRepository.Open);
+        return _repositories.GetOrAddSingleton(normalizedPath, static path => GitRepository.Open(path));
     }
 
     public void InvalidateCache()
