@@ -10,6 +10,14 @@ internal sealed class GitRepositoryLockManager
 {
     private readonly ConcurrentDictionary<string, SemaphoreSlim> _referenceLocks = new(StringComparer.Ordinal);
 
+    // These fields implement a simple async reader-writer lock:
+    // - Reference-level locks ("readers") can be held concurrently for different references.
+    // - LockAllAsync ("writer") waits for all in-flight reference-level locks to complete and
+    //   blocks new ones from starting until it is released.
+    private readonly SemaphoreSlim _globalLock = new(1, 1);
+    private readonly SemaphoreSlim _readerCountLock = new(1, 1);
+    private int _activeReaders;
+
     /// <summary>
     /// Acquires a lock for a specific reference (branch).
     /// </summary>
@@ -18,9 +26,73 @@ internal sealed class GitRepositoryLockManager
     /// <returns>A disposable lock that must be released after the operation completes.</returns>
     public async Task<IDisposable> AcquireReferenceLockAsync(string referencePath, CancellationToken cancellationToken = default)
     {
-        var semaphore = GetSemaphore(referencePath);
-        await semaphore.WaitAsync(cancellationToken).ConfigureAwait(false);
-        return new LockHandle(semaphore);
+        await EnterReadAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            var semaphore = GetSemaphore(referencePath);
+            await semaphore.WaitAsync(cancellationToken).ConfigureAwait(false);
+            return new LockHandle(semaphore, this);
+        }
+        catch
+        {
+            ExitRead();
+            throw;
+        }
+    }
+
+    /// <summary>
+    /// Acquires locks for all references in the repository.
+    /// </summary>
+    /// <param name="cancellationToken">Token used to cancel the async operation.</param>
+    /// <returns>A disposable lock that must be released after all operations complete.</returns>
+    /// <remarks>
+    /// This waits for all currently held (and in-flight) reference locks to be released, and prevents
+    /// new reference locks from being acquired until the returned handle is disposed.
+    /// </remarks>
+    public async Task<IDisposable> LockAllAsync(CancellationToken cancellationToken = default)
+    {
+        await _globalLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+        return new GlobalLockHandle(_globalLock);
+    }
+
+    /// <summary>
+    /// Marks the beginning of a reference-level lock operation ("read" access), blocking while a
+    /// <see cref="LockAllAsync"/> operation ("write" access) is in progress.
+    /// </summary>
+    private async Task EnterReadAsync(CancellationToken cancellationToken)
+    {
+        await _readerCountLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            if (++_activeReaders == 1)
+            {
+                await _globalLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+            }
+        }
+        finally
+        {
+            _readerCountLock.Release();
+        }
+    }
+
+    /// <summary>
+    /// Marks the end of a reference-level lock operation, releasing the global lock once no
+    /// reference-level operations remain in-flight.
+    /// </summary>
+    private void ExitRead()
+    {
+        _readerCountLock.Wait();
+        try
+        {
+            if (--_activeReaders == 0)
+            {
+                _globalLock.Release();
+            }
+        }
+        finally
+        {
+            _readerCountLock.Release();
+        }
     }
 
     /// <summary>
@@ -63,6 +135,7 @@ internal sealed class GitRepositoryLockManager
         var orderedPaths = referencePaths.Distinct(StringComparer.Ordinal).OrderBy(static path => path, StringComparer.Ordinal).ToList();
         var semaphores = new List<SemaphoreSlim>(orderedPaths.Count);
 
+        await EnterReadAsync(cancellationToken).ConfigureAwait(false);
         try
         {
             foreach (var path in orderedPaths)
@@ -72,7 +145,7 @@ internal sealed class GitRepositoryLockManager
                 semaphores.Add(semaphore);
             }
 
-            return new MultipleLockHandle(semaphores);
+            return new MultipleLockHandle(semaphores, this);
         }
         catch
         {
@@ -80,6 +153,7 @@ internal sealed class GitRepositoryLockManager
             {
                 semaphore.Release();
             }
+            ExitRead();
             throw;
         }
     }
@@ -90,11 +164,13 @@ internal sealed class GitRepositoryLockManager
     private sealed class LockHandle : IDisposable
     {
         private readonly SemaphoreSlim _semaphore;
+        private readonly GitRepositoryLockManager _owner;
         private bool _disposed;
 
-        public LockHandle(SemaphoreSlim semaphore)
+        public LockHandle(SemaphoreSlim semaphore, GitRepositoryLockManager owner)
         {
             _semaphore = semaphore;
+            _owner = owner;
         }
 
         public void Dispose()
@@ -103,6 +179,7 @@ internal sealed class GitRepositoryLockManager
             {
                 _disposed = true;
                 _semaphore.Release();
+                _owner.ExitRead();
             }
         }
     }
@@ -114,11 +191,13 @@ internal sealed class GitRepositoryLockManager
     private sealed class MultipleLockHandle : IDisposable
     {
         private readonly List<SemaphoreSlim> _semaphores;
+        private readonly GitRepositoryLockManager _owner;
         private bool _disposed;
 
-        public MultipleLockHandle(List<SemaphoreSlim> semaphores)
+        public MultipleLockHandle(List<SemaphoreSlim> semaphores, GitRepositoryLockManager owner)
         {
             _semaphores = semaphores;
+            _owner = owner;
         }
 
         public void Dispose()
@@ -130,6 +209,30 @@ internal sealed class GitRepositoryLockManager
                 {
                     semaphore.Release();
                 }
+                _owner.ExitRead();
+            }
+        }
+    }
+
+    /// <summary>
+    /// Represents a disposable lock handle for the global ("lock all") lock.
+    /// </summary>
+    private sealed class GlobalLockHandle : IDisposable
+    {
+        private readonly SemaphoreSlim _semaphore;
+        private bool _disposed;
+
+        public GlobalLockHandle(SemaphoreSlim semaphore)
+        {
+            _semaphore = semaphore;
+        }
+
+        public void Dispose()
+        {
+            if (!_disposed)
+            {
+                _disposed = true;
+                _semaphore.Release();
             }
         }
     }
