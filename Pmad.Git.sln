@@ -1,7 +1,7 @@
 ﻿
 Microsoft Visual Studio Solution File, Format Version 12.00
 # Visual Studio Version 18
-VisualStudioVersion = 18.3.11527.330 d18.3
+VisualStudioVersion = 18.3.11527.330
 MinimumVisualStudioVersion = 10.0.40219.1
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Pmad.Git.LocalRepositories", "src\Pmad.Git.LocalRepositories\Pmad.Git.LocalRepositories.csproj", "{C7037C06-1E9C-4083-AF74-A55D2AD2B2E4}"
 EndProject
@@ -22,6 +22,8 @@ EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Pmad.Git.HttpServer.Test", "tests\Pmad.Git.HttpServer.Test\Pmad.Git.HttpServer.Test.csproj", "{18FABFFC-4A3F-4452-BA59-0A345C1EE186}"
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Pmad.Git.LocalRepositories.Benchmark", "tests\Pmad.Git.LocalRepositories.Benchmark\Pmad.Git.LocalRepositories.Benchmark.csproj", "{8DDE7066-4812-4C8F-9FCB-1E2C69530049}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Pmad.Git.Cli", "src\Pmad.Git.Cli\Pmad.Git.Cli.csproj", "{73A7D805-C219-4E59-BA1B-055242C7299B}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
@@ -53,6 +55,10 @@ Global
 		{8DDE7066-4812-4C8F-9FCB-1E2C69530049}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{8DDE7066-4812-4C8F-9FCB-1E2C69530049}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{8DDE7066-4812-4C8F-9FCB-1E2C69530049}.Release|Any CPU.Build.0 = Release|Any CPU
+		{73A7D805-C219-4E59-BA1B-055242C7299B}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{73A7D805-C219-4E59-BA1B-055242C7299B}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{73A7D805-C219-4E59-BA1B-055242C7299B}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{73A7D805-C219-4E59-BA1B-055242C7299B}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
