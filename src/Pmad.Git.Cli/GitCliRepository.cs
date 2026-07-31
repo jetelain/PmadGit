@@ -143,10 +143,10 @@ public class GitCliRepository
     public async Task<GitMergeResult> PullAsync(string? remote = null, string? branch = null, bool rebase = false, CancellationToken cancellationToken = default)
     {
         var arguments = new List<string> { "pull" };
-        if (rebase)
-        {
-            arguments.Add("--rebase");
-        }
+        // Explicitly select the reconciliation strategy (merge or rebase) instead of relying on the
+        // local/global 'pull.rebase' git configuration, which may be unset (e.g. on CI machines),
+        // causing 'git pull' to fail with "Need to specify how to reconcile divergent branches."
+        arguments.Add(rebase ? "--rebase" : "--no-rebase");
         if (remote != null)
         {
             arguments.Add(remote);

@@ -51,7 +51,7 @@ public class GitCliRepositoryUnitTests
 
         var result = await repository.PullAsync();
 
-        Assert.Equal(new[] { "pull" }, runner.Calls.Single());
+        Assert.Equal(new[] { "pull", "--no-rebase" }, runner.Calls.Single());
         Assert.True(result.IsSuccess);
         Assert.False(result.HasConflicts);
     }
@@ -80,7 +80,7 @@ public class GitCliRepositoryUnitTests
         Assert.False(result.IsSuccess);
         Assert.True(result.HasConflicts);
         Assert.Equal(new[] { "README.md", "src/File.cs" }, result.ConflictedFiles);
-        Assert.Equal(new[] { "pull" }, runner.Calls[0]);
+        Assert.Equal(new[] { "pull", "--no-rebase" }, runner.Calls[0]);
         Assert.Equal(new[] { "diff", "--name-only", "--diff-filter=U" }, runner.Calls[1]);
     }
 

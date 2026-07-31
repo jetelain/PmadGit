@@ -119,7 +119,7 @@ public sealed class GitRepositorySynchronizerUnitTests : IDisposable
 
         await synchronizer.TriggerRemoteSyncAsync();
 
-        Assert.Equal(new[] { "pull" }, runner.Calls.Single());
+        Assert.Equal(new[] { "pull", "--no-rebase" }, runner.Calls.Single());
         Assert.Equal(GitSyncState.Idle, synchronizer.State);
         Assert.Null(synchronizer.Conflict);
     }
