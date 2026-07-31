@@ -1,6 +1,6 @@
 using System.Diagnostics;
 using System.Text;
-using Pmad.Git.LocalRepositories.Test.Infrastructure;
+using Pmad.Git.Tests.Infrastructure;
 
 namespace Pmad.Git.LocalRepositories.Test;
 

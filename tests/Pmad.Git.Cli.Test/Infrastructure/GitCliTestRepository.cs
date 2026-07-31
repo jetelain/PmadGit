@@ -87,7 +87,7 @@ public sealed class GitCliTestRepository : IDisposable
 
     public void Dispose()
     {
-        GitCliTestHelper.TryDeleteDirectory(WorkingDirectory);
+        TestHelper.TryDeleteDirectory(WorkingDirectory);
     }
 
     private string ToFullPath(string relativePath)

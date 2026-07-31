@@ -65,6 +65,61 @@ Console.WriteLine(log);
 - Requires the `git` executable; it is not a managed re-implementation of Git.
 - Authentication for remote operations (credentials, SSH keys) relies on the local Git/OS configuration and is not managed by this library.
 
+## Synchronizing a repository automatically with `GitRepositorySynchronizer`
+
+`GitRepositorySynchronizer` builds on top of `GitCliRepository` to keep a local repository continuously synchronized with a remote, without requiring the caller to manually drive fetch/pull/push calls:
+
+- **Local-to-remote** synchronization is debounced: when the local repository changes (a commit, a Smart HTTP push handled by `Pmad.Git.HttpServer`, ...), a push is scheduled after `GitSyncOptions.PushDebounceDelay` (5 minutes by default) of inactivity. Repeated changes reset the delay, so a burst of local commits results in a single push.
+- **Remote-to-local** synchronization runs periodically every `GitSyncOptions.PullInterval` (1 hour by default), and can also be triggered on demand, for example from a webhook endpoint called by the remote, using `TriggerRemoteSyncAsync`.
+- **Conflict handling**: when a pull results in a merge conflict, the synchronizer switches to `GitSyncState.Conflict`, exposes the conflicted files through `Conflict`, and stops automatic synchronization until the conflict is resolved (or discarded) — for example from a web UI.
+
+When created from an `IGitRepository` (via the constructor or `CreateSynchronizer` extension method), the synchronizer automatically subscribes to `IGitRepositoryCacheInvalidator.Changed` to detect local changes, so no manual wiring is needed as long as all local mutations go through that repository instance. Since the synchronizer's own push/pull/merge operations also raise `Changed`, those self-triggered notifications are ignored so completing a push or pull never triggers an endless synchronization loop.
+
+### Quick start
+
+```csharp
+using Pmad.Git.LocalRepositories;
+using Pmad.Git.Cli;
+
+var repository = GitRepository.Open("/path/to/repo");
+
+// Creates the synchronizer and starts the periodic pull loop
+await using var synchronizer = repository.CreateSynchronizer(new GitSyncOptions
+{
+    Remote = "origin",
+    Branch = "main",
+    PushDebounceDelay = TimeSpan.FromMinutes(5),
+    PullInterval = TimeSpan.FromHours(1),
+});
+
+// Local changes made through 'repository' are detected automatically and pushed after the debounce delay.
+// A manual remote sync can be triggered at any time, e.g. from a webhook endpoint:
+await synchronizer.TriggerRemoteSyncAsync();
+```
+
+### Handling conflicts
+
+```csharp
+if (synchronizer.State == GitSyncState.Conflict)
+{
+    foreach (var file in synchronizer.Conflict!.ConflictedFiles)
+    {
+        // Resolve the file manually (e.g. through a web UI), then stage it:
+        await synchronizer.ResolveConflictAsync(file);
+    }
+
+    // Once every conflicted file has been resolved, complete the merge and resume synchronization:
+    await synchronizer.CompleteConflictResolutionAsync();
+
+    // Alternatively, discard the merge and resume synchronization from the pre-merge state:
+    // await synchronizer.AbortConflictResolutionAsync();
+}
+```
+
+### Notes on testability
+
+`GitSyncOptions` exposes an internal `IGitRunner` (settable directly, or implicitly via `GitCliPath`) so that unit tests can inject a fake runner instead of shelling out to a real `git` executable. `GitCliRepository` has a matching internal constructor accepting a custom `IGitRunner` for the same purpose.
+
 ## Using alongside `Pmad.Git.LocalRepositories`
 
 `GitCliRepository` (this library) and `GitRepository` (from `Pmad.Git.LocalRepositories`) can safely operate on the same repository directory within the same process if they share the same lock manager, and `GitRepository` needs to be told to invalidate its cached references/objects after `GitCliRepository` writes to the repository. The easiest way to combine both is to pass the `GitRepository` instance directly:

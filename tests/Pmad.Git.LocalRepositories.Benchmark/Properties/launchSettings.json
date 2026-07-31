@@ -1,0 +1,8 @@
+{
+  "profiles": {
+    "Pmad.Git.LocalRepositories.Benchmark": {
+      "commandName": "Project",
+      "commandLineArgs": "C:\\Users\\Julien\\source\\repos\\ArmaRealMap"
+    }
+  }
+}

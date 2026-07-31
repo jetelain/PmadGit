@@ -763,6 +763,8 @@ public sealed class GitRepository : IGitRepository, IGitRepositoryCacheInvalidat
 
             await _referenceStore.WriteReferenceWithValidationInternalAsync(referencePath, parentHash, commitHash, cancellationToken).ConfigureAwait(false);
 
+            Changed?.Invoke(this, EventArgs.Empty);
+
             return commitHash;
         }
     }
@@ -789,7 +791,12 @@ public sealed class GitRepository : IGitRepository, IGitRepositoryCacheInvalidat
                 _treeCache.Clear();
             }
         }
+
+        Changed?.Invoke(this, EventArgs.Empty);
     }
+
+    /// <inheritdoc />
+    public event EventHandler? Changed;
 
     /// <summary>
     /// Checks if a commit is reachable from another commit (for fast-forward validation).

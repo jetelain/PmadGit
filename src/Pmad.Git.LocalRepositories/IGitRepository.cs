@@ -3,7 +3,7 @@ namespace Pmad.Git.LocalRepositories;
 /// <summary>
 /// Interface for querying commits, trees, and blobs from a git repository.
 /// </summary>
-public interface IGitRepository
+public interface IGitRepository : IGitRepositoryCacheInvalidator
 {
     /// <summary>
     /// Absolute path to the repository working tree root.
@@ -32,6 +32,15 @@ public interface IGitRepository
     /// Gets the underlying reference store used to access and update Git references.
     /// </summary>
     IGitReferenceStore ReferenceStore { get; }
+
+    /// <summary>
+    /// Gets the lock manager used to synchronize reference/object writes for this repository.
+    /// </summary>
+    /// <remarks>
+    /// Share this instance with other components (e.g. a CLI-based wrapper) operating on the same
+    /// repository directory within the same process to synchronize concurrent writes.
+    /// </remarks>
+    IGitRepositoryLockManager LockManager { get; }
 
     /// <summary>
     /// Resolves <paramref name="reference"/> (defaults to HEAD) and returns the corresponding commit.
@@ -173,13 +182,6 @@ public interface IGitRepository
         SearchOption searchOption = SearchOption.AllDirectories,
         Func<string, bool>? predicate = null,
         CancellationToken cancellationToken = default);
-
-    /// <summary>
-    /// Clears cached git metadata so subsequent operations reflect the current repository state.
-    /// </summary>
-    /// <param name="clearAllData">When <see langword="true"/>, clears all cached data including structural metadata
-    /// (e.g. pack index). When <see langword="false"/>, only volatile data such as references and loose objects are cleared.</param>
-    void InvalidateCaches(bool clearAllData = false);
 
     /// <summary>
     /// Checks if a commit is reachable from another commit (for fast-forward validation).

@@ -14,17 +14,7 @@ internal sealed class GitRepositoryService : IGitRepositoryService
 
     public IGitRepository GetRepositoryByPath(string repositoryPath)
     {
-        if (string.IsNullOrWhiteSpace(repositoryPath))
-        {
-            throw new ArgumentException("Repository path cannot be null or whitespace.", nameof(repositoryPath));
-        }
-
-        var normalizedPath = Path.GetFullPath(repositoryPath);
-
-        if (!Directory.Exists(normalizedPath))
-        {
-            throw new DirectoryNotFoundException($"Repository not found at path: {normalizedPath}");
-        }
+        var normalizedPath = NormalizeAndValidatePath(repositoryPath);
 
         return _repositories.GetOrAddSingleton(normalizedPath, static path => GitRepository.Open(path));
     }
@@ -43,5 +33,22 @@ internal sealed class GitRepositoryService : IGitRepositoryService
 
         var normalizedPath = Path.GetFullPath(repositoryPath);
         _repositories.TryRemove(normalizedPath, out _);
+    }
+
+    internal static string NormalizeAndValidatePath(string repositoryPath)
+    {
+        if (string.IsNullOrWhiteSpace(repositoryPath))
+        {
+            throw new ArgumentException("Repository path cannot be null or whitespace.", nameof(repositoryPath));
+        }
+
+        var normalizedPath = Path.GetFullPath(repositoryPath);
+
+        if (!Directory.Exists(normalizedPath))
+        {
+            throw new DirectoryNotFoundException($"Repository not found at path: {normalizedPath}");
+        }
+
+        return normalizedPath;
     }
 }

@@ -13,4 +13,11 @@ public interface IGitRepositoryCacheInvalidator
     /// <param name="clearAllData">When <see langword="true"/>, clears all cached data including structural metadata
     /// (e.g. pack index). When <see langword="false"/>, only volatile data such as references and loose objects are cleared.</param>
     void InvalidateCaches(bool clearAllData = false);
+
+    /// <summary>
+    /// Raised whenever <see cref="InvalidateCaches"/> is called, i.e. whenever the repository was
+    /// modified by any component (CLI wrapper, Smart HTTP push handler, ...) operating on the same
+    /// directory. Can be used to detect local changes without polling.
+    /// </summary>
+    event EventHandler? Changed;
 }

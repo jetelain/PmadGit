@@ -3,7 +3,9 @@
 namespace Pmad.Git.Cli;
 
 /// <summary>
-/// 
+/// Wraps calls to the Git command-line interface (CLI) for repository operations that are not
+/// supported by <see cref="GitRepository"/>, such as pushing/pulling from a remote, managing
+/// branches, and merging (including manual conflict resolution).
 /// </summary>
 public class GitCliRepository
 {
@@ -21,6 +23,12 @@ public class GitCliRepository
     private readonly IGitRepositoryLockManager? _lockManager;
     private readonly IGitRepositoryCacheInvalidator? _cacheInvalidator;
 
+    /// <summary>
+    /// Creates a wrapper around the Git CLI for the repository located at <paramref name="rootPath"/>,
+    /// with no shared lock manager or cache invalidator.
+    /// </summary>
+    /// <param name="rootPath">Absolute path to the repository working tree root.</param>
+    /// <param name="gitCliPath">Path to the Git CLI executable.</param>
     public GitCliRepository(string rootPath, string gitCliPath = "git")
         : this(rootPath, new GitRunner(gitCliPath))
     {
@@ -31,42 +39,35 @@ public class GitCliRepository
     /// Creates a wrapper around the Git CLI, synchronizing its write operations with a
     /// <see cref="GitRepository"/> operating on the same directory within the same process.
     /// </summary>
-    /// <param name="rootPath">Absolute path to the repository working tree root.</param>
-    /// <param name="lockManager">
-    /// Lock manager shared with the <see cref="GitRepository"/> instance (e.g. via its
-    /// <c>LockManager</c> property) that operates on the same repository directory.
-    /// </param>
-    /// <param name="cacheInvalidator">
-    /// Optional cache invalidator to notify (e.g. the <see cref="GitRepository"/> instance itself, which
-    /// implements <see cref="IGitRepositoryCacheInvalidator"/>) after each write operation completes,
-    /// so its cached references/objects are cleared while the write lock is still held. When omitted,
-    /// the caller is responsible for calling <c>InvalidateCaches()</c> manually after using this wrapper.
-    /// </param>
+    /// <param name="repository">The <see cref="GitRepository"/> instance to synchronize with.</param>
     /// <param name="gitCliPath">Path to the Git CLI executable.</param>
     /// <remarks>
     /// This only protects against concurrent writes performed by the current process; it does not
     /// synchronize with external <c>git</c> processes (e.g. run from a terminal).
     /// </remarks>
-    public GitCliRepository(string rootPath, IGitRepositoryLockManager lockManager, IGitRepositoryCacheInvalidator? cacheInvalidator = null, string gitCliPath = "git")
-        : this(rootPath, new GitRunner(gitCliPath))
+    public GitCliRepository(IGitRepository repository, string gitCliPath = "git")
+        : this(repository.RootPath, new GitRunner(gitCliPath))
     {
-        _lockManager = lockManager ?? throw new ArgumentNullException(nameof(lockManager));
-        _cacheInvalidator = cacheInvalidator;
+        _lockManager = repository.LockManager;
+        _cacheInvalidator = repository;
     }
 
     /// <summary>
-    /// Creates a wrapper around the Git CLI, sharing the lock manager and cache invalidation of an
-    /// existing <see cref="GitRepository"/> operating on the same repository directory within the
-    /// same process. This is the recommended way to combine both when using the two libraries together:
-    /// every write operation of this wrapper is synchronized with <paramref name="repository"/> and
-    /// automatically invalidates its caches.
+    /// Creates a wrapper around the Git CLI using a custom <see cref="IGitRunner"/>, synchronizing
+    /// its write operations with a <see cref="GitRepository"/> operating on the same directory
+    /// within the same process.
     /// </summary>
-    /// <param name="rootPath">Absolute path to the repository working tree root.</param>
-    /// <param name="repository"><see cref="GitRepository"/> instance operating on the same repository directory.</param>
-    /// <param name="gitCliPath">Path to the Git CLI executable.</param>
-    public GitCliRepository(string rootPath, GitRepository repository, string gitCliPath = "git")
-        : this(rootPath, (repository ?? throw new ArgumentNullException(nameof(repository))).LockManager, repository, gitCliPath)
+    /// <param name="repository">The <see cref="GitRepository"/> instance to synchronize with.</param>
+    /// <param name="gitRunner">The <see cref="IGitRunner"/> used to execute git commands.</param>
+    /// <remarks>
+    /// Intended to ease unit testing by allowing a test double to be substituted for the real
+    /// Git CLI runner.
+    /// </remarks>
+    internal GitCliRepository(IGitRepository repository, IGitRunner gitRunner)
+        : this(repository.RootPath, gitRunner)
     {
+        _lockManager = repository.LockManager;
+        _cacheInvalidator = repository;
     }
 
     internal GitCliRepository(string rootPath, IGitRunner gitRunner)
@@ -210,6 +211,7 @@ public class GitCliRepository
     /// <summary>
     /// Gets the name of the currently checked out branch.
     /// </summary>
+    /// <param name="cancellationToken"></param>
     public async Task<string> GetCurrentBranchAsync(CancellationToken cancellationToken = default)
     {
         var result = await RunGit(cancellationToken, "rev-parse", "--abbrev-ref", "HEAD");
@@ -351,6 +353,7 @@ public class GitCliRepository
     /// <summary>
     /// Indicates whether a merge (or pull) is currently in progress and waiting for conflict resolution.
     /// </summary>
+    /// <param name="cancellationToken"></param>
     public async Task<bool> IsMergeInProgressAsync(CancellationToken cancellationToken = default)
     {
         var result = await RunGit(cancellationToken, "rev-parse", "-q", "--verify", "MERGE_HEAD");
@@ -360,6 +363,7 @@ public class GitCliRepository
     /// <summary>
     /// Gets the relative paths of the files that are currently in conflict.
     /// </summary>
+    /// <param name="cancellationToken"></param>
     public async Task<IReadOnlyList<string>> GetConflictedFilesAsync(CancellationToken cancellationToken = default)
     {
         var result = await RunGit(cancellationToken, "diff", "--name-only", "--diff-filter=U");
@@ -406,6 +410,7 @@ public class GitCliRepository
     /// <summary>
     /// Aborts an in-progress merge, restoring the repository to the state it had before the merge started.
     /// </summary>
+    /// <param name="cancellationToken"></param>
     public async Task AbortMergeAsync(CancellationToken cancellationToken = default)
     {
         using var writeLock = await LockWriteAsync(cancellationToken).ConfigureAwait(false);
@@ -425,9 +430,9 @@ public class GitCliRepository
     /// <summary>
     /// Runs a git command in the repository and returns the standard output if successful.
     /// </summary>
-    /// <param name="cancellationToken"></param>
-    /// <param name="arguments"></param>
-    /// <returns></returns>
+    /// <param name="cancellationToken">Token used to cancel the git process.</param>
+    /// <param name="arguments">Arguments passed to the git command-line executable.</param>
+    /// <returns>The standard output produced by the git command.</returns>
     public async Task<string> RunAsync(CancellationToken cancellationToken, params string[] arguments)
     {
         var result = await RunGit(cancellationToken, arguments);
@@ -438,8 +443,8 @@ public class GitCliRepository
     /// <summary>
     /// Runs a git command in the repository and returns the standard output if successful.
     /// </summary>
-    /// <param name="arguments"></param>
-    /// <returns></returns>
+    /// <param name="arguments">Arguments passed to the git command-line executable.</param>
+    /// <returns>The standard output produced by the git command.</returns>
     public async Task<string> RunAsync(params string[] arguments)
     {
         var result = await RunGit(default, arguments);

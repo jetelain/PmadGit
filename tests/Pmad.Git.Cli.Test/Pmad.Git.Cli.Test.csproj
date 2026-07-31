@@ -17,11 +17,13 @@
   </ItemGroup>
 
   <ItemGroup>
+    <ProjectReference Include="..\..\Pmad.Git.Tests.Infrastructure\Pmad.Git.Tests.Infrastructure.csproj" />
     <ProjectReference Include="..\..\src\Pmad.Git.Cli\Pmad.Git.Cli.csproj" />
   </ItemGroup>
 
   <ItemGroup>
     <Using Include="Xunit" />
+    <Using Include="Pmad.Git.Tests.Infrastructure" />
   </ItemGroup>
 
 </Project>

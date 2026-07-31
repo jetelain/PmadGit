@@ -1,0 +1,378 @@
+using System.Threading;
+using Pmad.Git.LocalRepositories;
+
+namespace Pmad.Git.Cli;
+
+/// <summary>
+/// Synchronizes a local <see cref="IGitRepository"/> with a remote repository using the Git CLI.
+/// </summary>
+/// <remarks>
+/// <para>
+/// Local-to-remote synchronization is debounced and detected automatically: when created from an
+/// <see cref="IGitRepository"/>, the synchronizer subscribes to its <see cref="IGitRepositoryCacheInvalidator.Changed"/>
+/// event, which is raised whenever the repository is modified by any component (a local commit, a
+/// Smart HTTP push handled by <c>Pmad.Git.HttpServer</c>, this synchronizer's own pulls, ...).
+/// Each notification (re)schedules a push after <see cref="GitSyncOptions.PushDebounceDelay"/> of
+/// inactivity. Call <see cref="NotifyLocalChange"/> to schedule a push manually (e.g. when the
+/// synchronizer was created directly from a <see cref="GitCliRepository"/> with no repository
+/// instance to subscribe to), or <see cref="FlushPendingPushAsync"/> to push immediately without
+/// waiting for the debounce delay.
+/// </para>
+/// <para>
+/// Remote-to-local synchronization runs periodically every <see cref="GitSyncOptions.PullInterval"/>,
+/// and can also be triggered on demand (e.g. from a webhook endpoint) using
+/// <see cref="TriggerRemoteSyncAsync"/>.
+/// </para>
+/// <para>
+/// Since the synchronizer's own push/pull/merge operations also raise
+/// <see cref="IGitRepositoryCacheInvalidator.Changed"/>, those self-triggered notifications are
+/// ignored while an operation is in progress, so completing a push or pull does not endlessly
+/// reschedule another synchronization.
+/// </para>
+/// <para>
+/// When a pull results in a merge conflict, the synchronizer switches to <see cref="GitSyncState.Conflict"/>
+/// and stops automatic synchronization until the conflict is resolved via <see cref="ResolveConflictAsync"/>
+/// followed by <see cref="CompleteConflictResolutionAsync"/>, or discarded via
+/// <see cref="AbortConflictResolutionAsync"/>.
+/// </para>
+/// <para>Use <see cref="GitRepositorySynchronizerExtensions.CreateSynchronizer"/> to create an instance
+/// directly from an <see cref="IGitRepository"/>.</para>
+/// </remarks>
+public sealed class GitRepositorySynchronizer : IAsyncDisposable
+{
+    private readonly GitCliRepository _cli;
+    private readonly GitSyncOptions _options;
+    private readonly SemaphoreSlim _gate = new(1, 1);
+    private readonly CancellationTokenSource _lifetimeCts = new();
+    private readonly IGitRepositoryCacheInvalidator? _changeSource;
+    private Timer? _pushDebounceTimer;
+    private Task? _periodicPullLoop;
+    private volatile bool _pushPending;
+    private volatile GitSyncState _state = GitSyncState.Idle;
+    private GitSyncConflictInfo? _conflict;
+    private bool _started;
+    private bool _disposed;
+    private int _suppressChangeDepth;
+
+    /// <summary>
+    /// Creates a synchronizer wrapping a <see cref="GitCliRepository"/> built from the given
+    /// <paramref name="repository"/>, so that CLI writes are synchronized with the repository's
+    /// shared lock manager and cache invalidation, and automatically subscribes to
+    /// <paramref name="repository"/>'s <see cref="IGitRepositoryCacheInvalidator.Changed"/> event to
+    /// detect local changes without requiring manual <see cref="NotifyLocalChange"/> calls.
+    /// </summary>
+    public GitRepositorySynchronizer(IGitRepository repository, GitSyncOptions? options = null)
+        : this(new GitCliRepository(repository, (options ??= new GitSyncOptions()).GitRunner), options)
+    {
+        _changeSource = repository;
+        _changeSource.Changed += OnRepositoryChanged;
+    }
+
+    /// <summary>
+    /// Creates a synchronizer wrapping an existing <see cref="GitCliRepository"/>. Since no
+    /// <see cref="IGitRepository"/> instance is available in this case, local changes must be
+    /// reported manually via <see cref="NotifyLocalChange"/>.
+    /// </summary>
+    public GitRepositorySynchronizer(GitCliRepository cli, GitSyncOptions? options = null)
+    {
+        _cli = cli ?? throw new ArgumentNullException(nameof(cli));
+        _options = options ?? new GitSyncOptions();
+    }
+
+    private void OnRepositoryChanged(object? sender, EventArgs e)
+    {
+        if (Volatile.Read(ref _suppressChangeDepth) > 0)
+        {
+            // This change was caused by one of our own operations (push, pull, merge, ...);
+            // ignore it to avoid scheduling a new synchronization endlessly.
+            return;
+        }
+        NotifyLocalChange();
+    }
+
+    /// <summary>
+    /// Marks the start of a git operation performed by this synchronizer, so that the resulting
+    /// <see cref="IGitRepositoryCacheInvalidator.Changed"/> notification is not mistaken for an
+    /// external local change. Must be paired with <see cref="EndSelfOperation"/> in a finally block.
+    /// </summary>
+    private void BeginSelfOperation() => Interlocked.Increment(ref _suppressChangeDepth);
+
+    private void EndSelfOperation() => Interlocked.Decrement(ref _suppressChangeDepth);
+
+    /// <summary>
+    /// Current synchronization state.
+    /// </summary>
+    public GitSyncState State => _state;
+
+    /// <summary>
+    /// Information about the current pending conflict, or <c>null</c> when <see cref="State"/> is
+    /// not <see cref="GitSyncState.Conflict"/>.
+    /// </summary>
+    public GitSyncConflictInfo? Conflict => _conflict;
+
+    /// <summary>
+    /// Starts the periodic remote-to-local synchronization loop. Must be called once before relying
+    /// on automatic pulls; local-change debouncing works regardless of whether <see cref="Start"/>
+    /// was called.
+    /// </summary>
+    public void Start()
+    {
+        if (_started)
+        {
+            return;
+        }
+        _started = true;
+        _periodicPullLoop = RunPeriodicPullLoopAsync(_lifetimeCts.Token);
+    }
+
+    private async Task RunPeriodicPullLoopAsync(CancellationToken cancellationToken)
+    {
+        using var timer = new PeriodicTimer(_options.PullInterval);
+        try
+        {
+            while (await timer.WaitForNextTickAsync(cancellationToken).ConfigureAwait(false))
+            {
+                await TriggerRemoteSyncAsync(cancellationToken).ConfigureAwait(false);
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // Expected on shutdown.
+        }
+    }
+
+    /// <summary>
+    /// Notifies the synchronizer that the local repository was modified, scheduling a debounced
+    /// push. If further changes are notified before the delay elapses, the delay is reset.
+    /// </summary>
+    public void NotifyLocalChange()
+    {
+        if (_disposed)
+        {
+            return;
+        }
+        _pushPending = true;
+        _pushDebounceTimer ??= new Timer(OnPushDebounceElapsed, null, Timeout.Infinite, Timeout.Infinite);
+        _pushDebounceTimer.Change(_options.PushDebounceDelay, Timeout.InfiniteTimeSpan);
+    }
+
+    private void OnPushDebounceElapsed(object? state)
+    {
+        _ = FlushPendingPushAsync(CancellationToken.None);
+    }
+
+    /// <summary>
+    /// Immediately pushes local changes to the remote, cancelling any pending debounce delay.
+    /// Does nothing when there is no pending change, a synchronization is already running, or a
+    /// conflict is pending resolution.
+    /// </summary>
+    public async Task FlushPendingPushAsync(CancellationToken cancellationToken = default)
+    {
+        if (!_pushPending || _state == GitSyncState.Conflict)
+        {
+            return;
+        }
+        if (!await _gate.WaitAsync(0, cancellationToken).ConfigureAwait(false))
+        {
+            return;
+        }
+        try
+        {
+            if (!_pushPending || _state == GitSyncState.Conflict)
+            {
+                return;
+            }
+            _pushPending = false;
+            _pushDebounceTimer?.Change(Timeout.Infinite, Timeout.Infinite);
+            _state = GitSyncState.Syncing;
+            BeginSelfOperation();
+            try
+            {
+                await _cli.PushAsync(_options.Remote, _options.Branch, cancellationToken: cancellationToken).ConfigureAwait(false);
+            }
+            finally
+            {
+                EndSelfOperation();
+            }
+        }
+        finally
+        {
+            if (_state != GitSyncState.Conflict)
+            {
+                _state = GitSyncState.Idle;
+            }
+            _gate.Release();
+        }
+    }
+
+    /// <summary>
+    /// Immediately pulls changes from the remote repository, integrating them into the local
+    /// repository. Can be called manually (e.g. from a webhook endpoint triggered by the remote)
+    /// in addition to the automatic periodic pull. Does nothing when a conflict is already pending.
+    /// </summary>
+    public async Task TriggerRemoteSyncAsync(CancellationToken cancellationToken = default)
+    {
+        if (_state == GitSyncState.Conflict)
+        {
+            return;
+        }
+        await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            if (_state == GitSyncState.Conflict)
+            {
+                return;
+            }
+            _state = GitSyncState.Syncing;
+            GitMergeResult result;
+            BeginSelfOperation();
+            try
+            {
+                result = await _cli.PullAsync(_options.Remote, _options.Branch, cancellationToken: cancellationToken).ConfigureAwait(false);
+            }
+            finally
+            {
+                EndSelfOperation();
+            }
+            if (!result.IsSuccess && result.HasConflicts)
+            {
+                _conflict = new GitSyncConflictInfo(result.ConflictedFiles, DateTimeOffset.UtcNow);
+                _state = GitSyncState.Conflict;
+                return;
+            }
+            _state = GitSyncState.Idle;
+        }
+        finally
+        {
+            if (_state == GitSyncState.Syncing)
+            {
+                _state = GitSyncState.Idle;
+            }
+            _gate.Release();
+        }
+    }
+
+    /// <summary>
+    /// Marks a conflicted file as resolved, by staging its current content. Call
+    /// <see cref="CompleteConflictResolutionAsync"/> once all conflicted files have been resolved.
+    /// </summary>
+    /// <param name="relativeFilePath">Path of the file, relative to the repository root.</param>
+    /// <param name="cancellationToken"></param>
+    public async Task ResolveConflictAsync(string relativeFilePath, CancellationToken cancellationToken = default)
+    {
+        EnsureConflictPending();
+        BeginSelfOperation();
+        try
+        {
+            await _cli.ResolveConflictAsync(relativeFilePath, cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            EndSelfOperation();
+        }
+    }
+
+    /// <summary>
+    /// Completes the pending conflict resolution once every conflicted file has been resolved via
+    /// <see cref="ResolveConflictAsync"/>, finalizing the merge commit and resuming normal
+    /// synchronization (including pushing the merge commit to the remote).
+    /// </summary>
+    /// <param name="commitMessage">Optional commit message to use for the merge commit.</param>
+    /// <param name="cancellationToken"></param>
+    public async Task CompleteConflictResolutionAsync(string? commitMessage = null, CancellationToken cancellationToken = default)
+    {
+        EnsureConflictPending();
+        await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            BeginSelfOperation();
+            try
+            {
+                await _cli.ContinueMergeAsync(commitMessage, cancellationToken).ConfigureAwait(false);
+            }
+            finally
+            {
+                EndSelfOperation();
+            }
+            _conflict = null;
+            _state = GitSyncState.Idle;
+        }
+        finally
+        {
+            _gate.Release();
+        }
+
+        NotifyLocalChange();
+        await FlushPendingPushAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Discards the pending conflict resolution, restoring the repository to the state it had
+    /// before the merge started, and resumes normal synchronization.
+    /// </summary>
+    public async Task AbortConflictResolutionAsync(CancellationToken cancellationToken = default)
+    {
+        EnsureConflictPending();
+        await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            BeginSelfOperation();
+            try
+            {
+                await _cli.AbortMergeAsync(cancellationToken).ConfigureAwait(false);
+            }
+            finally
+            {
+                EndSelfOperation();
+            }
+            _conflict = null;
+            _state = GitSyncState.Idle;
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
+    private void EnsureConflictPending()
+    {
+        if (_state != GitSyncState.Conflict)
+        {
+            throw new InvalidOperationException("No conflict is currently pending resolution.");
+        }
+    }
+
+    /// <summary>
+    /// Stops the periodic pull loop and pending debounce timer.
+    /// </summary>
+    public async ValueTask DisposeAsync()
+    {
+        if (_disposed)
+        {
+            return;
+        }
+        _disposed = true;
+        if (_changeSource != null)
+        {
+            _changeSource.Changed -= OnRepositoryChanged;
+        }
+        _lifetimeCts.Cancel();
+        if (_pushDebounceTimer != null)
+        {
+            await _pushDebounceTimer.DisposeAsync().ConfigureAwait(false);
+        }
+        if (_periodicPullLoop != null)
+        {
+            try
+            {
+                await _periodicPullLoop.ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                // Expected on shutdown.
+            }
+        }
+        _lifetimeCts.Dispose();
+        _gate.Dispose();
+    }
+}
