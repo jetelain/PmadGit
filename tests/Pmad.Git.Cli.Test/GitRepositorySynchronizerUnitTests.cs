@@ -123,6 +123,65 @@ public sealed class GitRepositorySynchronizerUnitTests : IDisposable
     }
 
     [Fact]
+    public async Task FlushPendingPushAsync_Cancelled_Restores_PendingChange()
+    {
+        var runner = new FakeGitRunner();
+        var blockingPush = runner.EnqueueBlocking();
+        await using var synchronizer = new GitRepositorySynchronizer(_repository, CreateOptions(runner, TimeSpan.FromMinutes(5)));
+
+        synchronizer.NotifyLocalChange();
+
+        using var cts = new CancellationTokenSource();
+        var flushTask = synchronizer.FlushPendingPushAsync(cts.Token);
+
+        await WaitUntilAsync(() => runner.Calls.Count > 0);
+        cts.Cancel();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => flushTask);
+
+        Assert.Equal(GitSyncState.Idle, synchronizer.State);
+        Assert.Null(synchronizer.LastSuccessfulSyncAt);
+
+        // The change must still be pending: a subsequent successful flush should push again,
+        // instead of the cancelled push permanently forgetting the local change.
+        runner.Enqueue(0);
+        await synchronizer.FlushPendingPushAsync();
+
+        Assert.Equal(2, runner.Calls.Count);
+        Assert.NotNull(synchronizer.LastSuccessfulSyncAt);
+
+        blockingPush.Complete();
+    }
+
+    [Fact]
+    public async Task NotifyLocalChange_Debounce_Elapsing_While_Gate_Busy_Rearms_And_Retries()
+    {
+        var runner = new FakeGitRunner();
+        var blockingPull = runner.EnqueueBlocking();
+        runner.Enqueue(0); // The push, once the debounce timer is rearmed and retries.
+
+        await using var synchronizer = new GitRepositorySynchronizer(_repository, CreateOptions(runner, TimeSpan.FromMilliseconds(20)));
+
+        // Hold the gate with an in-progress pull.
+        var pullTask = synchronizer.TriggerRemoteSyncAsync();
+        await WaitUntilAsync(() => runner.Calls.Any(c => c[0] == "pull"));
+
+        // Schedule a debounced push: its timer elapses while the gate is still held by the pull
+        // above, so FlushPendingPushAsync returns immediately without pushing.
+        synchronizer.NotifyLocalChange();
+        await Task.Delay(100);
+        Assert.DoesNotContain(runner.Calls, c => c[0] == "push");
+
+        // Let the pull complete, releasing the gate.
+        blockingPull.Complete(0);
+        await pullTask;
+
+        // The debounce must have been rearmed while the gate was busy, so the pending push is
+        // eventually retried without requiring another manual notification or flush.
+        await WaitUntilAsync(() => runner.Calls.Any(c => c[0] == "push"));
+    }
+
+    [Fact]
     public async Task Push_Triggered_By_Synchronizer_Does_Not_Reschedule_Itself()
     {
         var runner = new FakeGitRunner().Enqueue(0);

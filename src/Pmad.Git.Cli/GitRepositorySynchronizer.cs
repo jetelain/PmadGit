@@ -208,6 +208,14 @@ public sealed class GitRepositorySynchronizer : IAsyncDisposable
         }
         if (!await _gate.WaitAsync(0, cancellationToken).ConfigureAwait(false))
         {
+            // Another synchronization (pull, or another push) currently holds the gate. Since the
+            // one-shot debounce timer has already fired (or this is a manual flush racing with it),
+            // rearm it so the pending change is not forgotten until another notification or manual
+            // flush occurs; it will fire again once the current synchronization releases the gate.
+            if (_pushPending && _state != GitSyncState.Conflict)
+            {
+                _pushDebounceTimer?.Change(_options.PushDebounceDelay, Timeout.InfiniteTimeSpan);
+            }
             return;
         }
         try
@@ -226,6 +234,9 @@ public sealed class GitRepositorySynchronizer : IAsyncDisposable
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
+                // Restore the pending flag so a cancelled push is retried later, just like other
+                // push failures, instead of permanently forgetting the local change.
+                _pushPending = true;
                 throw;
             }
             catch (Exception ex)
@@ -310,14 +321,23 @@ public sealed class GitRepositorySynchronizer : IAsyncDisposable
     public async Task ResolveConflictAsync(string relativeFilePath, CancellationToken cancellationToken = default)
     {
         EnsureConflictPending();
-        BeginSelfOperation();
+        await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            await _cli.ResolveConflictAsync(relativeFilePath, cancellationToken).ConfigureAwait(false);
+            EnsureConflictPending(); // Re-check after acquiring the gate, in case the state changed while waiting.
+            BeginSelfOperation();
+            try
+            {
+                await _cli.ResolveConflictAsync(relativeFilePath, cancellationToken).ConfigureAwait(false);
+            }
+            finally
+            {
+                EndSelfOperation();
+            }
         }
         finally
         {
-            EndSelfOperation();
+            _gate.Release();
         }
     }
 
@@ -334,6 +354,7 @@ public sealed class GitRepositorySynchronizer : IAsyncDisposable
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
+            EnsureConflictPending(); // Re-check after acquiring the gate, in case the state changed while waiting.
             BeginSelfOperation();
             try
             {
@@ -365,6 +386,8 @@ public sealed class GitRepositorySynchronizer : IAsyncDisposable
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
+            EnsureConflictPending(); // Re-check after acquiring the gate, in case the state changed while waiting.
+
             BeginSelfOperation();
             try
             {
