@@ -21,6 +21,11 @@ public sealed class GitRepositoryLockManager : IGitRepositoryLockManager
     //   blocks new ones from starting until it is released.
     private readonly SemaphoreSlim _globalLock = new(1, 1);
     private readonly SemaphoreSlim _readerCountLock = new(1, 1);
+    // Writer-preference turnstile: readers must pass through this gate before joining the
+    // active-reader cohort. LockAllAsync acquires it before waiting on _globalLock, so any
+    // reader arriving after a writer is queued blocks here instead of joining the cohort and
+    // extending its lifetime indefinitely.
+    private readonly SemaphoreSlim _turnstile = new(1, 1);
     private int _activeReaders;
 
     /// <summary>
@@ -61,8 +66,20 @@ public sealed class GitRepositoryLockManager : IGitRepositoryLockManager
     /// </remarks>
     public async Task<IDisposable> LockAllAsync(CancellationToken cancellationToken = default)
     {
-        await _globalLock.WaitAsync(cancellationToken).ConfigureAwait(false);
-        return new GlobalLockHandle(_globalLock);
+        // Acquire the turnstile first so that any reader arriving after this point blocks
+        // behind us, instead of joining the active-reader cohort and delaying our acquisition
+        // of _globalLock indefinitely.
+        await _turnstile.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            await _globalLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch
+        {
+            _turnstile.Release();
+            throw;
+        }
+        return new GlobalLockHandle(_globalLock, _turnstile);
     }
 
     /// <summary>
@@ -71,6 +88,12 @@ public sealed class GitRepositoryLockManager : IGitRepositoryLockManager
     /// </summary>
     private async Task EnterReadAsync(CancellationToken cancellationToken)
     {
+        // Pass through the turnstile first. This is a no-op when no writer is queued/active,
+        // but blocks readers arriving after LockAllAsync has taken the turnstile, ensuring they
+        // wait behind the writer instead of joining the active-reader cohort.
+        await _turnstile.WaitAsync(cancellationToken).ConfigureAwait(false);
+        _turnstile.Release();
+
         await _readerCountLock.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
@@ -238,11 +261,13 @@ public sealed class GitRepositoryLockManager : IGitRepositoryLockManager
     private sealed class GlobalLockHandle : IDisposable
     {
         private readonly SemaphoreSlim _semaphore;
+        private readonly SemaphoreSlim _turnstile;
         private bool _disposed;
 
-        public GlobalLockHandle(SemaphoreSlim semaphore)
+        public GlobalLockHandle(SemaphoreSlim semaphore, SemaphoreSlim turnstile)
         {
             _semaphore = semaphore;
+            _turnstile = turnstile;
         }
 
         public void Dispose()
@@ -251,6 +276,7 @@ public sealed class GitRepositoryLockManager : IGitRepositoryLockManager
             {
                 _disposed = true;
                 _semaphore.Release();
+                _turnstile.Release();
             }
         }
     }

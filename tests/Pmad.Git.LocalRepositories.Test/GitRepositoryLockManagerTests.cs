@@ -780,6 +780,108 @@ public sealed class GitRepositoryLockManagerTests
         Assert.NotNull(referenceLock);
     }
 
+    [Fact]
+    public async Task LockAllAsync_IsNotStarvedByOverlappingReaderStream()
+    {
+        // Arrange
+        var lockManager = CreateLockManager();
+        using var cts = new CancellationTokenSource();
+        var readerLoopStarted = new TaskCompletionSource<bool>();
+
+        // Continuously spawn short-lived, independent overlapping reference locks so that
+        // _activeReaders never naturally settles at zero on its own. Each reader acquires,
+        // does a bit of work, and releases without waiting on any other reader - mimicking
+        // sustained, unrelated reference traffic.
+        var readerLoopTask = Task.Run(async () =>
+        {
+            var readerTasks = new List<Task>();
+            try
+            {
+                while (!cts.IsCancellationRequested)
+                {
+                    var readerTask = Task.Run(async () =>
+                    {
+                        using (await lockManager.AcquireReferenceLockAsync(Guid.NewGuid().ToString(), cts.Token))
+                        {
+                            readerLoopStarted.TrySetResult(true);
+                            await Task.Delay(5, cts.Token);
+                        }
+                    }, cts.Token);
+                    readerTasks.Add(readerTask);
+                    await Task.Delay(1, cts.Token);
+                }
+            }
+            catch (OperationCanceledException)
+            {
+                // Expected on shutdown.
+            }
+
+            await Task.WhenAll(readerTasks.Select(async t =>
+            {
+                try { await t; } catch (OperationCanceledException) { }
+            }));
+        });
+
+        await readerLoopStarted.Task;
+
+        // Act - The writer must eventually acquire the lock despite the continuous reader stream.
+        var lockAllTask = lockManager.LockAllAsync();
+        var timeoutTask = Task.Delay(TimeSpan.FromSeconds(5));
+        var completed = await Task.WhenAny(lockAllTask, timeoutTask);
+
+        cts.Cancel();
+        await readerLoopTask;
+
+        // Assert
+        Assert.NotSame(timeoutTask, completed);
+        using (await lockAllTask)
+        {
+            // Global lock acquired successfully; writer was not starved.
+        }
+    }
+
+    [Fact]
+    public async Task LockAllAsync_QueuedWriter_BlocksReadersArrivingAfterward()
+    {
+        // Arrange
+        var lockManager = CreateLockManager();
+        var executionOrder = new List<string>();
+        var lockObject = new object();
+
+        // Hold a reference lock so LockAllAsync must wait.
+        var heldReferenceLock = await lockManager.AcquireReferenceLockAsync("refs/heads/main");
+
+        var lockAllTask = Task.Run(async () =>
+        {
+            using (await lockManager.LockAllAsync())
+            {
+                lock (lockObject) { executionOrder.Add("lock-all"); }
+                await Task.Delay(50);
+            }
+        });
+
+        // Ensure the writer has queued behind the held reference lock.
+        await Task.Delay(50);
+
+        var lateReaderTask = Task.Run(async () =>
+        {
+            using (await lockManager.AcquireReferenceLockAsync("refs/heads/other"))
+            {
+                lock (lockObject) { executionOrder.Add("late-reader"); }
+            }
+        });
+
+        await Task.Delay(50);
+        lock (lockObject) { executionOrder.Add("reference-still-held"); }
+        heldReferenceLock.Dispose();
+
+        await lockAllTask;
+        await lateReaderTask;
+
+        // Assert - The late reader must not run before the queued writer.
+        Assert.Equal(new[] { "reference-still-held", "lock-all", "late-reader" }, executionOrder);
+    }
+
     #endregion
 
     private static GitRepositoryLockManager CreateLockManager()
