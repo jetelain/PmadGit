@@ -573,6 +573,46 @@ public sealed class GitSmartHttpEndToEndTest : IDisposable
         Assert.Contains("refs/heads/feature2", capturedUpdatedRefs);
     }
 
+    [Fact]
+    public async Task GitPush_ShouldRaiseChangedOnceWithUpToDateState()
+    {
+        // Arrange: verify that a real push raises IGitRepositoryCacheInvalidator.Changed exactly
+        // once, and that by the time it is raised the repository already reflects the new ref
+        // value (not a stale one), so a debounced synchronizer observing Changed would push the
+        // correct, final state.
+        var sourceRepo = CreateSourceRepository("changed-event-test", new[] { ("initial.txt", "initial") });
+        await StartServerAsync(enableReceivePack: true);
+
+        var repositoryService = _host!.Services.GetRequiredService<IGitRepositoryService>();
+        var repository = repositoryService.GetRepositoryByPath(Path.Combine(_serverRepoRoot, "changed-event-test.git"));
+        var changedCount = 0;
+        GitHash? mainRefAtLastChanged = null;
+        repository.Changed += (_, _) =>
+        {
+            changedCount++;
+            mainRefAtLastChanged = repository.ReferenceStore.TryResolveReferenceAsync("refs/heads/main").GetAwaiter().GetResult();
+        };
+
+        var cloneDir = Path.Combine(_clientWorkingDir, "changed-event-test-clone");
+        RunGit(_clientWorkingDir, $"clone {_serverUrl}/changed-event-test.git {cloneDir}");
+        RunGit(cloneDir, "config user.name \"Test\"");
+        RunGit(cloneDir, "config user.email test@test.com");
+
+        File.WriteAllText(Path.Combine(cloneDir, "pushed-file.txt"), "pushed content");
+        RunGit(cloneDir, "add pushed-file.txt");
+        RunGit(cloneDir, "commit -m \"Trigger changed\" --quiet");
+
+        // Act: Push
+        RunGit(cloneDir, "push origin main");
+        var expectedHash = RunGit(cloneDir, "rev-parse HEAD").Trim();
+
+        // Assert: Changed raised exactly once, and its associated ref value already matches
+        // the new commit (not the previous/stale one).
+        Assert.Equal(1, changedCount);
+        Assert.NotNull(mainRefAtLastChanged);
+        Assert.Equal(expectedHash, mainRefAtLastChanged.ToString(), StringComparer.OrdinalIgnoreCase);
+    }
+
     private GitRepository CreateSourceRepository(string name, (string path, string content)[] files)
     {
         var bareRepoPath = Path.Combine(_serverRepoRoot, $"{name}.git");

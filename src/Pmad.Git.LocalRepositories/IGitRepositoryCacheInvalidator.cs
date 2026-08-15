@@ -12,7 +12,11 @@ public interface IGitRepositoryCacheInvalidator
     /// </summary>
     /// <param name="clearAllData">When <see langword="true"/>, clears all cached data including structural metadata
     /// (e.g. pack index). When <see langword="false"/>, only volatile data such as references and loose objects are cleared.</param>
-    void InvalidateCaches(bool clearAllData = false);
+    /// <param name="raiseChanged">When <see langword="true"/> (the default), raises <see cref="Changed"/> after
+    /// clearing the caches. Pass <see langword="false"/> when the invalidation is only meant to refresh this
+    /// instance's view of the repository (e.g. before a read-only operation) and does not represent an actual
+    /// modification, to avoid spurious <see cref="Changed"/> notifications.</param>
+    void InvalidateCaches(bool clearAllData = false, bool raiseChanged = true);
 
     /// <summary>
     /// Raised whenever <see cref="InvalidateCaches"/> is called, i.e. whenever the repository was
