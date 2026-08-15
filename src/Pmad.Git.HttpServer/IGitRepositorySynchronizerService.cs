@@ -30,6 +30,20 @@ public interface IGitRepositorySynchronizerService
     GitRepositorySynchronizer SetupSynchronizer(string repositoryPath, GitSyncOptions options);
 
     /// <summary>
+    /// Ensures a local repository exists at <paramref name="repositoryPath"/>, cloning it from
+    /// <paramref name="remoteUrl"/> first if the directory does not exist yet or is empty, then
+    /// creates (or replaces) its cached <see cref="GitRepositorySynchronizer"/> using the given
+    /// <paramref name="options"/> and starts synchronization, exactly as <see cref="SetupSynchronizer"/>.
+    /// </summary>
+    /// <param name="repositoryPath">The local path of the Git repository.</param>
+    /// <param name="remoteUrl">URL of the remote repository to clone from, when the local repository does not exist yet.</param>
+    /// <param name="options">Synchronization options used to create the synchronizer (and to clone, e.g. <see cref="GitSyncOptions.Branch"/>, <see cref="GitSyncOptions.Remote"/>).</param>
+    /// <param name="cancellationToken">Token used to cancel the clone operation.</param>
+    /// <returns>The newly created <see cref="GitRepositorySynchronizer"/> instance.</returns>
+    /// <exception cref="InvalidOperationException">Thrown when <paramref name="repositoryPath"/> already exists, is not empty, but does not contain a git repository.</exception>
+    Task<GitRepositorySynchronizer> SetupSynchronizerAsync(string repositoryPath, string remoteUrl, GitSyncOptions options, CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// Disposes and removes the cached synchronizer for a specific repository, if any.
     /// </summary>
     /// <param name="repositoryPath">The path to the Git repository.</param>

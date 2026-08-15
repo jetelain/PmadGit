@@ -37,12 +37,7 @@ internal sealed class GitRepositoryService : IGitRepositoryService
 
     internal static string NormalizeAndValidatePath(string repositoryPath)
     {
-        if (string.IsNullOrWhiteSpace(repositoryPath))
-        {
-            throw new ArgumentException("Repository path cannot be null or whitespace.", nameof(repositoryPath));
-        }
-
-        var normalizedPath = Path.GetFullPath(repositoryPath);
+        var normalizedPath = NormalizePath(repositoryPath);
 
         if (!Directory.Exists(normalizedPath))
         {
@@ -50,5 +45,33 @@ internal sealed class GitRepositoryService : IGitRepositoryService
         }
 
         return normalizedPath;
+    }
+
+    /// <summary>
+    /// Normalizes <paramref name="repositoryPath"/> to a full path without requiring it to exist yet.
+    /// </summary>
+    internal static string NormalizePath(string repositoryPath)
+    {
+        if (string.IsNullOrWhiteSpace(repositoryPath))
+        {
+            throw new ArgumentException("Repository path cannot be null or whitespace.", nameof(repositoryPath));
+        }
+
+        return Path.GetFullPath(repositoryPath);
+    }
+
+    /// <summary>
+    /// Determines whether <paramref name="normalizedPath"/> already contains a git repository
+    /// (either a working tree with a <c>.git</c> subdirectory, or a bare repository).
+    /// </summary>
+    internal static bool IsExistingRepository(string normalizedPath)
+    {
+        if (!Directory.Exists(normalizedPath))
+        {
+            return false;
+        }
+
+        return Directory.Exists(Path.Combine(normalizedPath, ".git"))
+            || (File.Exists(Path.Combine(normalizedPath, "HEAD")) && File.Exists(Path.Combine(normalizedPath, "config")));
     }
 }

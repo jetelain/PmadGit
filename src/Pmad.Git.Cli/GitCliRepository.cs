@@ -81,6 +81,55 @@ public class GitCliRepository
     }
 
     /// <summary>
+    /// Clones a remote repository into <paramref name="targetPath"/> and returns a
+    /// <see cref="GitCliRepository"/> wrapping the newly created working tree. The parent directory
+    /// of <paramref name="targetPath"/> is created if it does not already exist; <paramref name="targetPath"/>
+    /// itself must not exist yet, or be an empty directory.
+    /// </summary>
+    /// <param name="remoteUrl">URL of the remote repository to clone.</param>
+    /// <param name="targetPath">Local path where the repository is cloned.</param>
+    /// <param name="branch">Name of the branch to check out (defaults to the remote's default branch when not specified).</param>
+    /// <param name="remoteName">Name to give to the cloned remote (defaults to <c>origin</c> when not specified).</param>
+    /// <param name="gitCliPath">Path to the Git CLI executable.</param>
+    /// <param name="cancellationToken"></param>
+    /// <returns>A <see cref="GitCliRepository"/> wrapping the cloned working tree.</returns>
+    public static async Task<GitCliRepository> CloneAsync(string remoteUrl, string targetPath, string? branch = null, string? remoteName = null, string gitCliPath = "git", CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(remoteUrl))
+        {
+            throw new ArgumentException("Remote URL cannot be null or whitespace.", nameof(remoteUrl));
+        }
+        if (string.IsNullOrWhiteSpace(targetPath))
+        {
+            throw new ArgumentException("Target path cannot be null or whitespace.", nameof(targetPath));
+        }
+
+        var fullPath = Path.GetFullPath(targetPath);
+        var parent = Directory.GetParent(fullPath)?.FullName ?? throw new ArgumentException($"Unable to determine parent directory of '{fullPath}'.", nameof(targetPath));
+        Directory.CreateDirectory(parent);
+
+        var arguments = new List<string> { "clone" };
+        if (remoteName != null)
+        {
+            arguments.Add("--origin");
+            arguments.Add(remoteName);
+        }
+        if (branch != null)
+        {
+            arguments.Add("--branch");
+            arguments.Add(branch);
+        }
+        arguments.Add(remoteUrl);
+        arguments.Add(fullPath);
+
+        var runner = new GitRunner(gitCliPath);
+        var result = await runner.RunGit(parent, arguments.ToArray(), cancellationToken).ConfigureAwait(false);
+        result.EnsureSuccess();
+
+        return new GitCliRepository(fullPath, runner);
+    }
+
+    /// <summary>
     /// Acquires the global write lock of the shared lock manager, if one was provided, blocking
     /// until all in-flight reference-level operations of the associated <see cref="GitRepository"/>
     /// complete and preventing new ones from starting until disposed.

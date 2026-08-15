@@ -1,6 +1,5 @@
 using System.Collections.Concurrent;
 using Pmad.Git.Cli;
-using Pmad.Git.LocalRepositories.Utilities;
 
 namespace Pmad.Git.HttpServer;
 
@@ -50,6 +49,32 @@ internal sealed class GitRepositorySynchronizerService : IGitRepositorySynchroni
         }
 
         return synchronizer;
+    }
+
+    public async Task<GitRepositorySynchronizer> SetupSynchronizerAsync(string repositoryPath, string remoteUrl, GitSyncOptions options, CancellationToken cancellationToken = default)
+    {
+        if (options is null)
+        {
+            throw new ArgumentNullException(nameof(options));
+        }
+        if (string.IsNullOrWhiteSpace(remoteUrl))
+        {
+            throw new ArgumentException("Remote URL cannot be null or whitespace.", nameof(remoteUrl));
+        }
+
+        var normalizedPath = GitRepositoryService.NormalizePath(repositoryPath);
+
+        if (!GitRepositoryService.IsExistingRepository(normalizedPath))
+        {
+            if (Directory.Exists(normalizedPath) && Directory.EnumerateFileSystemEntries(normalizedPath).Any())
+            {
+                throw new InvalidOperationException($"Directory '{normalizedPath}' already exists, is not empty, but does not contain a git repository.");
+            }
+
+            await GitCliRepository.CloneAsync(remoteUrl, normalizedPath, options.Branch, options.Remote, options.GitCliPath, cancellationToken).ConfigureAwait(false);
+        }
+
+        return SetupSynchronizer(normalizedPath, options);
     }
 
     public void InvalidateSynchronizer(string repositoryPath)
