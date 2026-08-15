@@ -166,9 +166,16 @@ public class GitCliRepository
     /// Notifies the shared cache invalidator, if one was provided, that a write operation just
     /// completed. Must be called while the write lock (if any) is still held.
     /// </summary>
-    private void InvalidateCaches()
+    /// <param name="raiseChanged">
+    /// When <see langword="true"/> (the default), raises <see cref="IGitRepositoryCacheInvalidator.Changed"/>.
+    /// Pass <see langword="false"/> when the operation does not modify the local branch or working
+    /// tree content observed through the invalidator (e.g. it only affects a remote, or
+    /// remote-tracking refs), so that only the cached view is refreshed without emitting a spurious
+    /// notification.
+    /// </param>
+    private void InvalidateCaches(bool raiseChanged = true)
     {
-        _cacheInvalidator?.InvalidateCaches();
+        _cacheInvalidator?.InvalidateCaches(raiseChanged: raiseChanged);
     }
 
     /// <summary>
@@ -197,7 +204,9 @@ public class GitCliRepository
         using var writeLock = await LockWriteAsync(cancellationToken).ConfigureAwait(false);
         var result = await RunGit(cancellationToken, arguments.ToArray());
         result.EnsureSuccess();
-        InvalidateCaches();
+        // Fetch only updates remote-tracking refs, not the local branch or working tree, so this
+        // does not represent an observable local change.
+        InvalidateCaches(raiseChanged: false);
     }
 
     /// <summary>
@@ -274,7 +283,9 @@ public class GitCliRepository
         using var writeLock = await LockWriteAsync(cancellationToken).ConfigureAwait(false);
         var result = await RunGit(cancellationToken, arguments.ToArray());
         result.EnsureSuccess();
-        InvalidateCaches();
+        // Push only sends local commits to the remote, it does not modify the local branch or
+        // working tree, so this does not represent an observable local change.
+        InvalidateCaches(raiseChanged: false);
     }
 
     /// <summary>

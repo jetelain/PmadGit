@@ -59,4 +59,32 @@ public sealed class GitCliRepositoryCacheInvalidationTests : IDisposable
         Assert.True(result.HasConflicts);
         Assert.True(changedRaised);
     }
+
+    [Fact]
+    public async Task FetchAsync_DoesNotRaiseChanged()
+    {
+        var runner = new FakeGitRunner().Enqueue(0);
+        var cli = new GitCliRepository(_repository, runner);
+
+        var changedRaised = false;
+        _repository.Changed += (_, _) => changedRaised = true;
+
+        await cli.FetchAsync();
+
+        Assert.False(changedRaised);
+    }
+
+    [Fact]
+    public async Task PushAsync_DoesNotRaiseChanged()
+    {
+        var runner = new FakeGitRunner().Enqueue(0);
+        var cli = new GitCliRepository(_repository, runner);
+
+        var changedRaised = false;
+        _repository.Changed += (_, _) => changedRaised = true;
+
+        await cli.PushAsync();
+
+        Assert.False(changedRaised);
+    }
 }
