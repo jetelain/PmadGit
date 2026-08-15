@@ -210,6 +210,30 @@ public class GitCliRepositoryUnitTests
         Assert.Equal(new[] { "checkout", "feature" }, runner.Calls.Single());
     }
 
+    [Fact]
+    public async Task CheckoutAsync_With_UpdateWorkingTree_False_Verifies_Branch_Before_SymbolicRef()
+    {
+        var runner = new FakeGitRunner().Enqueue(0).Enqueue(0);
+        var repository = new GitCliRepository(ExistingDirectory, runner);
+
+        await repository.CheckoutAsync("feature", createNew: false, updateWorkingTree: false);
+
+        Assert.Equal(new[] { "show-ref", "--verify", "--quiet", "refs/heads/feature" }, runner.Calls[0]);
+        Assert.Equal(new[] { "symbolic-ref", "HEAD", "refs/heads/feature" }, runner.Calls[1]);
+    }
+
+    [Fact]
+    public async Task CheckoutAsync_With_UpdateWorkingTree_False_Throws_When_Branch_Does_Not_Exist()
+    {
+        var runner = new FakeGitRunner().Enqueue(1, stderr: "not a valid ref");
+        var repository = new GitCliRepository(ExistingDirectory, runner);
+
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => repository.CheckoutAsync("missing", createNew: false, updateWorkingTree: false));
+
+        Assert.Equal(new[] { "show-ref", "--verify", "--quiet", "refs/heads/missing" }, runner.Calls.Single());
+    }
+
     [Theory]
     [InlineData(false, "-d")]
     [InlineData(true, "-D")]

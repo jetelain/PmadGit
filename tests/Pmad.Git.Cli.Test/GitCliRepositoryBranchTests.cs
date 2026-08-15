@@ -52,6 +52,30 @@ public class GitCliRepositoryBranchTests
     }
 
     [Fact]
+    public async Task CheckoutAsync_With_UpdateWorkingTree_False_Switches_To_Existing_Branch()
+    {
+        using var repo = GitCliTestRepository.Create();
+        var repository = new GitCliRepository(repo.WorkingDirectory);
+        await repository.CreateBranchAsync("feature/five");
+
+        await repository.CheckoutAsync("feature/five", updateWorkingTree: false);
+
+        Assert.Equal("feature/five", await repository.GetCurrentBranchAsync());
+    }
+
+    [Fact]
+    public async Task CheckoutAsync_With_UpdateWorkingTree_False_Throws_When_Branch_Does_Not_Exist()
+    {
+        using var repo = GitCliTestRepository.Create();
+        var repository = new GitCliRepository(repo.WorkingDirectory);
+
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => repository.CheckoutAsync("does-not-exist", updateWorkingTree: false));
+
+        Assert.Equal(GitCliTestRepository.DefaultBranch, await repository.GetCurrentBranchAsync());
+    }
+
+    [Fact]
     public async Task DeleteBranchAsync_Removes_Branch()
     {
         using var repo = GitCliTestRepository.Create();

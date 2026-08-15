@@ -235,6 +235,7 @@ public class GitCliRepository
         var conflictedFiles = await GetConflictedFilesAsync(cancellationToken);
         if (conflictedFiles.Count > 0)
         {
+            InvalidateCaches();
             return new GitMergeResult(false, conflictedFiles);
         }
 
@@ -343,6 +344,12 @@ public class GitCliRepository
 
         if (!createNew && !updateWorkingTree)
         {
+            var showRefResult = await RunGit(cancellationToken, "show-ref", "--verify", "--quiet", $"refs/heads/{branchName}");
+            if (showRefResult.ExitCode != 0)
+            {
+                throw new InvalidOperationException($"Branch '{branchName}' does not exist.");
+            }
+
             var refResult = await RunGit(cancellationToken, "symbolic-ref", "HEAD", $"refs/heads/{branchName}");
             refResult.EnsureSuccess();
             InvalidateCaches();
@@ -411,6 +418,7 @@ public class GitCliRepository
         var conflictedFiles = await GetConflictedFilesAsync(cancellationToken);
         if (conflictedFiles.Count > 0)
         {
+            InvalidateCaches();
             return new GitMergeResult(false, conflictedFiles);
         }
 
@@ -419,7 +427,7 @@ public class GitCliRepository
     }
 
     /// <summary>
-    /// Indicates whether a merge (or pull) is currently in progress and waiting for conflict resolution.
+    /// Indicates whether a merge (or pull) is currently in progress
     /// </summary>
     /// <param name="cancellationToken"></param>
     public async Task<bool> IsMergeInProgressAsync(CancellationToken cancellationToken = default)
