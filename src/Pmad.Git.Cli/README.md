@@ -129,7 +129,7 @@ using Pmad.Git.LocalRepositories;
 using Pmad.Git.Cli;
 
 var repository = GitRepository.Open("/path/to/repo");
-var cliRepository = new GitCliRepository("/path/to/repo", repository);
+var cliRepository = new GitCliRepository(repository);
 
 // repository's caches are automatically invalidated after this call
 await cliRepository.PullAsync();
@@ -139,14 +139,10 @@ var head = await repository.GetCommitAsync();
 
 This constructor uses `repository.LockManager` for synchronization and `repository` itself (which implements `IGitRepositoryCacheInvalidator`) to clear caches, so you never have to remember to call `InvalidateCaches()` manually.
 
-If you only need one of the two behaviors, or want more control, use the other constructors instead:
+If you only need the plain CLI wrapper without any lock synchronization or cache invalidation (e.g. a repository that is not otherwise accessed through `Pmad.Git.LocalRepositories` in the same process), use the path-based constructor instead:
 
 ```csharp
-// Lock synchronization only, no automatic cache invalidation
-var cliRepository = new GitCliRepository("/path/to/repo", repository.LockManager);
-
-// Lock synchronization and a custom (or explicit) cache invalidator
-var cliRepository = new GitCliRepository("/path/to/repo", repository.LockManager, repository);
+var cliRepository = new GitCliRepository("/path/to/repo");
 ```
 
 In that case, remember to call `repository.InvalidateCaches()` yourself after any `GitCliRepository` write operation, otherwise `GitRepository` may keep returning stale references, commits or trees.
