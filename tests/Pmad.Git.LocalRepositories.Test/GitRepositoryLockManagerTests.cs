@@ -120,6 +120,30 @@ public sealed class GitRepositoryLockManagerTests
     }
 
     [Fact]
+    public async Task AcquireReferenceLockAsync_CancelledWhileWaitingOnGlobalLock_DoesNotLeakActiveReaders()
+    {
+        // Arrange - hold the global lock so the first reference lock attempt has to wait on it
+        var lockManager = CreateLockManager();
+        var globalLock = await lockManager.LockAllAsync();
+        using var cts = new CancellationTokenSource();
+
+        // Act - request a reference lock, then cancel it while it is still waiting for the global lock
+        var acquireTask = lockManager.AcquireReferenceLockAsync("refs/heads/main", cts.Token);
+        await Task.Delay(50); // Give the acquire attempt a chance to start waiting on the global lock
+        cts.Cancel();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => await acquireTask);
+
+        // Release the global lock so subsequent operations are not blocked by it
+        globalLock.Dispose();
+
+        // Assert - _activeReaders must have been decremented on cancellation, otherwise LockAllAsync
+        // would still see an active reader and hang waiting for it to complete, and a reference lock
+        // could incorrectly proceed without the global lock being held.
+        using var secondGlobalLock = await lockManager.LockAllAsync(new CancellationTokenSource(TimeSpan.FromSeconds(5)).Token);
+    }
+
+    [Fact]
     public async Task AcquireReferenceLockAsync_MultipleTimes_WorksCorrectly()
     {
         // Arrange
@@ -520,6 +544,342 @@ public sealed class GitRepositoryLockManagerTests
         // Act & Assert
         await Assert.ThrowsAsync<ArgumentNullException>(async () =>
             await lockManager.AcquireMultipleReferenceLocksAsync(null!));
+    }
+
+    #endregion
+
+    #region LockAllAsync Tests
+
+    [Fact]
+    public async Task LockAllAsync_CanAcquireAndRelease()
+    {
+        // Arrange
+        var lockManager = CreateLockManager();
+
+        // Act
+        var lockHandle = await lockManager.LockAllAsync();
+
+        // Assert
+        Assert.NotNull(lockHandle);
+        lockHandle.Dispose();
+    }
+
+    [Fact]
+    public async Task LockAllAsync_MultipleDispose_IsSafe()
+    {
+        // Arrange
+        var lockManager = CreateLockManager();
+        var handle = await lockManager.LockAllAsync();
+
+        // Act & Assert - Multiple dispose should not throw
+        handle.Dispose();
+        handle.Dispose();
+        handle.Dispose();
+    }
+
+    [Fact]
+    public async Task LockAllAsync_WithCancellation_ThrowsOperationCanceledException()
+    {
+        // Arrange
+        var lockManager = CreateLockManager();
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+
+        // Act & Assert
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(async () =>
+            await lockManager.LockAllAsync(cts.Token));
+    }
+
+    [Fact]
+    public async Task LockAllAsync_AllowsSequentialAcquisition()
+    {
+        // Arrange
+        var lockManager = CreateLockManager();
+
+        // Act & Assert - Should not deadlock or throw when acquired repeatedly in sequence
+        for (int i = 0; i < 5; i++)
+        {
+            using (await lockManager.LockAllAsync())
+            {
+                // Lock acquired successfully
+            }
+        }
+    }
+
+    [Fact]
+    public async Task LockAllAsync_WaitsForInFlightReferenceLockToBeReleased()
+    {
+        // Arrange
+        var lockManager = CreateLockManager();
+        var executionOrder = new List<string>();
+        var lockObject = new object();
+
+        // Act - Acquire a reference lock first, then request LockAllAsync concurrently
+        var referenceLock = await lockManager.AcquireReferenceLockAsync("refs/heads/main");
+
+        var lockAllTask = Task.Run(async () =>
+        {
+            using (await lockManager.LockAllAsync())
+            {
+                lock (lockObject) { executionOrder.Add("lock-all"); }
+            }
+        });
+
+        await Task.Delay(50); // Give LockAllAsync a chance to start waiting
+        lock (lockObject) { executionOrder.Add("reference-still-held"); }
+        referenceLock.Dispose();
+
+        await lockAllTask;
+
+        // Assert - LockAllAsync must only proceed after the reference lock was released
+        Assert.Equal(new[] { "reference-still-held", "lock-all" }, executionOrder);
+    }
+
+    [Fact]
+    public async Task LockAllAsync_WaitsForInFlightMultipleReferenceLocksToBeReleased()
+    {
+        // Arrange
+        var lockManager = CreateLockManager();
+        var executionOrder = new List<string>();
+        var lockObject = new object();
+        var refs = new[] { "refs/heads/main", "refs/heads/feature" };
+
+        // Act
+        var multipleLock = await lockManager.AcquireMultipleReferenceLocksAsync(refs);
+
+        var lockAllTask = Task.Run(async () =>
+        {
+            using (await lockManager.LockAllAsync())
+            {
+                lock (lockObject) { executionOrder.Add("lock-all"); }
+            }
+        });
+
+        await Task.Delay(50);
+        lock (lockObject) { executionOrder.Add("references-still-held"); }
+        multipleLock.Dispose();
+
+        await lockAllTask;
+
+        // Assert
+        Assert.Equal(new[] { "references-still-held", "lock-all" }, executionOrder);
+    }
+
+    [Fact]
+    public async Task LockAllAsync_BlocksNewReferenceLockUntilReleased()
+    {
+        // Arrange
+        var lockManager = CreateLockManager();
+        var executionOrder = new List<string>();
+        var lockObject = new object();
+
+        // Act - Hold the global lock first, then attempt a reference lock concurrently
+        var globalLock = await lockManager.LockAllAsync();
+
+        var referenceLockTask = Task.Run(async () =>
+        {
+            using (await lockManager.AcquireReferenceLockAsync("refs/heads/main"))
+            {
+                lock (lockObject) { executionOrder.Add("reference-lock"); }
+            }
+        });
+
+        await Task.Delay(50); // Give the reference lock a chance to start waiting
+        lock (lockObject) { executionOrder.Add("global-lock-still-held"); }
+        globalLock.Dispose();
+
+        await referenceLockTask;
+
+        // Assert - The reference lock must only proceed after the global lock was released
+        Assert.Equal(new[] { "global-lock-still-held", "reference-lock" }, executionOrder);
+    }
+
+    [Fact]
+    public async Task LockAllAsync_BlocksNewMultipleReferenceLocksUntilReleased()
+    {
+        // Arrange
+        var lockManager = CreateLockManager();
+        var executionOrder = new List<string>();
+        var lockObject = new object();
+        var refs = new[] { "refs/heads/main", "refs/heads/feature" };
+
+        // Act
+        var globalLock = await lockManager.LockAllAsync();
+
+        var referenceLockTask = Task.Run(async () =>
+        {
+            using (await lockManager.AcquireMultipleReferenceLocksAsync(refs))
+            {
+                lock (lockObject) { executionOrder.Add("reference-lock"); }
+            }
+        });
+
+        await Task.Delay(50);
+        lock (lockObject) { executionOrder.Add("global-lock-still-held"); }
+        globalLock.Dispose();
+
+        await referenceLockTask;
+
+        // Assert
+        Assert.Equal(new[] { "global-lock-still-held", "reference-lock" }, executionOrder);
+    }
+
+    [Fact]
+    public async Task LockAllAsync_SerializesAgainstAnotherLockAll()
+    {
+        // Arrange
+        var lockManager = CreateLockManager();
+        var executionOrder = new List<int>();
+        var startSignal = new TaskCompletionSource<bool>();
+
+        // Act
+        var task1 = Task.Run(async () =>
+        {
+            await startSignal.Task;
+            using (await lockManager.LockAllAsync())
+            {
+                executionOrder.Add(1);
+                await Task.Delay(50);
+                executionOrder.Add(1);
+            }
+        });
+
+        var task2 = Task.Run(async () =>
+        {
+            await startSignal.Task;
+            await Task.Delay(10); // Ensure task1 gets the lock first
+            using (await lockManager.LockAllAsync())
+            {
+                executionOrder.Add(2);
+                await Task.Delay(50);
+                executionOrder.Add(2);
+            }
+        });
+
+        startSignal.SetResult(true);
+        await Task.WhenAll(task1, task2);
+
+        // Assert - Task 1 should complete entirely before Task 2 starts
+        Assert.Equal(new[] { 1, 1, 2, 2 }, executionOrder);
+    }
+
+    [Fact]
+    public async Task LockAllAsync_AfterRelease_AllowsReferenceLocksAgain()
+    {
+        // Arrange
+        var lockManager = CreateLockManager();
+
+        // Act
+        using (await lockManager.LockAllAsync())
+        {
+            // Global lock held
+        }
+
+        // Assert - Reference locks should be acquirable again once the global lock is released
+        using var referenceLock = await lockManager.AcquireReferenceLockAsync("refs/heads/main");
+        Assert.NotNull(referenceLock);
+    }
+
+    [Fact]
+    public async Task LockAllAsync_IsNotStarvedByOverlappingReaderStream()
+    {
+        // Arrange
+        var lockManager = CreateLockManager();
+        using var cts = new CancellationTokenSource();
+        var readerLoopStarted = new TaskCompletionSource<bool>();
+
+        // Continuously spawn short-lived, independent overlapping reference locks so that
+        // _activeReaders never naturally settles at zero on its own. Each reader acquires,
+        // does a bit of work, and releases without waiting on any other reader - mimicking
+        // sustained, unrelated reference traffic.
+        var readerLoopTask = Task.Run(async () =>
+        {
+            var readerTasks = new List<Task>();
+            try
+            {
+                while (!cts.IsCancellationRequested)
+                {
+                    var readerTask = Task.Run(async () =>
+                    {
+                        using (await lockManager.AcquireReferenceLockAsync(Guid.NewGuid().ToString(), cts.Token))
+                        {
+                            readerLoopStarted.TrySetResult(true);
+                            await Task.Delay(5, cts.Token);
+                        }
+                    }, cts.Token);
+                    readerTasks.Add(readerTask);
+                    await Task.Delay(1, cts.Token);
+                }
+            }
+            catch (OperationCanceledException)
+            {
+                // Expected on shutdown.
+            }
+
+            await Task.WhenAll(readerTasks.Select(async t =>
+            {
+                try { await t; } catch (OperationCanceledException) { }
+            }));
+        });
+
+        await readerLoopStarted.Task;
+
+        // Act - The writer must eventually acquire the lock despite the continuous reader stream.
+        var lockAllTask = lockManager.LockAllAsync();
+        var timeoutTask = Task.Delay(TimeSpan.FromSeconds(5));
+        var completed = await Task.WhenAny(lockAllTask, timeoutTask);
+
+        cts.Cancel();
+        await readerLoopTask;
+
+        // Assert
+        Assert.NotSame(timeoutTask, completed);
+        using (await lockAllTask)
+        {
+            // Global lock acquired successfully; writer was not starved.
+        }
+    }
+
+    [Fact]
+    public async Task LockAllAsync_QueuedWriter_BlocksReadersArrivingAfterward()
+    {
+        // Arrange
+        var lockManager = CreateLockManager();
+        var executionOrder = new List<string>();
+        var lockObject = new object();
+
+        // Hold a reference lock so LockAllAsync must wait.
+        var heldReferenceLock = await lockManager.AcquireReferenceLockAsync("refs/heads/main");
+
+        var lockAllTask = Task.Run(async () =>
+        {
+            using (await lockManager.LockAllAsync())
+            {
+                lock (lockObject) { executionOrder.Add("lock-all"); }
+                await Task.Delay(50);
+            }
+        });
+
+        // Ensure the writer has queued behind the held reference lock.
+        await Task.Delay(50);
+
+        var lateReaderTask = Task.Run(async () =>
+        {
+            using (await lockManager.AcquireReferenceLockAsync("refs/heads/other"))
+            {
+                lock (lockObject) { executionOrder.Add("late-reader"); }
+            }
+        });
+
+        await Task.Delay(50);
+        lock (lockObject) { executionOrder.Add("reference-still-held"); }
+        heldReferenceLock.Dispose();
+
+        await lockAllTask;
+        await lateReaderTask;
+
+        // Assert - The late reader must not run before the queued writer.
+        Assert.Equal(new[] { "reference-still-held", "lock-all", "late-reader" }, executionOrder);
     }
 
     #endregion

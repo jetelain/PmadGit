@@ -8,7 +8,7 @@ namespace Pmad.Git.LocalRepositories;
 /// <summary>
 /// High-level entry point for querying commits, trees, and blobs from a local git repository.
 /// </summary>
-public sealed class GitRepository : IGitRepository
+public sealed class GitRepository : IGitRepository, IGitRepositoryCacheInvalidator
 {
     private readonly GitObjectStore _objectStore;
     private readonly GitReferenceStore _referenceStore;
@@ -20,14 +20,23 @@ public sealed class GitRepository : IGitRepository
     private const int RegularFileMode = 33188; // 100644 in octal
     private const int DirectoryMode = 16384;   // 040000 in octal
 
-    private GitRepository(string rootPath, string gitDirectory)
+    private GitRepository(string rootPath, string gitDirectory, IGitRepositoryLockManager lockManager)
     {
         RootPath = rootPath;
         GitDirectory = gitDirectory;
         _objectStore = new GitObjectStore(gitDirectory);
-        _referenceStore = new GitReferenceStore(gitDirectory);
+        _referenceStore = new GitReferenceStore(gitDirectory, lockManager);
         _lastChangeCache = new GitLastChangeCache(gitDirectory);
     }
+
+    /// <summary>
+    /// Gets the lock manager used to synchronize reference/object writes for this repository.
+    /// </summary>
+    /// <remarks>
+    /// Share this instance with other components (e.g. a CLI-based wrapper) operating on the same
+    /// repository directory within the same process to synchronize concurrent writes.
+    /// </remarks>
+    public IGitRepositoryLockManager LockManager => _referenceStore.LockManager;
 
     /// <summary>
     /// Absolute path to the repository working tree root.
@@ -57,7 +66,7 @@ public sealed class GitRepository : IGitRepository
     /// <param name="bare">Whether to create a bare repository (no working directory).</param>
     /// <param name="initialBranch">Name of the initial branch; defaults to "main".</param>
     /// <returns>An initialized <see cref="GitRepository"/>.</returns>
-    public static GitRepository Init(string path, bool bare = false, string initialBranch = "main")
+    public static GitRepository Init(string path, bool bare = false, string initialBranch = "main", IGitRepositoryLockManager? lockManager = null)
     {
         if (string.IsNullOrWhiteSpace(path))
         {
@@ -125,32 +134,38 @@ public sealed class GitRepository : IGitRepository
         Directory.CreateDirectory(infoDir);
         File.WriteAllText(Path.Combine(infoDir, "exclude"), "# git ls-files --others --exclude-from=.git/info/exclude\n# Lines that start with '#' are comments.\n");
 
-        return new GitRepository(rootPath, gitDirectory);
+        return new GitRepository(rootPath, gitDirectory, lockManager ?? new GitRepositoryLockManager());
     }
 
     /// <summary>
     /// Opens a git repository located at <paramref name="path"/> or its parent folders.
     /// </summary>
     /// <param name="path">Path pointing to a working tree or .git directory.</param>
+    /// <param name="lockManager">
+    /// Optional lock manager to use. Share the same instance with other components (e.g. a CLI-based
+    /// wrapper) operating on the same repository directory within the same process, to synchronize
+    /// their writes. When omitted, a new dedicated lock manager is created.
+    /// </param>
     /// <returns>An initialized <see cref="GitRepository"/>.</returns>
-    public static GitRepository Open(string path)
+    public static GitRepository Open(string path, IGitRepositoryLockManager? lockManager = null)
     {
+        lockManager ??= new GitRepositoryLockManager();
         var fullPath = Path.GetFullPath(path);
         if (Path.GetFileName(fullPath).Equals(".git", StringComparison.OrdinalIgnoreCase))
         {
             var parent = Directory.GetParent(fullPath)?.FullName ?? throw new DirectoryNotFoundException("Unable to determine repository root");
-            return new GitRepository(parent, fullPath);
+            return new GitRepository(parent, fullPath, lockManager);
         }
 
         var gitDir = Path.Combine(fullPath, ".git");
         if (Directory.Exists(gitDir))
         {
-            return new GitRepository(fullPath, gitDir);
+            return new GitRepository(fullPath, gitDir, lockManager);
         }
 
         if (File.Exists(Path.Combine(fullPath, "HEAD")) && File.Exists(Path.Combine(fullPath, "config")))
         {
-            return new GitRepository(fullPath, fullPath);
+            return new GitRepository(fullPath, fullPath, lockManager);
         }
 
         throw new DirectoryNotFoundException($"Unable to locate a git repository starting from '{path}'");
@@ -748,6 +763,8 @@ public sealed class GitRepository : IGitRepository
 
             await _referenceStore.WriteReferenceWithValidationInternalAsync(referencePath, parentHash, commitHash, cancellationToken).ConfigureAwait(false);
 
+            Changed?.Invoke(this, EventArgs.Empty);
+
             return commitHash;
         }
     }
@@ -757,7 +774,11 @@ public sealed class GitRepository : IGitRepository
     /// </summary>
     /// <param name="clearAllData">When <see langword="true"/>, clears all cached data including structural metadata
     /// (e.g. pack index). When <see langword="false"/>, only volatile data such as references and loose objects are cleared.</param>
-    public void InvalidateCaches(bool clearAllData = false)
+    /// <param name="raiseChanged">When <see langword="true"/> (the default), raises <see cref="Changed"/> after
+    /// clearing the caches. Pass <see langword="false"/> when the invalidation is only meant to refresh this
+    /// instance's view of the repository (e.g. before a read-only operation) and does not represent an actual
+    /// modification, to avoid spurious <see cref="Changed"/> notifications.</param>
+    public void InvalidateCaches(bool clearAllData = false, bool raiseChanged = true)
     {
         _objectStore.InvalidateCaches();
         _referenceStore.InvalidateCaches();
@@ -774,7 +795,15 @@ public sealed class GitRepository : IGitRepository
                 _treeCache.Clear();
             }
         }
+
+        if (raiseChanged)
+        {
+            Changed?.Invoke(this, EventArgs.Empty);
+        }
     }
+
+    /// <inheritdoc />
+    public event EventHandler? Changed;
 
     /// <summary>
     /// Checks if a commit is reachable from another commit (for fast-forward validation).

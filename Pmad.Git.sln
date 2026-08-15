@@ -1,7 +1,7 @@
 ﻿
 Microsoft Visual Studio Solution File, Format Version 12.00
 # Visual Studio Version 18
-VisualStudioVersion = 18.3.11527.330 d18.3
+VisualStudioVersion = 18.3.11527.330
 MinimumVisualStudioVersion = 10.0.40219.1
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Pmad.Git.LocalRepositories", "src\Pmad.Git.LocalRepositories\Pmad.Git.LocalRepositories.csproj", "{C7037C06-1E9C-4083-AF74-A55D2AD2B2E4}"
 EndProject
@@ -9,6 +9,7 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Pmad.Git.LocalRepositories.
 EndProject
 Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "Github", "Github", "{02EA681E-C7D8-13C7-8484-4AC65E1B71E8}"
 	ProjectSection(SolutionItems) = preProject
+		.github\copilot-instructions.md = .github\copilot-instructions.md
 		.github\workflows\dotnet-linux-pr.yml = .github\workflows\dotnet-linux-pr.yml
 		.github\workflows\dotnet-linux-pub.yml = .github\workflows\dotnet-linux-pub.yml
 		.github\workflows\dotnet-linux.yml = .github\workflows\dotnet-linux.yml
@@ -22,6 +23,14 @@ EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Pmad.Git.HttpServer.Test", "tests\Pmad.Git.HttpServer.Test\Pmad.Git.HttpServer.Test.csproj", "{18FABFFC-4A3F-4452-BA59-0A345C1EE186}"
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Pmad.Git.LocalRepositories.Benchmark", "tests\Pmad.Git.LocalRepositories.Benchmark\Pmad.Git.LocalRepositories.Benchmark.csproj", "{8DDE7066-4812-4C8F-9FCB-1E2C69530049}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Pmad.Git.Cli", "src\Pmad.Git.Cli\Pmad.Git.Cli.csproj", "{73A7D805-C219-4E59-BA1B-055242C7299B}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Pmad.Git.Cli.Test", "tests\Pmad.Git.Cli.Test\Pmad.Git.Cli.Test.csproj", "{4962107E-39D1-4DB3-ACC9-8FAEE4CE022F}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Pmad.Git.Tests.Infrastructure", "Pmad.Git.Tests.Infrastructure\Pmad.Git.Tests.Infrastructure.csproj", "{22B282F4-6DB7-42C8-B24A-5212CD903874}"
+EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "Tests", "Tests", "{A9CA4DDE-5D28-4F2F-9FB8-4674235B1A6E}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
@@ -53,9 +62,27 @@ Global
 		{8DDE7066-4812-4C8F-9FCB-1E2C69530049}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{8DDE7066-4812-4C8F-9FCB-1E2C69530049}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{8DDE7066-4812-4C8F-9FCB-1E2C69530049}.Release|Any CPU.Build.0 = Release|Any CPU
+		{73A7D805-C219-4E59-BA1B-055242C7299B}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{73A7D805-C219-4E59-BA1B-055242C7299B}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{73A7D805-C219-4E59-BA1B-055242C7299B}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{73A7D805-C219-4E59-BA1B-055242C7299B}.Release|Any CPU.Build.0 = Release|Any CPU
+		{4962107E-39D1-4DB3-ACC9-8FAEE4CE022F}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{4962107E-39D1-4DB3-ACC9-8FAEE4CE022F}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{4962107E-39D1-4DB3-ACC9-8FAEE4CE022F}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{4962107E-39D1-4DB3-ACC9-8FAEE4CE022F}.Release|Any CPU.Build.0 = Release|Any CPU
+		{22B282F4-6DB7-42C8-B24A-5212CD903874}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{22B282F4-6DB7-42C8-B24A-5212CD903874}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{22B282F4-6DB7-42C8-B24A-5212CD903874}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{22B282F4-6DB7-42C8-B24A-5212CD903874}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(NestedProjects) = preSolution
+		{BA8F4C20-3C86-48AA-AE40-63BB7687104B} = {A9CA4DDE-5D28-4F2F-9FB8-4674235B1A6E}
+		{18FABFFC-4A3F-4452-BA59-0A345C1EE186} = {A9CA4DDE-5D28-4F2F-9FB8-4674235B1A6E}
+		{4962107E-39D1-4DB3-ACC9-8FAEE4CE022F} = {A9CA4DDE-5D28-4F2F-9FB8-4674235B1A6E}
+		{22B282F4-6DB7-42C8-B24A-5212CD903874} = {A9CA4DDE-5D28-4F2F-9FB8-4674235B1A6E}
 	EndGlobalSection
 	GlobalSection(ExtensibilityGlobals) = postSolution
 		SolutionGuid = {DFF98A5E-9257-498B-B67C-C50BC9AF63CE}

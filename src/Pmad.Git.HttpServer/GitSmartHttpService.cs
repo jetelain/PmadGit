@@ -82,8 +82,10 @@ internal sealed class GitSmartHttpService
 
         var (repository, _) = repositoryContext.Value;
 
-        // Invalidate caches to ensure we see latest refs from external changes
-        repository.InvalidateCaches();
+        // Invalidate caches to ensure we see latest refs from external changes.
+        // This is a read-only refresh, not an actual repository modification, so avoid
+        // raising Changed to prevent false local-change notifications (e.g. spurious pushes).
+        repository.InvalidateCaches(raiseChanged: false);
 
         context.Response.StatusCode = StatusCodes.Status200OK;
         context.Response.Headers.CacheControl = "no-cache";
@@ -169,10 +171,9 @@ internal sealed class GitSmartHttpService
             {
                 await _packReader.ReadAsync(repository, context.Request.Body, cancellationToken).ConfigureAwait(false);
                 unpackStatus = "unpack ok";
-
-                // Invalidate object caches after receiving new objects
-                // Reference cache will be invalidated after all reference updates
-                repository.InvalidateCaches();
+                // Note: GitPackReader.ReadAsync already refreshes object caches internally
+                // (without raising Changed). The Changed notification itself is raised once,
+                // below, only after all reference updates have been applied.
             }
             catch (Exception ex)
             {
@@ -203,8 +204,14 @@ internal sealed class GitSmartHttpService
             await WriteReceivePackStatusAsync(context, unpackStatus, refStatuses, capabilities.Contains("report-status"), cancellationToken).ConfigureAwait(false);
         }
 
-        // Note: Cache invalidation for reference updates is handled by WriteReferenceWithValidationAsync
-        // which is called within ApplyReferenceUpdateInternalAsync for each update
+        // Now that all reference updates have been applied, raise Changed once to notify
+        // observers (e.g. a GitRepositorySynchronizer) of the real modification. Doing this
+        // after the updates (rather than before, via the earlier InvalidateCaches calls)
+        // ensures a debounced push observes the final state instead of a stale one.
+        if (refStatuses.Any(static s => s.Success))
+        {
+            repository.InvalidateCaches();
+        }
 
         // Fire-and-forget the callback after the response is written to avoid impacting the Git protocol response.
         // If the callback throws or is slow, it won't cause the push to appear to fail to the client.

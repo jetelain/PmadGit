@@ -1,6 +1,6 @@
 using System.Diagnostics;
 using System.Text;
-using Pmad.Git.LocalRepositories.Test.Infrastructure;
+using Pmad.Git.Tests.Infrastructure;
 
 namespace Pmad.Git.LocalRepositories.Test;
 
@@ -425,14 +425,75 @@ public sealed class GitRepositoryBasicOperationsTests
 	{
 		using var repo = GitTestRepository.Create();
 		var gitRepository = GitRepository.Open(repo.WorkingDirectory);
-		
+
 		var commit1 = await gitRepository.GetCommitAsync();
-		
+
 		gitRepository.InvalidateCaches(clearAllData: true);
-		
+
 		var commit2 = await gitRepository.GetCommitAsync();
-		
+
 		Assert.Equal(commit1.Id, commit2.Id);
+	}
+
+	[Fact]
+	public void InvalidateCaches_Default_RaisesChanged()
+	{
+		using var repo = GitTestRepository.Create();
+		var gitRepository = GitRepository.Open(repo.WorkingDirectory);
+
+		var changedRaised = false;
+		gitRepository.Changed += (_, _) => changedRaised = true;
+
+		gitRepository.InvalidateCaches();
+
+		Assert.True(changedRaised);
+	}
+
+	[Fact]
+	public void InvalidateCaches_WithRaiseChangedTrue_RaisesChanged()
+	{
+		using var repo = GitTestRepository.Create();
+		var gitRepository = GitRepository.Open(repo.WorkingDirectory);
+
+		var changedRaised = false;
+		gitRepository.Changed += (_, _) => changedRaised = true;
+
+		gitRepository.InvalidateCaches(raiseChanged: true);
+
+		Assert.True(changedRaised);
+	}
+
+	[Fact]
+	public void InvalidateCaches_WithRaiseChangedFalse_DoesNotRaiseChanged()
+	{
+		using var repo = GitTestRepository.Create();
+		var gitRepository = GitRepository.Open(repo.WorkingDirectory);
+
+		var changedRaised = false;
+		gitRepository.Changed += (_, _) => changedRaised = true;
+
+		gitRepository.InvalidateCaches(raiseChanged: false);
+
+		Assert.False(changedRaised);
+	}
+
+	[Fact]
+	public async Task InvalidateCaches_WithRaiseChangedFalse_StillRefreshesCachedData()
+	{
+		using var repo = GitTestRepository.Create();
+		var gitRepository = GitRepository.Open(repo.WorkingDirectory);
+		var headRef = GitTestHelper.GetHeadReference(repo);
+
+		var initialCommit = await gitRepository.GetCommitAsync(headRef);
+		var updatedCommit = repo.Commit("Update after silent invalidation", ("silent-cache.txt", Guid.NewGuid().ToString("N")));
+
+		var staleCommit = await gitRepository.GetCommitAsync(headRef);
+		Assert.Equal(initialCommit.Id, staleCommit.Id);
+
+		gitRepository.InvalidateCaches(raiseChanged: false);
+
+		var refreshedCommit = await gitRepository.GetCommitAsync(headRef);
+		Assert.Equal(updatedCommit, refreshedCommit.Id);
 	}
 
 	[Fact]

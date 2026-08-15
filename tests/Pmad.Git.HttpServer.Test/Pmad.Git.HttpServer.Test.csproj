@@ -1,4 +1,4 @@
-<Project Sdk="Microsoft.NET.Sdk">
+﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
     <TargetFramework>net8.0</TargetFramework>
@@ -17,11 +17,14 @@
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\..\src\Pmad.Git.HttpServer\Pmad.Git.HttpServer.csproj" />
+	<ProjectReference Include="..\..\src\Pmad.Git.HttpServer\Pmad.Git.HttpServer.csproj" />
+	<ProjectReference Include="..\..\src\Pmad.Git.Cli\Pmad.Git.Cli.csproj" />
+	<ProjectReference Include="..\..\Pmad.Git.Tests.Infrastructure\Pmad.Git.Tests.Infrastructure.csproj" />
   </ItemGroup>
 
   <ItemGroup>
     <Using Include="Xunit" />
+    <Using Include="Pmad.Git.Tests.Infrastructure" />
   </ItemGroup>
 
 </Project>

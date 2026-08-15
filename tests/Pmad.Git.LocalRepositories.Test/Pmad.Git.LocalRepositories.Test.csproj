@@ -18,10 +18,16 @@
 
   <ItemGroup>
     <Using Include="Xunit" />
+    <Using Include="Pmad.Git.Tests.Infrastructure" />
   </ItemGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\Pmad.Git.LocalRepositories\Pmad.Git.LocalRepositories.csproj" />
+	<ProjectReference Include="..\..\Pmad.Git.Tests.Infrastructure\Pmad.Git.Tests.Infrastructure.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Folder Include="Infrastructure\" />
   </ItemGroup>
 
 </Project>
