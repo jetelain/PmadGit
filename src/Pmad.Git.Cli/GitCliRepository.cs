@@ -1,4 +1,5 @@
-﻿using Pmad.Git.LocalRepositories;
+﻿using System.Linq;
+using Pmad.Git.LocalRepositories;
 
 namespace Pmad.Git.Cli;
 
@@ -105,8 +106,6 @@ public class GitCliRepository
         }
 
         var fullPath = Path.GetFullPath(targetPath);
-        var parent = Directory.GetParent(fullPath)?.FullName ?? throw new ArgumentException($"Unable to determine parent directory of '{fullPath}'.", nameof(targetPath));
-        Directory.CreateDirectory(parent);
 
         var arguments = new List<string> { "clone" };
         if (remoteName != null)
@@ -120,10 +119,30 @@ public class GitCliRepository
             arguments.Add(branch);
         }
         arguments.Add(remoteUrl);
-        arguments.Add(fullPath);
 
         var runner = new GitRunner(gitCliPath);
-        var result = await runner.RunGit(parent, arguments.ToArray(), cancellationToken).ConfigureAwait(false);
+        string workingDirectory;
+        if (Directory.Exists(fullPath))
+        {
+            if (Directory.EnumerateFileSystemEntries(fullPath).Any())
+            {
+                throw new ArgumentException($"Target path '{fullPath}' already exists and is not empty.", nameof(targetPath));
+            }
+
+            // git clone refuses to clone into an existing directory, even if empty; clone into
+            // the directory itself using "." as destination instead.
+            workingDirectory = fullPath;
+            arguments.Add(".");
+        }
+        else
+        {
+            var parent = Directory.GetParent(fullPath)?.FullName ?? throw new ArgumentException($"Unable to determine parent directory of '{fullPath}'.", nameof(targetPath));
+            Directory.CreateDirectory(parent);
+            workingDirectory = parent;
+            arguments.Add(fullPath);
+        }
+
+        var result = await runner.RunGit(workingDirectory, arguments.ToArray(), cancellationToken).ConfigureAwait(false);
         result.EnsureSuccess();
 
         return new GitCliRepository(fullPath, runner);

@@ -25,6 +25,45 @@ public class GitCliRepositoryCloneTests
     }
 
     [Fact]
+    public async Task CloneAsync_WithExistingEmptyTargetPath_ClonesRepository()
+    {
+        using var source = GitCliTestRepository.Create();
+        var targetPath = Path.Combine(Path.GetTempPath(), "PmadGitCliCloneTests", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(targetPath);
+
+        try
+        {
+            var repository = await GitCliRepository.CloneAsync(source.WorkingDirectory, targetPath);
+
+            Assert.Equal(targetPath, repository.RootPath);
+            Assert.True(Directory.Exists(Path.Combine(targetPath, ".git")));
+            Assert.True(File.Exists(Path.Combine(targetPath, "README.md")));
+        }
+        finally
+        {
+            TestHelper.TryDeleteDirectory(targetPath);
+        }
+    }
+
+    [Fact]
+    public async Task CloneAsync_WithExistingNonEmptyTargetPath_ThrowsArgumentException()
+    {
+        using var source = GitCliTestRepository.Create();
+        var targetPath = Path.Combine(Path.GetTempPath(), "PmadGitCliCloneTests", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(targetPath);
+        File.WriteAllText(Path.Combine(targetPath, "existing.txt"), "content");
+
+        try
+        {
+            await Assert.ThrowsAsync<ArgumentException>(() => GitCliRepository.CloneAsync(source.WorkingDirectory, targetPath));
+        }
+        finally
+        {
+            TestHelper.TryDeleteDirectory(targetPath);
+        }
+    }
+
+    [Fact]
     public async Task CloneAsync_WithBranch_ChecksOutRequestedBranch()
     {
         using var source = GitCliTestRepository.Create();
