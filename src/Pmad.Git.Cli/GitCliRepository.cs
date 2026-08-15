@@ -484,6 +484,7 @@ public class GitCliRepository
         using var writeLock = await LockWriteAsync(cancellationToken).ConfigureAwait(false);
         var result = await RunGit(cancellationToken, "merge", "--abort");
         result.EnsureSuccess();
+        InvalidateCaches();
     }
 
     private static IReadOnlyList<string> ParseLines(string output)
