@@ -50,9 +50,20 @@ public sealed class GitRepositorySynchronizer : IAsyncDisposable
     private volatile bool _pushPending;
     private volatile GitSyncState _state = GitSyncState.Idle;
     private GitSyncConflictInfo? _conflict;
+    private DateTimeOffset? _lastSuccessfulSyncAt;
     private bool _started;
     private bool _disposed;
     private int _suppressChangeDepth;
+
+    /// <summary>
+    /// Raised when the periodic remote-to-local synchronization loop encounters an unexpected
+    /// exception (e.g. a <see cref="GitCliException"/> while pulling), or when a push triggered by
+    /// <see cref="FlushPendingPushAsync"/> (including debounced pushes) fails. The synchronizer
+    /// keeps running after reporting the error: pulls retry at the next
+    /// <see cref="GitSyncOptions.PullInterval"/>, and a failed push leaves the local change pending
+    /// so it is retried on the next debounced or manual push attempt.
+    /// </summary>
+    public event EventHandler<Exception>? SyncError;
 
     /// <summary>
     /// Creates a synchronizer wrapping a <see cref="GitCliRepository"/> built from the given
@@ -111,6 +122,14 @@ public sealed class GitRepositorySynchronizer : IAsyncDisposable
     public GitSyncConflictInfo? Conflict => _conflict;
 
     /// <summary>
+    /// Timestamp of the last successful synchronization with the remote repository, whether it was
+    /// a push (<see cref="FlushPendingPushAsync"/>) or a pull (<see cref="TriggerRemoteSyncAsync"/>),
+    /// or <c>null</c> if none succeeded yet. A pull that stops because of a merge conflict does not
+    /// update this value.
+    /// </summary>
+    public DateTimeOffset? LastSuccessfulSyncAt => _lastSuccessfulSyncAt;
+
+    /// <summary>
     /// Starts the periodic remote-to-local synchronization loop. Must be called once before relying
     /// on automatic pulls; local-change debouncing works regardless of whether <see cref="Start"/>
     /// was called.
@@ -132,7 +151,20 @@ public sealed class GitRepositorySynchronizer : IAsyncDisposable
         {
             while (await timer.WaitForNextTickAsync(cancellationToken).ConfigureAwait(false))
             {
-                await TriggerRemoteSyncAsync(cancellationToken).ConfigureAwait(false);
+                try
+                {
+                    await TriggerRemoteSyncAsync(cancellationToken).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                    throw;
+                }
+                catch (Exception ex)
+                {
+                    // Do not let a transient failure (e.g. network error, GitCliException on pull
+                    // failure) fault the periodic loop; report it and retry at the next tick.
+                    SyncError?.Invoke(this, ex);
+                }
             }
         }
         catch (OperationCanceledException)
@@ -164,7 +196,9 @@ public sealed class GitRepositorySynchronizer : IAsyncDisposable
     /// <summary>
     /// Immediately pushes local changes to the remote, cancelling any pending debounce delay.
     /// Does nothing when there is no pending change, a synchronization is already running, or a
-    /// conflict is pending resolution.
+    /// conflict is pending resolution. If the push fails (e.g. <see cref="GitCliException"/>), the
+    /// failure is reported via <see cref="SyncError"/> instead of throwing, and the change remains
+    /// pending so it is retried on the next debounced or manual push.
     /// </summary>
     public async Task FlushPendingPushAsync(CancellationToken cancellationToken = default)
     {
@@ -190,10 +224,24 @@ public sealed class GitRepositorySynchronizer : IAsyncDisposable
             {
                 await _cli.PushAsync(_options.Remote, _options.Branch, cancellationToken: cancellationToken).ConfigureAwait(false);
             }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                // Restore the pending flag so the change is retried on the next debounced/manual
+                // push instead of being silently lost, and report the failure instead of letting it
+                // fault an unobserved fire-and-forget task (see OnPushDebounceElapsed).
+                _pushPending = true;
+                SyncError?.Invoke(this, ex);
+                return;
+            }
             finally
             {
                 EndSelfOperation();
             }
+            _lastSuccessfulSyncAt = DateTimeOffset.UtcNow;
         }
         finally
         {
@@ -240,6 +288,7 @@ public sealed class GitRepositorySynchronizer : IAsyncDisposable
                 _state = GitSyncState.Conflict;
                 return;
             }
+            _lastSuccessfulSyncAt = DateTimeOffset.UtcNow;
             _state = GitSyncState.Idle;
         }
         finally

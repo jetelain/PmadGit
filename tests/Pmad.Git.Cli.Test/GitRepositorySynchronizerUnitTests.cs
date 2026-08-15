@@ -43,6 +43,7 @@ public sealed class GitRepositorySynchronizerUnitTests : IDisposable
 
         Assert.Equal(GitSyncState.Idle, synchronizer.State);
         Assert.Null(synchronizer.Conflict);
+        Assert.Null(synchronizer.LastSuccessfulSyncAt);
     }
 
     [Fact]
@@ -93,6 +94,32 @@ public sealed class GitRepositorySynchronizerUnitTests : IDisposable
         await synchronizer.FlushPendingPushAsync();
 
         Assert.Equal(new[] { "push" }, runner.Calls.Single());
+        Assert.NotNull(synchronizer.LastSuccessfulSyncAt);
+    }
+
+    [Fact]
+    public async Task FlushPendingPushAsync_Failure_Reports_SyncError_And_Keeps_Change_Pending()
+    {
+        var runner = new FakeGitRunner().Enqueue(1, stderr: "network error");
+        await using var synchronizer = new GitRepositorySynchronizer(_repository, CreateOptions(runner, TimeSpan.FromMinutes(5)));
+
+        Exception? reportedError = null;
+        synchronizer.SyncError += (_, ex) => reportedError = ex;
+
+        synchronizer.NotifyLocalChange();
+        await synchronizer.FlushPendingPushAsync();
+
+        Assert.Equal(new[] { "push" }, runner.Calls.Single());
+        Assert.IsType<GitCliException>(reportedError);
+        Assert.Null(synchronizer.LastSuccessfulSyncAt);
+        Assert.Equal(GitSyncState.Idle, synchronizer.State);
+
+        // The change must still be pending: a subsequent successful flush should push again.
+        runner.Enqueue(0);
+        await synchronizer.FlushPendingPushAsync();
+
+        Assert.Equal(2, runner.Calls.Count);
+        Assert.NotNull(synchronizer.LastSuccessfulSyncAt);
     }
 
     [Fact]
@@ -122,6 +149,7 @@ public sealed class GitRepositorySynchronizerUnitTests : IDisposable
         Assert.Equal(new[] { "pull", "--no-rebase" }, runner.Calls.Single());
         Assert.Equal(GitSyncState.Idle, synchronizer.State);
         Assert.Null(synchronizer.Conflict);
+        Assert.NotNull(synchronizer.LastSuccessfulSyncAt);
     }
 
     [Fact]
@@ -137,6 +165,7 @@ public sealed class GitRepositorySynchronizerUnitTests : IDisposable
         Assert.Equal(GitSyncState.Conflict, synchronizer.State);
         Assert.NotNull(synchronizer.Conflict);
         Assert.Equal(new[] { "README.md" }, synchronizer.Conflict!.ConflictedFiles);
+        Assert.Null(synchronizer.LastSuccessfulSyncAt);
     }
 
     [Fact]
@@ -205,6 +234,31 @@ public sealed class GitRepositorySynchronizerUnitTests : IDisposable
 
         Assert.Null(synchronizer.Conflict);
         Assert.Equal(GitSyncState.Idle, synchronizer.State);
+    }
+
+    [Fact]
+    public async Task PeriodicPullLoop_Reports_NonConflict_Failure_Via_SyncError_And_Keeps_Running()
+    {
+        var runner = new FakeGitRunner()
+            .Enqueue(1, stderr: "network error") // first pull fails
+            .Enqueue(0, stdout: "") // diff --name-only for the failed pull above
+            .Enqueue(0, stdout: "pull ok"); // second pull succeeds
+        var options = CreateOptions(runner);
+        options.PullInterval = TimeSpan.FromMilliseconds(20);
+        await using var synchronizer = new GitRepositorySynchronizer(_repository, options);
+
+        Exception? reportedError = null;
+        synchronizer.SyncError += (_, ex) => reportedError = ex;
+
+        synchronizer.Start();
+
+        await WaitUntilAsync(() => reportedError != null);
+
+        Assert.IsType<GitCliException>(reportedError);
+
+        // The loop must keep running and eventually perform the second, successful pull.
+        await WaitUntilAsync(() => runner.Calls.Count >= 3);
+        await WaitUntilAsync(() => synchronizer.State == GitSyncState.Idle);
     }
 
     [Fact]
