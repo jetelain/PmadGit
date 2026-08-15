@@ -392,7 +392,9 @@ public sealed class GitRepositorySynchronizer : IAsyncDisposable
     }
 
     /// <summary>
-    /// Stops the periodic pull loop and pending debounce timer.
+    /// Stops the periodic pull loop and pending debounce timer, and waits for any in-flight
+    /// synchronization (a debounced or manually triggered push/pull, or a conflict resolution
+    /// call) to complete before releasing the synchronization primitives.
     /// </summary>
     public async ValueTask DisposeAsync()
     {
@@ -408,7 +410,14 @@ public sealed class GitRepositorySynchronizer : IAsyncDisposable
         _lifetimeCts.Cancel();
         if (_pushDebounceTimer != null)
         {
-            await _pushDebounceTimer.DisposeAsync().ConfigureAwait(false);
+            // Timer.Dispose(WaitHandle) blocks until any callback currently executing (i.e. an
+            // in-progress OnPushDebounceElapsed, which fire-and-forgets FlushPendingPushAsync)
+            // has finished running before signaling the wait handle, so by the time this
+            // completes the fire-and-forget push (if any) has already been started and is being
+            // tracked by the gate below.
+            using var waitHandle = new ManualResetEvent(false);
+            _pushDebounceTimer.Dispose(waitHandle);
+            await Task.Run(() => waitHandle.WaitOne()).ConfigureAwait(false);
         }
         if (_periodicPullLoop != null)
         {
@@ -421,6 +430,13 @@ public sealed class GitRepositorySynchronizer : IAsyncDisposable
                 // Expected on shutdown.
             }
         }
+        // Quiesce any operation still in flight (a debounced push started just before the timer
+        // was disposed, or a manually invoked FlushPendingPushAsync/TriggerRemoteSyncAsync call)
+        // by acquiring the gate: since every such operation holds the gate for its whole
+        // duration, waiting for it here guarantees none of them touches _gate or _cli after this
+        // method returns and disposes the synchronization primitives.
+        await _gate.WaitAsync().ConfigureAwait(false);
+        _gate.Release();
         _lifetimeCts.Dispose();
         _gate.Dispose();
     }
