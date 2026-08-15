@@ -120,6 +120,30 @@ public sealed class GitRepositoryLockManagerTests
     }
 
     [Fact]
+    public async Task AcquireReferenceLockAsync_CancelledWhileWaitingOnGlobalLock_DoesNotLeakActiveReaders()
+    {
+        // Arrange - hold the global lock so the first reference lock attempt has to wait on it
+        var lockManager = CreateLockManager();
+        var globalLock = await lockManager.LockAllAsync();
+        using var cts = new CancellationTokenSource();
+
+        // Act - request a reference lock, then cancel it while it is still waiting for the global lock
+        var acquireTask = lockManager.AcquireReferenceLockAsync("refs/heads/main", cts.Token);
+        await Task.Delay(50); // Give the acquire attempt a chance to start waiting on the global lock
+        cts.Cancel();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => await acquireTask);
+
+        // Release the global lock so subsequent operations are not blocked by it
+        globalLock.Dispose();
+
+        // Assert - _activeReaders must have been decremented on cancellation, otherwise LockAllAsync
+        // would still see an active reader and hang waiting for it to complete, and a reference lock
+        // could incorrectly proceed without the global lock being held.
+        using var secondGlobalLock = await lockManager.LockAllAsync(new CancellationTokenSource(TimeSpan.FromSeconds(5)).Token);
+    }
+
+    [Fact]
     public async Task AcquireReferenceLockAsync_MultipleTimes_WorksCorrectly()
     {
         // Arrange

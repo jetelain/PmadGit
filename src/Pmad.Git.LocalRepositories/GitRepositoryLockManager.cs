@@ -76,7 +76,15 @@ public sealed class GitRepositoryLockManager : IGitRepositoryLockManager
         {
             if (++_activeReaders == 1)
             {
-                await _globalLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+                try
+                {
+                    await _globalLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+                }
+                catch
+                {
+                    _activeReaders--;
+                    throw;
+                }
             }
         }
         finally
