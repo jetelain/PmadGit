@@ -6,7 +6,7 @@ namespace Pmad.Git.HttpServer;
 /// Service interface for managing <see cref="GitRepositorySynchronizer"/> instances that keep
 /// repositories managed by <see cref="IGitRepositoryService"/> synchronized with their remote.
 /// </summary>
-public interface IGitRepositorySynchronizerService
+public interface IGitRepositorySynchronizerService : IAsyncDisposable
 {
     /// <summary>
     /// Gets the cached <see cref="GitRepositorySynchronizer"/> for the repository at

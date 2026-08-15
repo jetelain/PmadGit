@@ -90,4 +90,15 @@ internal sealed class GitRepositorySynchronizerService : IGitRepositorySynchroni
             _ = synchronizer.DisposeAsync();
         }
     }
+
+    public async ValueTask DisposeAsync()
+    {
+        foreach (var path in _synchronizers.Keys)
+        {
+            if (_synchronizers.TryRemove(path, out var synchronizer))
+            {
+                await synchronizer.DisposeAsync().ConfigureAwait(false);
+            }
+        }
+    }
 }

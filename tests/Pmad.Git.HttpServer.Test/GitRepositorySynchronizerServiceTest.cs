@@ -158,6 +158,61 @@ public sealed class GitRepositorySynchronizerServiceTest : IDisposable
     }
 
     [Fact]
+    public async Task DisposeAsync_ShouldDisposeAllCachedSynchronizersAndClearCache()
+    {
+        // Arrange
+        var repository1 = CreateRepository();
+        var repository2 = CreateRepository();
+        var repositoryService = new GitRepositoryService();
+        var service = new GitRepositorySynchronizerService(repositoryService);
+        var synchronizer1 = service.SetupSynchronizer(repository1.WorkingDirectory, new GitSyncOptions());
+        var synchronizer2 = service.SetupSynchronizer(repository2.WorkingDirectory, new GitSyncOptions());
+
+        // Act
+        await service.DisposeAsync();
+
+        // Assert
+        Assert.Null(service.GetSynchronizerByPath(repository1.WorkingDirectory));
+        Assert.Null(service.GetSynchronizerByPath(repository2.WorkingDirectory));
+
+        // Disposed synchronizers should ignore further local-change notifications, confirming
+        // DisposeAsync was actually called on them (NotifyLocalChange is a no-op once disposed).
+        synchronizer1.NotifyLocalChange();
+        synchronizer2.NotifyLocalChange();
+
+        // Calling DisposeAsync again should be a no-op and not throw.
+        await synchronizer1.DisposeAsync();
+        await synchronizer2.DisposeAsync();
+    }
+
+    [Fact]
+    public async Task DisposeAsync_WithNoCachedSynchronizers_ShouldNotThrow()
+    {
+        // Arrange
+        var repositoryService = new GitRepositoryService();
+        var service = new GitRepositorySynchronizerService(repositoryService);
+
+        // Act & Assert (should not throw)
+        await service.DisposeAsync();
+    }
+
+    [Fact]
+    public async Task DisposeAsync_CalledTwice_ShouldNotThrow()
+    {
+        // Arrange
+        var repository = CreateRepository();
+        var repositoryService = new GitRepositoryService();
+        var service = new GitRepositorySynchronizerService(repositoryService);
+        service.SetupSynchronizer(repository.WorkingDirectory, new GitSyncOptions());
+
+        // Act
+        await service.DisposeAsync();
+
+        // Assert (should not throw)
+        await service.DisposeAsync();
+    }
+
+    [Fact]
     public async Task SetupSynchronizerAsync_WithNonExistentPath_ShouldCloneAndCreateSynchronizer()
     {
         // Arrange
