@@ -74,7 +74,7 @@ public class GitCliRepository
     {
         if (!Directory.Exists(rootPath))
         {
-            throw new ArgumentException($"Directory '{rootPath}' does not exists.", nameof(rootPath));
+            throw new ArgumentException($"Directory '{rootPath}' does not exist.", nameof(rootPath));
         }
         RootPath = rootPath;
         _gitRunner = gitRunner;
