@@ -312,4 +312,15 @@ public interface IGitRepository : IGitRepositoryCacheInvalidator
     Task DeleteReferenceAsync(
         string referencePath,
         CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Writes a Git tree object representing the stage 0 entries in the specified index.
+    /// </summary>
+    /// <param name="index">The Git index containing entries to write.</param>
+    /// <param name="cancellationToken">Token used to cancel the async operation.</param>
+    /// <returns>The root tree hash.</returns>
+    Task<GitHash> WriteTreeAsync(
+        GitIndex index,
+        CancellationToken cancellationToken = default);
 }
+

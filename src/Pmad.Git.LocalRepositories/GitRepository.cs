@@ -1368,7 +1368,20 @@ public sealed class GitRepository : IGitRepository, IGitRepositoryCacheInvalidat
         }
     }
 
-    private async Task<GitHash> BuildTreeAsync(IReadOnlyDictionary<string, TreeLeaf> leaves, CancellationToken cancellationToken)
+    /// <inheritdoc />
+    public async Task<GitHash> WriteTreeAsync(GitIndex index, CancellationToken cancellationToken = default)
+    {
+        if (index is null)
+        {
+            throw new ArgumentNullException(nameof(index));
+        }
+
+        var leaves = index.Entries.Where(e => e.Stage == 0)
+            .ToDictionary(e => e.Path, e => new TreeLeaf(e.FileMode, e.Hash), StringComparer.Ordinal);
+        return await BuildTreeAsync(leaves, cancellationToken).ConfigureAwait(false);
+    }
+
+    internal async Task<GitHash> BuildTreeAsync(IReadOnlyDictionary<string, TreeLeaf> leaves, CancellationToken cancellationToken)
     {
         var root = new TreeBuilderNode();
         foreach (var (path, leaf) in leaves)
@@ -1431,7 +1444,7 @@ public sealed class GitRepository : IGitRepository, IGitRepositoryCacheInvalidat
         return await _objectStore.WriteObjectAsync(GitObjectType.Tree, buffer.ToArray(), cancellationToken).ConfigureAwait(false);
     }
 
-    private static byte[] BuildCommitPayload(GitHash treeHash, IEnumerable<GitHash> parents, GitCommitMetadata metadata)
+    internal static byte[] BuildCommitPayload(GitHash treeHash, IEnumerable<GitHash> parents, GitCommitMetadata metadata)
     {
         var builder = new StringBuilder();
         builder.Append("tree ").Append(treeHash.Value).Append('\n');

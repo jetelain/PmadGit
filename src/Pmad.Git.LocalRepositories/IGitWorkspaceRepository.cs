@@ -1,0 +1,154 @@
+namespace Pmad.Git.LocalRepositories;
+
+/// <summary>
+/// Represents a Git repository with an active working tree and index (.git/index),
+/// providing in-process status, staging, committing, amending, resetting, and undo/revert operations.
+/// </summary>
+public interface IGitWorkspaceRepository : IGitRepository, IDisposable
+{
+    /// <summary>
+    /// Gets the index manager for working tree and staging operations.
+    /// </summary>
+    new GitIndexManager IndexManager { get; }
+
+    /// <summary>
+    /// Inspects the working tree and staging area, returning status for modified,
+    /// staged, deleted, untracked, and conflicted files.
+    /// </summary>
+    /// <param name="includeUntracked">Whether to detect untracked files.</param>
+    /// <param name="includeClean">Whether to include unmodified files in the result.</param>
+    /// <param name="cancellationToken">Token used to cancel the async operation.</param>
+    /// <returns>A <see cref="GitStatusResult"/> representing repository state.</returns>
+    Task<GitStatusResult> GetStatusAsync(
+        bool includeUntracked = true,
+        bool includeClean = false,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Quick check returning true if the working tree has no staged, unstaged, or conflicted changes.
+    /// </summary>
+    /// <param name="cancellationToken">Token used to cancel the async operation.</param>
+    /// <returns>True if the working tree is clean; false otherwise.</returns>
+    Task<bool> IsWorkingTreeCleanAsync(CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Stages a single file into the index (.git/index).
+    /// </summary>
+    /// <param name="relativePath">Repository-relative file path.</param>
+    /// <param name="cancellationToken">Token used to cancel the async operation.</param>
+    Task StageAsync(string relativePath, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Stages multiple files into the index in a single batch.
+    /// </summary>
+    /// <param name="relativePaths">Collection of repository-relative file paths.</param>
+    /// <param name="cancellationToken">Token used to cancel the async operation.</param>
+    Task StageAsync(IEnumerable<string> relativePaths, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Stages all modified, added, and deleted files in the working tree.
+    /// </summary>
+    /// <param name="cancellationToken">Token used to cancel the async operation.</param>
+    Task StageAllAsync(CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Unstages a single file by reverting its index entry to match HEAD.
+    /// </summary>
+    /// <param name="relativePath">Repository-relative file path.</param>
+    /// <param name="cancellationToken">Token used to cancel the async operation.</param>
+    Task UnstageAsync(string relativePath, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Unstages multiple files by reverting their index entries to match HEAD.
+    /// </summary>
+    /// <param name="relativePaths">Collection of repository-relative file paths.</param>
+    /// <param name="cancellationToken">Token used to cancel the async operation.</param>
+    Task UnstageAsync(IEnumerable<string> relativePaths, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Unstages all files, resetting the entire index (.git/index) to match HEAD.
+    /// </summary>
+    /// <param name="cancellationToken">Token used to cancel the async operation.</param>
+    Task UnstageAllAsync(CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Discards working tree modifications for a file by restoring its content from the index or HEAD.
+    /// </summary>
+    /// <param name="relativePath">Repository-relative file path.</param>
+    /// <param name="cancellationToken">Token used to cancel the async operation.</param>
+    Task RestoreFileAsync(string relativePath, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Discards all working tree modifications and deletions.
+    /// </summary>
+    /// <param name="removeUntracked">Whether to also delete untracked files from disk.</param>
+    /// <param name="cancellationToken">Token used to cancel the async operation.</param>
+    Task RestoreAllAsync(bool removeUntracked = false, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Creates a new commit from currently staged changes (or all tracked changes if stageAll is true),
+    /// advances the current branch reference, and synchronizes the index stat cache.
+    /// </summary>
+    /// <param name="message">The commit message.</param>
+    /// <param name="metadata">Optional commit author and committer metadata.</param>
+    /// <param name="stageAll">When true, stages all modified and deleted files before committing.</param>
+    /// <param name="cancellationToken">Token used to cancel the async operation.</param>
+    /// <returns>The hash of the created commit.</returns>
+    Task<GitHash> CommitAsync(
+        string message,
+        GitCommitMetadata? metadata = null,
+        bool stageAll = false,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Amends the current HEAD commit using staged changes, preserving original author and parents.
+    /// </summary>
+    /// <param name="message">New commit message; if null, keeps existing commit message.</param>
+    /// <param name="metadata">Optional commit author and committer metadata.</param>
+    /// <param name="stageAll">When true, stages all modified and deleted files before amending.</param>
+    /// <param name="cancellationToken">Token used to cancel the async operation.</param>
+    /// <returns>The hash of the amended commit.</returns>
+    Task<GitHash> CommitAmendAsync(
+        string? message = null,
+        GitCommitMetadata? metadata = null,
+        bool stageAll = false,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Resets the current branch to a specific commit using the specified mode.
+    /// </summary>
+    /// <param name="targetCommitHash">Target commit hash to reset to.</param>
+    /// <param name="mode">Reset mode (Soft, Mixed, Hard).</param>
+    /// <param name="cancellationToken">Token used to cancel the async operation.</param>
+    Task ResetAsync(
+        GitHash targetCommitHash,
+        GitResetMode mode = GitResetMode.Mixed,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Squashes all commits between baseCommitHash and current HEAD into a single milestone commit,
+    /// keeping working tree and index in sync.
+    /// </summary>
+    /// <param name="baseCommitHash">Ancestor base commit to squash onto.</param>
+    /// <param name="message">Milestone commit message.</param>
+    /// <param name="metadata">Optional commit author and committer metadata.</param>
+    /// <param name="cancellationToken">Token used to cancel the async operation.</param>
+    /// <returns>The hash of the squashed commit.</returns>
+    Task<GitHash> SquashRangeAsync(
+        GitHash baseCommitHash,
+        string message,
+        GitCommitMetadata? metadata = null,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Creates a revert commit that inverses the changes introduced by the specified commit.
+    /// </summary>
+    /// <param name="commitHash">The commit to revert.</param>
+    /// <param name="metadata">Optional commit metadata (uses default revert message if null).</param>
+    /// <param name="cancellationToken">Token used to cancel the async operation.</param>
+    /// <returns>The hash of the revert commit.</returns>
+    Task<GitHash> RevertAsync(
+        GitHash commitHash,
+        GitCommitMetadata? metadata = null,
+        CancellationToken cancellationToken = default);
+}
