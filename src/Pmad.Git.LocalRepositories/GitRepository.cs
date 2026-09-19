@@ -54,6 +54,14 @@ public sealed class GitRepository : IGitRepository, IGitRepositoryCacheInvalidat
     public int HashLengthBytes => _objectStore.HashLengthBytes;
 
     /// <inheritdoc />
+    public bool IsBare => string.Equals(RootPath, GitDirectory, StringComparison.OrdinalIgnoreCase);
+
+    private GitIndexManager? _indexManager;
+
+    /// <inheritdoc />
+    public GitIndexManager? IndexManager => !IsBare ? (_indexManager ??= new GitIndexManager(this, RootPath)) : null;
+
+    /// <inheritdoc />
     public IGitObjectStore ObjectStore => _objectStore;
 
     /// <inheritdoc />

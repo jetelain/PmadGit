@@ -1,4 +1,4 @@
-﻿using System.Security.Cryptography;
+using System.Security.Cryptography;
 
 namespace Pmad.Git.LocalRepositories;
 
@@ -32,4 +32,26 @@ public static class GitHashHelper
         GitHash.Sha256ByteLength => SHA256.Create(),
         _ => throw new NotSupportedException("Unsupported git hash length")
     };
+
+    /// <summary>
+    /// Computes the Git blob hash for the specified raw payload.
+    /// </summary>
+    /// <param name="content">Raw content to hash as a Git blob.</param>
+    /// <param name="hashLengthBytes">The length, in bytes, of the desired hash algorithm.</param>
+    /// <returns>The computed <see cref="GitHash"/>.</returns>
+    public static GitHash ComputeBlobHash(ReadOnlySpan<byte> content, int hashLengthBytes = GitHash.Sha1ByteLength)
+    {
+        var algorithmName = GetAlgorithmName(hashLengthBytes);
+        using var hashAlgo = IncrementalHash.CreateHash(algorithmName);
+        var header = System.Text.Encoding.ASCII.GetBytes($"blob {content.Length}\0");
+        hashAlgo.AppendData(header);
+        hashAlgo.AppendData(content);
+        Span<byte> hashBytes = stackalloc byte[hashLengthBytes];
+        if (!hashAlgo.TryGetHashAndReset(hashBytes, out _))
+        {
+            throw new InvalidOperationException("Failed to compute blob hash.");
+        }
+        return GitHash.FromBytes(hashBytes);
+    }
 }
+

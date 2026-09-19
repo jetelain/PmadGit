@@ -21,6 +21,16 @@ public interface IGitRepository : IGitRepositoryCacheInvalidator
     int HashLengthBytes { get; }
 
     /// <summary>
+    /// Gets a value indicating whether this repository is bare (no working directory).
+    /// </summary>
+    bool IsBare { get; }
+
+    /// <summary>
+    /// Gets the index manager for working tree and staging operations, or null if the repository is bare.
+    /// </summary>
+    GitIndexManager? IndexManager { get; }
+
+    /// <summary>
     /// Gets the underlying object store used to access Git objects.
     /// </summary>
     /// <remarks>The object store provides low-level access to Git objects such as commits, trees, blobs, and

@@ -62,10 +62,12 @@ internal sealed class GitReferenceStore : IGitReferenceStore
                 var target = content[5..].Trim();
                 return await TryResolveReferenceAsync(target, cancellationToken).ConfigureAwait(false);
             }
+
             if (GitHash.TryParse(content, out hash))
             {
                 return hash;
             }
+
         }
 
         return null;
