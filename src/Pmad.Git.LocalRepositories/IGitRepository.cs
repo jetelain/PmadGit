@@ -166,6 +166,36 @@ public interface IGitRepository : IGitRepositoryCacheInvalidator
         CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Amends the current HEAD commit on the specified branch by creating a new commit
+    /// that has the same parent(s) as the current HEAD commit, and updating the branch reference.
+    /// </summary>
+    /// <param name="branchName">Branch to update (short name or fully qualified ref).</param>
+    /// <param name="operations">Sequence of file-system operations to apply to the commit tree.</param>
+    /// <param name="metadata">Optional commit metadata. If null, the existing commit's message and author are preserved, with an updated committer timestamp.</param>
+    /// <param name="cancellationToken">Token used to cancel the async operation.</param>
+    /// <returns>The hash of the newly created amended commit.</returns>
+    Task<GitHash> AmendCommitAsync(
+        string branchName,
+        IEnumerable<GitCommitOperation> operations,
+        GitCommitMetadata? metadata = null,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Creates a single squashed commit containing the current HEAD tree of the specified branch,
+    /// setting its parent to <paramref name="baseCommitHash"/>, and advances the branch reference.
+    /// </summary>
+    /// <param name="branchName">Branch to update (short name or fully qualified ref).</param>
+    /// <param name="baseCommitHash">The ancestor commit to set as the single parent of the squashed commit.</param>
+    /// <param name="metadata">Commit metadata (message, author, committer) for the squashed commit.</param>
+    /// <param name="cancellationToken">Token used to cancel the async operation.</param>
+    /// <returns>The hash of the newly created squashed commit.</returns>
+    Task<GitHash> SquashCommitsAsync(
+        string branchName,
+        GitHash baseCommitHash,
+        GitCommitMetadata metadata,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// Lists files under the optional <paramref name="path"/> in the specified <paramref name="reference"/> along with the last commit that changed each file.
     /// This is more efficient than calling <see cref="EnumerateCommitTreeAsync"/> followed by <see cref="EnumerateFileHistoryAsync"/> for each file
     /// because the commit graph is traversed only once.

@@ -774,6 +774,150 @@ public sealed class GitRepository : IGitRepository, IGitRepositoryCacheInvalidat
         }
     }
 
+    /// <inheritdoc />
+    public async Task<GitHash> AmendCommitAsync(
+        string branchName,
+        IEnumerable<GitCommitOperation> operations,
+        GitCommitMetadata? metadata = null,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(branchName))
+        {
+            throw new ArgumentException("Branch name cannot be empty", nameof(branchName));
+        }
+
+        if (operations is null)
+        {
+            throw new ArgumentNullException(nameof(operations));
+        }
+
+        var referencePath = NormalizeReference(branchName);
+
+        using (await _referenceStore.AcquireReferenceLockAsync(referencePath, cancellationToken).ConfigureAwait(false))
+        {
+            var headHash = await _referenceStore.TryResolveReferenceAsync(referencePath, cancellationToken).ConfigureAwait(false)
+                ?? throw new InvalidOperationException($"Cannot amend commit on branch '{branchName}' because the branch does not exist or has no commits.");
+
+            var currentCommit = await GetCommitAsync(headHash, cancellationToken).ConfigureAwait(false);
+            var entries = await LoadLeafEntriesAsync(currentCommit.Tree, cancellationToken).ConfigureAwait(false);
+
+            foreach (var operation in operations)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                if (operation is null)
+                {
+                    throw new ArgumentException("Operations cannot contain null entries", nameof(operations));
+                }
+
+                var normalizedPath = NormalizePath(operation.Path);
+                switch (operation)
+                {
+                    case AddFileOperation add:
+                        await ApplyAddFileAsync(entries, normalizedPath, add.Content, cancellationToken).ConfigureAwait(false);
+                        break;
+                    case UpdateFileOperation update:
+                        await ApplyUpdateFileAsync(entries, normalizedPath, update.Content, update.ExpectedPreviousHash, cancellationToken).ConfigureAwait(false);
+                        break;
+                    case RemoveFileOperation _:
+                        ApplyRemoveFile(entries, normalizedPath);
+                        break;
+                    case MoveFileOperation move:
+                        ApplyMoveFile(entries, normalizedPath, NormalizePath(move.DestinationPath));
+                        break;
+                    case AddFileStreamOperation addStream:
+                        await ApplyAddFileStreamAsync(entries, normalizedPath, addStream.Content, cancellationToken).ConfigureAwait(false);
+                        break;
+                    case UpdateFileStreamOperation updateStream:
+                        await ApplyUpdateFileStreamAsync(entries, normalizedPath, updateStream.Content, updateStream.ExpectedPreviousHash, cancellationToken).ConfigureAwait(false);
+                        break;
+                    default:
+                        throw new NotSupportedException($"Unsupported operation type '{operation.GetType().Name}'.");
+                }
+            }
+
+            var committer = new GitCommitSignature(
+                currentCommit.Metadata.Committer.Name,
+                currentCommit.Metadata.Committer.Email,
+                DateTimeOffset.UtcNow);
+
+            var effectiveMetadata = metadata ?? new GitCommitMetadata(
+                currentCommit.Metadata.Message,
+                currentCommit.Metadata.Author,
+                committer);
+
+            var newTreeHash = await BuildTreeAsync(entries, cancellationToken).ConfigureAwait(false);
+
+            var commitPayload = BuildCommitPayload(newTreeHash, currentCommit.Parents, effectiveMetadata);
+            var commitHash = await _objectStore.WriteObjectAsync(GitObjectType.Commit, commitPayload, cancellationToken).ConfigureAwait(false);
+
+            var parsedCommit = GitCommit.Parse(commitHash, commitPayload);
+            lock (_commitLock)
+            {
+                _commitCache[commitHash] = parsedCommit;
+            }
+
+            await _referenceStore.WriteReferenceWithValidationInternalAsync(referencePath, headHash, commitHash, cancellationToken).ConfigureAwait(false);
+
+            Changed?.Invoke(this, EventArgs.Empty);
+
+            return commitHash;
+        }
+    }
+
+    /// <inheritdoc />
+    public async Task<GitHash> SquashCommitsAsync(
+        string branchName,
+        GitHash baseCommitHash,
+        GitCommitMetadata metadata,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(branchName))
+        {
+            throw new ArgumentException("Branch name cannot be empty", nameof(branchName));
+        }
+
+        if (metadata is null)
+        {
+            throw new ArgumentNullException(nameof(metadata));
+        }
+
+        var referencePath = NormalizeReference(branchName);
+
+        using (await _referenceStore.AcquireReferenceLockAsync(referencePath, cancellationToken).ConfigureAwait(false))
+        {
+            var headHash = await _referenceStore.TryResolveReferenceAsync(referencePath, cancellationToken).ConfigureAwait(false)
+                ?? throw new InvalidOperationException($"Cannot squash commits on branch '{branchName}' because the branch does not exist or has no commits.");
+
+            if (headHash.Equals(baseCommitHash))
+            {
+                throw new InvalidOperationException("Cannot squash commits: branch HEAD is already at base commit.");
+            }
+
+            var isReachable = await IsCommitReachableAsync(headHash, baseCommitHash, cancellationToken).ConfigureAwait(false);
+            if (!isReachable)
+            {
+                throw new ArgumentException($"Base commit '{baseCommitHash.Value}' is not an ancestor of branch HEAD '{headHash.Value}'.", nameof(baseCommitHash));
+            }
+
+            var headCommit = await GetCommitAsync(headHash, cancellationToken).ConfigureAwait(false);
+
+            var commitPayload = BuildCommitPayload(headCommit.Tree, new[] { baseCommitHash }, metadata);
+            var commitHash = await _objectStore.WriteObjectAsync(GitObjectType.Commit, commitPayload, cancellationToken).ConfigureAwait(false);
+
+            var parsedCommit = GitCommit.Parse(commitHash, commitPayload);
+            lock (_commitLock)
+            {
+                _commitCache[commitHash] = parsedCommit;
+            }
+
+            await _referenceStore.WriteReferenceWithValidationInternalAsync(referencePath, headHash, commitHash, cancellationToken).ConfigureAwait(false);
+
+            Changed?.Invoke(this, EventArgs.Empty);
+
+            return commitHash;
+        }
+    }
+
     /// <summary>
     /// Clears cached git metadata so subsequent operations reflect the current repository state.
     /// </summary>
@@ -1279,13 +1423,13 @@ public sealed class GitRepository : IGitRepository, IGitRepositoryCacheInvalidat
         return await _objectStore.WriteObjectAsync(GitObjectType.Tree, buffer.ToArray(), cancellationToken).ConfigureAwait(false);
     }
 
-    private static byte[] BuildCommitPayload(GitHash treeHash, GitHash? parentHash, GitCommitMetadata metadata)
+    private static byte[] BuildCommitPayload(GitHash treeHash, IEnumerable<GitHash> parents, GitCommitMetadata metadata)
     {
         var builder = new StringBuilder();
         builder.Append("tree ").Append(treeHash.Value).Append('\n');
-        if (parentHash.HasValue)
+        foreach (var parent in parents)
         {
-            builder.Append("parent ").Append(parentHash.Value.Value).Append('\n');
+            builder.Append("parent ").Append(parent.Value).Append('\n');
         }
         builder.Append("author ")
             .Append(metadata.Author.ToHeaderValue())
@@ -1296,6 +1440,11 @@ public sealed class GitRepository : IGitRepository, IGitRepositoryCacheInvalidat
         builder.Append('\n');
         builder.Append(metadata.Message);
         return Encoding.UTF8.GetBytes(builder.ToString());
+    }
+
+    private static byte[] BuildCommitPayload(GitHash treeHash, GitHash? parentHash, GitCommitMetadata metadata)
+    {
+        return BuildCommitPayload(treeHash, parentHash.HasValue ? new[] { parentHash.Value } : Array.Empty<GitHash>(), metadata);
     }
 
     private static string NormalizePath(string path)
