@@ -155,4 +155,85 @@ public sealed class GitReferenceStoreBranchAndCustomRefsTests
         await repo.DeleteReferenceAsync(backupRef);
         Assert.Equal(2, changeCount);
     }
+
+    [Fact]
+    public async Task GetCurrentBranchNameAsync_WhenBranchDoesNotExist_ReturnsNull()
+    {
+        using var testRepo = GitTestRepository.Create();
+        testRepo.RunGit("symbolic-ref HEAD refs/heads/missing-branch");
+
+        var repo = GitRepository.Open(testRepo.WorkingDirectory);
+        var branchName = await repo.GetCurrentBranchNameAsync();
+
+        Assert.Null(branchName);
+    }
+
+    [Fact]
+    public async Task GetCurrentBranchNameAsync_WhenBranchIsPacked_ReturnsBranchName()
+    {
+        using var testRepo = GitTestRepository.Create();
+        testRepo.RunGit("pack-refs --all");
+
+        var repo = GitRepository.Open(testRepo.WorkingDirectory);
+        var branchName = await repo.GetCurrentBranchNameAsync();
+
+        Assert.Equal("master", branchName);
+    }
+
+    [Theory]
+    [InlineData("refs/../HEAD")]
+    [InlineData("refs/heads/../../HEAD")]
+    [InlineData("refs/./test")]
+    [InlineData("refs/backups/..")]
+    [InlineData("refs/heads/foo..bar")]
+    [InlineData("refs/heads/.hidden")]
+    [InlineData("refs/heads/branch.lock")]
+    [InlineData("refs/heads/branch with space")]
+    public async Task CreateReferenceAsync_WithInvalidOrTraversalPath_ThrowsArgumentException(string invalidRef)
+    {
+        using var testRepo = GitTestRepository.Create();
+        var repo = GitRepository.Open(testRepo.WorkingDirectory);
+        var headCommit = await repo.GetCommitAsync();
+
+        await Assert.ThrowsAsync<ArgumentException>(() => repo.CreateReferenceAsync(invalidRef, headCommit.Id));
+    }
+
+    [Fact]
+    public async Task DeleteReferenceAsync_PackedRef_RemovesFromPackedRefsAndCannotBeResolved()
+    {
+        using var testRepo = GitTestRepository.Create();
+        var repo = GitRepository.Open(testRepo.WorkingDirectory);
+        var headCommit = await repo.GetCommitAsync();
+
+        const string backupRef = "refs/backups/packed-backup";
+        await repo.CreateReferenceAsync(backupRef, headCommit.Id);
+
+        // Pack references using git CLI
+        testRepo.RunGit("pack-refs --all");
+
+        // Confirm it is in packed-refs
+        var packedRefsPath = Path.Combine(testRepo.GitDirectory, "packed-refs");
+        Assert.True(File.Exists(packedRefsPath));
+        var packedContentBefore = await File.ReadAllTextAsync(packedRefsPath);
+        Assert.Contains(backupRef, packedContentBefore);
+
+        // Delete the reference
+        await repo.DeleteReferenceAsync(backupRef);
+
+        // Verify it cannot be resolved through reference store
+        var resolved = await repo.ReferenceStore.TryResolveReferenceAsync(backupRef);
+        Assert.Null(resolved);
+
+        // Recreate cache/store to ensure it doesn't reappear from packed-refs
+        repo.InvalidateCaches();
+        var resolvedAfterInvalidate = await repo.ReferenceStore.TryResolveReferenceAsync(backupRef);
+        Assert.Null(resolvedAfterInvalidate);
+
+        var allRefs = await repo.ReferenceStore.GetReferencesAsync();
+        Assert.DoesNotContain(backupRef, allRefs.Keys);
+
+        // Verify packed-refs file was updated on disk
+        var packedContentAfter = await File.ReadAllTextAsync(packedRefsPath);
+        Assert.DoesNotContain(backupRef, packedContentAfter);
+    }
 }
