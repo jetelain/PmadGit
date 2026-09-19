@@ -132,12 +132,86 @@ public sealed class GitIndexTests
     [Fact]
     public void FromBytes_ThrowsOnInvalidMagic()
     {
+        // Arrange: build a valid index, corrupt the first magic byte, then recompute
+        // the trailing SHA-1 checksum so that the magic check (not the checksum check) fires.
         var validData = new GitIndex().ToByteArray();
-        validData[0] = (byte)'X'; // Corrupt 'D' -> 'X'
 
-        // Recompute trailing checksum so it fails magic check instead of checksum
-        // Or simply test that invalid signature or checksum fails
-        Assert.Throws<InvalidDataException>(() => GitIndex.FromBytes(validData));
+        // Corrupt 'D' -> 'X'
+        validData[0] = (byte)'X';
+
+        // Recompute SHA-1 checksum over everything except the last 20 bytes
+        var bodyLength = validData.Length - GitHash.Sha1ByteLength;
+        using var sha1 = System.Security.Cryptography.SHA1.Create();
+        var newChecksum = sha1.ComputeHash(validData, 0, bodyLength);
+        newChecksum.CopyTo(validData, bodyLength);
+
+        var ex = Assert.Throws<InvalidDataException>(() => GitIndex.FromBytes(validData));
+        Assert.Contains("DIRC", ex.Message);
+    }
+
+    [Fact]
+    public void ToByteArray_ThrowsWhenEntryHashLengthMismatchesSha256Index()
+    {
+        // A SHA-1 hash (20 bytes) in an index serialised as SHA-256 (32 bytes) must be rejected.
+        var index = new GitIndex();
+        var sha1Hash = new GitHash("aabbccddeeff00112233445566778899aabbccdd"); // 20-byte SHA-1
+        index.Entries.Add(new GitIndexEntry("file.txt", sha1Hash));
+
+        Assert.Throws<InvalidOperationException>(() => index.ToByteArray(GitHash.Sha256ByteLength));
+    }
+
+    [Fact]
+    public void ToByteArray_ThrowsWhenEntryHashLengthMismatchesSha1Index()
+    {
+        // A SHA-256 hash (32 bytes) in an index serialised as SHA-1 (20 bytes) must be rejected.
+        var index = new GitIndex();
+        var sha256Hash = new GitHash("aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899"); // 32-byte SHA-256
+        index.Entries.Add(new GitIndexEntry("file.txt", sha256Hash));
+
+        Assert.Throws<InvalidOperationException>(() => index.ToByteArray(GitHash.Sha1ByteLength));
+    }
+
+    [Fact]
+    public void FromFileInfo_CtimeEqualsToMtime()
+    {
+        // Git uses mtime as ctime on Windows (no kernel inode-change-time API).
+        // Verify that FromFileInfo sets ctime == mtime, not the file birth/creation time.
+        var tmpPath = Path.Combine(Path.GetTempPath(), $"pmad_ctime_test_{Guid.NewGuid():N}.txt");
+        try
+        {
+            File.WriteAllText(tmpPath, "ctime test");
+            var hash = new GitHash("1111111111111111111111111111111111111111");
+            var fi = new FileInfo(tmpPath);
+
+            var entry = GitIndexEntry.FromFileInfo("ctime_test.txt", fi, hash);
+
+            Assert.Equal(entry.MtimeSeconds, entry.CtimeSeconds);
+            Assert.Equal(entry.MtimeNanoseconds, entry.CtimeNanoseconds);
+        }
+        finally
+        {
+            File.Delete(tmpPath);
+        }
+    }
+
+    [Fact]
+    public void FromFileInfo_RegularFileHasMode100644()
+    {
+        var tmpPath = Path.Combine(Path.GetTempPath(), $"pmad_mode_test_{Guid.NewGuid():N}.txt");
+        try
+        {
+            File.WriteAllText(tmpPath, "mode test");
+            var hash = new GitHash("1111111111111111111111111111111111111111");
+            var fi = new FileInfo(tmpPath);
+
+            var entry = GitIndexEntry.FromFileInfo("mode_test.txt", fi, hash);
+
+            Assert.Equal(33188, entry.FileMode); // 100644
+        }
+        finally
+        {
+            File.Delete(tmpPath);
+        }
     }
 
     [Fact]

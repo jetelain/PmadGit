@@ -227,6 +227,14 @@ public sealed class GitIndex
 
             foreach (var entry in Entries)
             {
+                var hashBytes = entry.Hash.ToByteArray();
+                if (hashBytes.Length != hashLengthBytes)
+                {
+                    throw new InvalidOperationException(
+                        $"Entry '{entry.Path}' has a {hashBytes.Length}-byte hash but the index was opened with hashLengthBytes={hashLengthBytes}. " +
+                        "All entries must use the same hash algorithm as the index.");
+                }
+
                 BinaryPrimitives.WriteUInt32BigEndian(entryHeader.AsSpan(0, 4), entry.CtimeSeconds);
                 BinaryPrimitives.WriteUInt32BigEndian(entryHeader.AsSpan(4, 4), entry.CtimeNanoseconds);
                 BinaryPrimitives.WriteUInt32BigEndian(entryHeader.AsSpan(8, 4), entry.MtimeSeconds);
@@ -238,7 +246,6 @@ public sealed class GitIndex
                 BinaryPrimitives.WriteUInt32BigEndian(entryHeader.AsSpan(32, 4), entry.Gid);
                 BinaryPrimitives.WriteUInt32BigEndian(entryHeader.AsSpan(36, 4), entry.FileSize);
 
-                var hashBytes = entry.Hash.ToByteArray();
                 hashBytes.CopyTo(entryHeader, 40);
 
                 var pathBytes = Encoding.UTF8.GetBytes(entry.Path);

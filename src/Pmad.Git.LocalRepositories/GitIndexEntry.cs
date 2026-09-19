@@ -119,14 +119,30 @@ public sealed class GitIndexEntry
     /// <param name="blobHash">The blob hash of the file content.</param>
     /// <param name="stage">Stage number (0 for normal).</param>
     /// <returns>A new <see cref="GitIndexEntry"/> with stat cache fields populated.</returns>
+    /// <remarks>
+    /// The <c>ctime</c> fields in the Git index represent the inode metadata-change time, not the
+    /// file birth/creation time. On Windows no true ctime is exposed; Git itself uses the last-write
+    /// time for both mtime and ctime in that case, which is what we replicate here.
+    /// On Unix the executable bit is preserved: a file whose owner-execute permission is set is stored
+    /// with mode 100755, all others with 100644.
+    /// </remarks>
     public static GitIndexEntry FromFileInfo(string relativePath, FileInfo fileInfo, GitHash blobHash, int stage = 0)
     {
         var mtimeUtc = fileInfo.LastWriteTimeUtc;
-        var ctimeUtc = fileInfo.CreationTimeUtc;
+
+        // Git uses last-write time for both mtime and ctime on Windows (no kernel-change-time API).
+        // On Unix we could use stat(2) st_ctime, but .NET does not expose it directly; using mtime
+        // is the same conservative strategy Git itself uses when inode change time is unavailable.
+        var ctimeUtc = mtimeUtc;
+
         var mtimeSec = (uint)Math.Max(0, new DateTimeOffset(mtimeUtc).ToUnixTimeSeconds());
         var mtimeNano = (uint)((mtimeUtc.Ticks % TimeSpan.TicksPerSecond) * 100);
         var ctimeSec = (uint)Math.Max(0, new DateTimeOffset(ctimeUtc).ToUnixTimeSeconds());
         var ctimeNano = (uint)((ctimeUtc.Ticks % TimeSpan.TicksPerSecond) * 100);
+
+        // Derive mode: 100755 for executable, 100644 for regular.
+        // On Windows there are no Unix permission bits, so we always use 100644.
+        var fileMode = GetFileMode(fileInfo);
 
         var pathBytesLen = Encoding.UTF8.GetByteCount(relativePath);
         var pathLen = (ushort)Math.Min(pathBytesLen, 0xFFF);
@@ -135,12 +151,38 @@ public sealed class GitIndexEntry
         return new GitIndexEntry(
             relativePath.Replace('\\', '/'),
             blobHash,
-            fileMode: 33188, // 100644
+            fileMode: fileMode,
             fileSize: (uint)Math.Min(fileInfo.Length, uint.MaxValue),
             mtimeSeconds: mtimeSec,
             mtimeNanoseconds: mtimeNano,
             ctimeSeconds: ctimeSec,
             ctimeNanoseconds: ctimeNano,
             flags: flags);
+    }
+
+    /// <summary>
+    /// Returns the Git file mode for the given file: 33261 (100755) when the file is executable on
+    /// Unix, or 33188 (100644) otherwise (including all Windows files).
+    /// </summary>
+    private static int GetFileMode(FileInfo fileInfo)
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            // On Unix, inspect owner-execute bit via UnixFileMode (available since .NET 7).
+            try
+            {
+                var mode = File.GetUnixFileMode(fileInfo.FullName);
+                if ((mode & UnixFileMode.UserExecute) != 0)
+                {
+                    return 33261; // 100755
+                }
+            }
+            catch (Exception)
+            {
+                // Fall through to default if the API fails for any reason.
+            }
+        }
+
+        return 33188; // 100644
     }
 }
