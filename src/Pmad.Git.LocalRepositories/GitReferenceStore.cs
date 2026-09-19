@@ -97,6 +97,99 @@ internal sealed class GitReferenceStore : IGitReferenceStore
     }
 
     /// <inheritdoc/>
+    public async Task<string?> GetCurrentBranchNameAsync(CancellationToken cancellationToken = default)
+    {
+        var headPath = Path.Combine(_gitDirectory, "HEAD");
+        if (!File.Exists(headPath))
+        {
+            return null;
+        }
+
+        var content = (await File.ReadAllTextAsync(headPath, cancellationToken).ConfigureAwait(false)).Trim();
+        const string prefix = "ref: refs/heads/";
+        if (content.StartsWith(prefix, StringComparison.Ordinal))
+        {
+            var branch = content[prefix.Length..].Trim();
+            return string.IsNullOrEmpty(branch) ? null : branch;
+        }
+
+        return null;
+    }
+
+    /// <inheritdoc/>
+    public async Task<bool> IsHeadDetachedAsync(CancellationToken cancellationToken = default)
+    {
+        var headPath = Path.Combine(_gitDirectory, "HEAD");
+        if (!File.Exists(headPath))
+        {
+            return false;
+        }
+
+        var content = (await File.ReadAllTextAsync(headPath, cancellationToken).ConfigureAwait(false)).Trim();
+        return !content.StartsWith("ref: ", StringComparison.Ordinal) && GitHash.TryParse(content, out _);
+    }
+
+    /// <inheritdoc/>
+    public async Task CreateReferenceAsync(
+        string referencePath,
+        GitHash targetCommit,
+        bool overwrite = false,
+        CancellationToken cancellationToken = default)
+    {
+        var normalized = NormalizeAbsoluteReferencePath(referencePath);
+        using (await _lockManager.AcquireReferenceLockAsync(normalized, cancellationToken).ConfigureAwait(false))
+        {
+            if (!overwrite)
+            {
+                var existing = await TryResolveReferenceAsync(normalized, cancellationToken).ConfigureAwait(false);
+                if (existing.HasValue)
+                {
+                    throw new InvalidOperationException($"Reference '{normalized}' already exists with value {existing.Value.Value}");
+                }
+            }
+
+            await WriteReferenceAsync(normalized, targetCommit, cancellationToken).ConfigureAwait(false);
+            Interlocked.Exchange(ref _cache, CreateCache());
+        }
+    }
+
+    /// <inheritdoc/>
+    public async Task<IReadOnlyDictionary<string, GitHash>> GetReferencesByPrefixAsync(
+        string prefix,
+        CancellationToken cancellationToken = default)
+    {
+        if (prefix is null)
+        {
+            throw new ArgumentNullException(nameof(prefix));
+        }
+
+        var normalizedPrefix = prefix.Replace('\\', '/');
+        var allRefs = await GetReferencesAsync(cancellationToken).ConfigureAwait(false);
+        var filtered = new Dictionary<string, GitHash>(StringComparer.Ordinal);
+        foreach (var (key, value) in allRefs)
+        {
+            if (key.StartsWith(normalizedPrefix, StringComparison.Ordinal))
+            {
+                filtered[key] = value;
+            }
+        }
+        return filtered;
+    }
+
+    /// <inheritdoc/>
+    public async Task DeleteReferenceAsync(
+        string referencePath,
+        CancellationToken cancellationToken = default)
+    {
+        var normalized = NormalizeAbsoluteReferencePath(referencePath);
+        using (await _lockManager.AcquireReferenceLockAsync(normalized, cancellationToken).ConfigureAwait(false))
+        {
+            DeleteReference(normalized, cancellationToken);
+            Interlocked.Exchange(ref _cache, CreateCache());
+        }
+    }
+
+    /// <inheritdoc/>
     public async Task WriteReferenceWithValidationAsync(
         string referencePath,
         GitHash? expectedOldValue,
