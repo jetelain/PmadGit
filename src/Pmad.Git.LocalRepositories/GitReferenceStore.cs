@@ -9,14 +9,25 @@ namespace Pmad.Git.LocalRepositories;
 internal sealed class GitReferenceStore : IGitReferenceStore
 {
     private readonly string _gitDirectory;
-    private readonly GitRepositoryLockManager _lockManager = new();
+    private readonly IGitRepositoryLockManager _lockManager;
     private Lazy<Task<Dictionary<string, GitHash>>> _cache;
 
     public GitReferenceStore(string gitDirectory)
+        : this(gitDirectory, new GitRepositoryLockManager())
+    {
+    }
+
+    public GitReferenceStore(string gitDirectory, IGitRepositoryLockManager lockManager)
     {
         _gitDirectory = gitDirectory;
+        _lockManager = lockManager ?? throw new ArgumentNullException(nameof(lockManager));
         _cache = CreateCache();
     }
+
+    /// <summary>
+    /// Gets the lock manager used to synchronize reference/object writes for this repository.
+    /// </summary>
+    public IGitRepositoryLockManager LockManager => _lockManager;
 
     /// <inheritdoc/>
     public void InvalidateCaches()

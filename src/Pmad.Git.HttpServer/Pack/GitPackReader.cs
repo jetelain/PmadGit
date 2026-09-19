@@ -84,7 +84,10 @@ internal sealed class GitPackReader
             hashCache[storedHash.Value] = materialized;
         }
 
-        repository.InvalidateCaches();
+        // Refresh object caches so subsequently written objects are visible; this is not itself
+        // a repository-level change (references are updated separately by the caller), so avoid
+        // raising Changed here to prevent a duplicate/premature notification.
+        repository.InvalidateCaches(raiseChanged: false);
         return created;
     }
 

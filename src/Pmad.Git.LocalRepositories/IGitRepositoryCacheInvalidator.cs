@@ -1,0 +1,27 @@
+namespace Pmad.Git.LocalRepositories;
+
+/// <summary>
+/// Represents a component that caches git metadata (references, objects, commits, trees, ...)
+/// and needs to be notified when the underlying repository is modified by another component,
+/// such as a CLI-based wrapper, operating on the same directory.
+/// </summary>
+public interface IGitRepositoryCacheInvalidator
+{
+    /// <summary>
+    /// Clears cached git metadata so subsequent operations reflect the current repository state.
+    /// </summary>
+    /// <param name="clearAllData">When <see langword="true"/>, clears all cached data including structural metadata
+    /// (e.g. pack index). When <see langword="false"/>, only volatile data such as references and loose objects are cleared.</param>
+    /// <param name="raiseChanged">When <see langword="true"/> (the default), raises <see cref="Changed"/> after
+    /// clearing the caches. Pass <see langword="false"/> when the invalidation is only meant to refresh this
+    /// instance's view of the repository (e.g. before a read-only operation) and does not represent an actual
+    /// modification, to avoid spurious <see cref="Changed"/> notifications.</param>
+    void InvalidateCaches(bool clearAllData = false, bool raiseChanged = true);
+
+    /// <summary>
+    /// Raised whenever <see cref="InvalidateCaches"/> is called, i.e. whenever the repository was
+    /// modified by any component (CLI wrapper, Smart HTTP push handler, ...) operating on the same
+    /// directory. Can be used to detect local changes without polling.
+    /// </summary>
+    event EventHandler? Changed;
+}

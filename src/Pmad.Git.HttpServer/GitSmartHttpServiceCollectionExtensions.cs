@@ -27,6 +27,27 @@ public static class GitSmartHttpServiceCollectionExtensions
     }
 
     /// <summary>
+    /// Adds the default implementation of <see cref="IGitRepositorySynchronizerService"/> to the
+    /// service collection as a singleton, along with <see cref="IGitRepositoryService"/> if not
+    /// already registered.
+    /// </summary>
+    /// <remarks>If an IGitRepositorySynchronizerService is already registered, this method does not overwrite the
+    /// existing registration.</remarks>
+    /// <param name="services">The IServiceCollection to which the IGitRepositorySynchronizerService will be added. Cannot be null.</param>
+    /// <returns>The IServiceCollection instance with the IGitRepositorySynchronizerService registered.</returns>
+    /// <exception cref="ArgumentNullException">Thrown if services is null.</exception>
+    public static IServiceCollection AddGitRepositorySynchronizerService(this IServiceCollection services)
+    {
+        if (services is null)
+        {
+            throw new ArgumentNullException(nameof(services));
+        }
+        services.AddGitRepositoryService();
+        services.TryAddSingleton<IGitRepositorySynchronizerService, GitRepositorySynchronizerService>();
+        return services;
+    }
+
+    /// <summary>
     /// Adds Git Smart HTTP services to the specified <see cref="IServiceCollection"/>.
     /// The service is registered as a singleton.
     /// </summary>

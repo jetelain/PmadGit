@@ -211,6 +211,36 @@ public sealed class GitSmartHttpServiceTest : IDisposable
         Assert.Equal(StatusCodes.Status404NotFound, context.Response.StatusCode);
     }
 
+    [Fact]
+    public async Task HandleInfoRefsAsync_ShouldNotRaiseChanged()
+    {
+        // Arrange: HandleInfoRefsAsync only refreshes caches to advertise the latest refs;
+        // this is a read-only refresh and must not be mistaken for a real repository change
+        // (which would otherwise cause a synchronizer to schedule a spurious push).
+        var options = Options.Create(new GitSmartHttpOptions
+        {
+            RepositoryRoot = _serverRepoRoot,
+            EnableUploadPack = true,
+            EnableReceivePack = true,
+            AuthorizeAsync = (_, _, _, _) => ValueTask.FromResult(true)
+        });
+        var repositoryService = new GitRepositoryService();
+        var service = new GitSmartHttpService(options, repositoryService);
+        var repository = repositoryService.GetRepositoryByPath(_testRepoPath);
+
+        var changedRaised = false;
+        repository.Changed += (_, _) => changedRaised = true;
+
+        var context = CreateHttpContext("/test-repo.git/info/refs?service=git-upload-pack", repository: "test-repo");
+
+        // Act
+        await service.HandleInfoRefsAsync(context);
+
+        // Assert
+        Assert.Equal(StatusCodes.Status200OK, context.Response.StatusCode);
+        Assert.False(changedRaised);
+    }
+
     #endregion
 
     #region HandleUploadPackAsync Tests
@@ -728,6 +758,36 @@ public sealed class GitSmartHttpServiceTest : IDisposable
 
         // Assert
         Assert.Equal(StatusCodes.Status200OK, context.Response.StatusCode);
+    }
+
+    [Fact]
+    public async Task HandleReceivePackAsync_WithNoUpdates_ShouldNotRaiseChanged()
+    {
+        // Arrange: a receive-pack request with no ref updates (flush only) should not raise
+        // Changed, since no actual repository modification occurred.
+        var options = Options.Create(new GitSmartHttpOptions
+        {
+            RepositoryRoot = _serverRepoRoot,
+            EnableReceivePack = true,
+            AuthorizeAsync = (_, _, _, _) => ValueTask.FromResult(true)
+        });
+        var repositoryService = new GitRepositoryService();
+        var service = new GitSmartHttpService(options, repositoryService);
+        var repository = repositoryService.GetRepositoryByPath(_testRepoPath);
+
+        var changedRaised = false;
+        repository.Changed += (_, _) => changedRaised = true;
+
+        var context = CreateHttpContext("/test-repo.git/git-receive-pack", repository: "test-repo");
+        var flushPacket = new byte[] { 0x30, 0x30, 0x30, 0x30 }; // "0000"
+        context.Request.Body = new MemoryStream(flushPacket);
+
+        // Act
+        await service.HandleReceivePackAsync(context);
+
+        // Assert
+        Assert.Equal(StatusCodes.Status200OK, context.Response.StatusCode);
+        Assert.False(changedRaised);
     }
 
     // Note: Actual callback invocation with reference updates (success, partial success, exceptions, timing)

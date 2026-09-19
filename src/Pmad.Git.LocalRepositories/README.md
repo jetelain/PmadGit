@@ -58,6 +58,7 @@ Console.WriteLine($"Created commit {commitId.Value}");
 
 ### Opening a repository
 - `GitRepository.Open(path)` accepts either the working directory or the `.git` directory path.
+- `GitRepository.LockManager` exposes the `IGitRepositoryLockManager` used to synchronize reference/object writes. Share this instance (e.g. via `GitRepository.Open(path, lockManager)` or by passing `repository.LockManager` to a `GitCliRepository`) when another component operates on the same repository directory within the same process, so writes are properly synchronized. See the `Pmad.Git.Cli` README for details.
 - The repository must be local and fully cloned (no sparse checkout support yet).
 
 ### Reading commits and trees

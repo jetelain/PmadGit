@@ -21,6 +21,7 @@
 
 	<ItemGroup>
 		<ProjectReference Include="..\Pmad.Git.LocalRepositories\Pmad.Git.LocalRepositories.csproj" />
+		<ProjectReference Include="..\Pmad.Git.Cli\Pmad.Git.Cli.csproj" />
 		<PackageReference Include="Microsoft.SourceLink.GitHub" Version="10.0.102" PrivateAssets="All" />
 	</ItemGroup>
 

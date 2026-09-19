@@ -362,6 +362,47 @@ public sealed class GitPackReaderTest : IDisposable
         }
     }
 
+    [Fact]
+    public async Task ReadAsync_ShouldNotRaiseChanged()
+    {
+        // GitPackReader.ReadAsync only writes objects; it does not update references, so it
+        // must not raise IGitRepositoryCacheInvalidator.Changed on the target repository (the
+        // caller is responsible for raising it once, after references are updated).
+        CreateFile("README.md", "# Test Repository");
+        RunGit("add README.md");
+        RunGit("commit -m \"Initial commit\" --quiet");
+
+        var targetDir = Path.Combine(Path.GetTempPath(), "PmadGitPackTarget", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(targetDir);
+        try
+        {
+            RunGitInDirectory(targetDir, "init --quiet");
+            RunGitInDirectory(targetDir, "config user.name \"Test User\"");
+            RunGitInDirectory(targetDir, "config user.email test@example.com");
+
+            RunGit("repack -a -d -q");
+            var packDir = Path.Combine(_gitDirectory, "objects", "pack");
+            var packs = Directory.GetFiles(packDir, "*.pack");
+            Assert.NotEmpty(packs);
+
+            using var packStream = new FileStream(packs[0], FileMode.Open, FileAccess.Read, FileShare.Read);
+            var repository = GitRepository.Open(targetDir);
+
+            var changedRaised = false;
+            repository.Changed += (_, _) => changedRaised = true;
+
+            var reader = new GitPackReader();
+            var created = await reader.ReadAsync(repository, packStream, CancellationToken.None);
+
+            Assert.NotEmpty(created);
+            Assert.False(changedRaised);
+        }
+        finally
+        {
+            TestHelper.TryDeleteDirectory(targetDir);
+        }
+    }
+
     private async Task<IReadOnlyList<GitHash>> TestPackTransfer()
     {
         var targetDir = Path.Combine(Path.GetTempPath(), "PmadGitPackTarget", Guid.NewGuid().ToString("N"));

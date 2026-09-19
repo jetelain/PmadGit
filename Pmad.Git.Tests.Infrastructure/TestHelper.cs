@@ -1,19 +1,19 @@
 using System.Diagnostics;
 using Microsoft.Extensions.Hosting;
 
-namespace Pmad.Git.HttpServer.Test;
+namespace Pmad.Git.Tests.Infrastructure;
 
 /// <summary>
 /// Helper methods for test cleanup and other common test operations.
 /// </summary>
-internal static class TestHelper
+public static class TestHelper
 {
     /// <summary>
     /// Attempts to delete a directory recursively, ignoring any exceptions.
     /// This is useful for test cleanup where failures should not affect test results.
     /// </summary>
     /// <param name="path">The directory path to delete.</param>
-    internal static void TryDeleteDirectory(string path)
+    public static void TryDeleteDirectory(string path)
     {
         if (string.IsNullOrEmpty(path))
         {
@@ -36,7 +36,7 @@ internal static class TestHelper
                     // On non-Windows, files might be locked by processes that haven't fully exited
                     if (attempt > 0)
                     {
-                        System.Threading.Thread.Sleep(100 * attempt);
+                        Thread.Sleep(100 * attempt);
                     }
 
                     // First, make sure all files are not read-only
@@ -69,7 +69,12 @@ internal static class TestHelper
         }
     }
 
-    internal static void SafeStop(IHost? host)
+    /// <summary>
+    /// Stops an <see cref="IHost"/> instance safely, avoiding deadlocks and giving the server
+    /// time to fully release resources.
+    /// </summary>
+    /// <param name="host">The host to stop, or null.</param>
+    public static void SafeStop(IHost? host)
     {
         if (host != null)
         {
@@ -83,7 +88,36 @@ internal static class TestHelper
             }
 
             // Give the server time to fully release resources
-            System.Threading.Thread.Sleep(100);
+            Thread.Sleep(100);
         }
+    }
+
+    /// <summary>
+    /// Runs a git command in the given working directory and returns its output.
+    /// Throws an <see cref="InvalidOperationException"/> if the command fails.
+    /// </summary>
+    public static string RunGit(string workingDirectory, string arguments)
+    {
+        var startInfo = new ProcessStartInfo("git", arguments)
+        {
+            WorkingDirectory = workingDirectory,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+            CreateNoWindow = true
+        };
+
+        using var process = Process.Start(startInfo) ?? throw new InvalidOperationException("Unable to start git process");
+        var output = process.StandardOutput.ReadToEnd();
+        var error = process.StandardError.ReadToEnd();
+        process.WaitForExit();
+
+        if (process.ExitCode != 0)
+        {
+            throw new InvalidOperationException(
+                $"git {arguments} failed with exit code {process.ExitCode}:{Environment.NewLine}{error}{Environment.NewLine}{output}");
+        }
+
+        return string.IsNullOrEmpty(output) ? error : output;
     }
 }
