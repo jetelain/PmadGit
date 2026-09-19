@@ -922,6 +922,40 @@ public sealed class GitRepository : IGitRepository, IGitRepositoryCacheInvalidat
         return await GetCommitChangesAsync(hash, cancellationToken).ConfigureAwait(false);
     }
 
+    /// <inheritdoc />
+    public Task<string?> GetCurrentBranchNameAsync(CancellationToken cancellationToken = default)
+        => _referenceStore.GetCurrentBranchNameAsync(cancellationToken);
+
+    /// <inheritdoc />
+    public Task<bool> IsHeadDetachedAsync(CancellationToken cancellationToken = default)
+        => _referenceStore.IsHeadDetachedAsync(cancellationToken);
+
+    /// <inheritdoc />
+    public async Task CreateReferenceAsync(
+        string referencePath,
+        GitHash targetCommit,
+        bool overwrite = false,
+        CancellationToken cancellationToken = default)
+    {
+        await _referenceStore.CreateReferenceAsync(referencePath, targetCommit, overwrite, cancellationToken).ConfigureAwait(false);
+        Changed?.Invoke(this, EventArgs.Empty);
+    }
+
+    /// <inheritdoc />
+    public Task<IReadOnlyDictionary<string, GitHash>> GetReferencesByPrefixAsync(
+        string prefix,
+        CancellationToken cancellationToken = default)
+        => _referenceStore.GetReferencesByPrefixAsync(prefix, cancellationToken);
+
+    /// <inheritdoc />
+    public async Task DeleteReferenceAsync(
+        string referencePath,
+        CancellationToken cancellationToken = default)
+    {
+        await _referenceStore.DeleteReferenceAsync(referencePath, cancellationToken).ConfigureAwait(false);
+        Changed?.Invoke(this, EventArgs.Empty);
+    }
+
     private async Task<GitCommit> GetCommitAsync(GitHash hash, CancellationToken cancellationToken)
     {
         lock (_commitLock)

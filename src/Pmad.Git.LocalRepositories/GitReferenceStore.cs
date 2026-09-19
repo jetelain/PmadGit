@@ -57,6 +57,11 @@ internal sealed class GitReferenceStore : IGitReferenceStore
         if (File.Exists(filePath))
         {
             var content = (await File.ReadAllTextAsync(filePath, cancellationToken).ConfigureAwait(false)).Trim();
+            if (content.StartsWith("ref: ", StringComparison.Ordinal))
+            {
+                var target = content[5..].Trim();
+                return await TryResolveReferenceAsync(target, cancellationToken).ConfigureAwait(false);
+            }
             if (GitHash.TryParse(content, out hash))
             {
                 return hash;
@@ -94,6 +99,111 @@ internal sealed class GitReferenceStore : IGitReferenceStore
         }
 
         throw new InvalidDataException("HEAD does not contain a valid reference");
+    }
+
+    /// <inheritdoc/>
+    public async Task<string?> GetCurrentBranchNameAsync(CancellationToken cancellationToken = default)
+    {
+        var headPath = Path.Combine(_gitDirectory, "HEAD");
+        if (!File.Exists(headPath))
+        {
+            return null;
+        }
+
+        var content = (await File.ReadAllTextAsync(headPath, cancellationToken).ConfigureAwait(false)).Trim();
+        const string prefix = "ref: refs/heads/";
+        if (content.StartsWith(prefix, StringComparison.Ordinal))
+        {
+            var branch = content[prefix.Length..].Trim();
+            if (string.IsNullOrEmpty(branch))
+            {
+                return null;
+            }
+
+            var refPath = "refs/heads/" + branch;
+            var resolved = await TryResolveReferenceAsync(refPath, cancellationToken).ConfigureAwait(false);
+            if (!resolved.HasValue)
+            {
+                return null;
+            }
+
+            return branch;
+        }
+
+        return null;
+    }
+
+    /// <inheritdoc/>
+    public async Task<bool> IsHeadDetachedAsync(CancellationToken cancellationToken = default)
+    {
+        var headPath = Path.Combine(_gitDirectory, "HEAD");
+        if (!File.Exists(headPath))
+        {
+            return false;
+        }
+
+        var content = (await File.ReadAllTextAsync(headPath, cancellationToken).ConfigureAwait(false)).Trim();
+        return !content.StartsWith("ref: ", StringComparison.Ordinal) && GitHash.TryParse(content, out _);
+    }
+
+    /// <inheritdoc/>
+    public async Task CreateReferenceAsync(
+        string referencePath,
+        GitHash targetCommit,
+        bool overwrite = false,
+        CancellationToken cancellationToken = default)
+    {
+        var normalized = NormalizeAbsoluteReferencePath(referencePath);
+        using (await _lockManager.AcquireReferenceLockAsync(normalized, cancellationToken).ConfigureAwait(false))
+        {
+            if (!overwrite)
+            {
+                var existing = await TryResolveReferenceAsync(normalized, cancellationToken).ConfigureAwait(false);
+                if (existing.HasValue)
+                {
+                    throw new InvalidOperationException($"Reference '{normalized}' already exists with value {existing.Value.Value}");
+                }
+            }
+
+            await WriteReferenceAsync(normalized, targetCommit, cancellationToken).ConfigureAwait(false);
+            Interlocked.Exchange(ref _cache, CreateCache());
+        }
+    }
+
+    /// <inheritdoc/>
+    public async Task<IReadOnlyDictionary<string, GitHash>> GetReferencesByPrefixAsync(
+        string prefix,
+        CancellationToken cancellationToken = default)
+    {
+        if (prefix is null)
+        {
+            throw new ArgumentNullException(nameof(prefix));
+        }
+
+        var normalizedPrefix = prefix.Replace('\\', '/');
+        var allRefs = await GetReferencesAsync(cancellationToken).ConfigureAwait(false);
+        var filtered = new Dictionary<string, GitHash>(StringComparer.Ordinal);
+        foreach (var (key, value) in allRefs)
+        {
+            if (key.StartsWith(normalizedPrefix, StringComparison.Ordinal))
+            {
+                filtered[key] = value;
+            }
+        }
+        return filtered;
+    }
+
+    /// <inheritdoc/>
+    public async Task DeleteReferenceAsync(
+        string referencePath,
+        CancellationToken cancellationToken = default)
+    {
+        var normalized = NormalizeAbsoluteReferencePath(referencePath);
+        using (await _lockManager.AcquireMultipleReferenceLocksAsync(new[] { normalized, "packed-refs" }, cancellationToken).ConfigureAwait(false))
+        {
+            await DeleteReferenceAsyncInternal(normalized, cancellationToken).ConfigureAwait(false);
+            Interlocked.Exchange(ref _cache, CreateCache());
+        }
     }
 
     /// <inheritdoc/>
@@ -149,7 +259,7 @@ internal sealed class GitReferenceStore : IGitReferenceStore
         }
         else
         {
-            DeleteReference(normalized, cancellationToken);
+            await DeleteReferenceAsyncInternal(normalized, cancellationToken).ConfigureAwait(false);
         }
 
         Interlocked.Exchange(ref _cache, CreateCache());
@@ -194,7 +304,7 @@ internal sealed class GitReferenceStore : IGitReferenceStore
         File.Move(tempPath, refPath, overwrite: true);
     }
 
-    private void DeleteReference(string normalizedReferencePath, CancellationToken cancellationToken)
+    private async Task DeleteReferenceAsyncInternal(string normalizedReferencePath, CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
         var refPath = Path.Combine(_gitDirectory, normalizedReferencePath.Replace('/', Path.DirectorySeparatorChar));
@@ -202,24 +312,68 @@ internal sealed class GitReferenceStore : IGitReferenceStore
         {
             File.Delete(refPath);
         }
+
+        var packedRefsPath = Path.Combine(_gitDirectory, "packed-refs");
+        if (File.Exists(packedRefsPath))
+        {
+            var lines = await File.ReadAllLinesAsync(packedRefsPath, cancellationToken).ConfigureAwait(false);
+            var updatedLines = new List<string>(lines.Length);
+            var modified = false;
+            var skippingPeeled = false;
+
+            for (var i = 0; i < lines.Length; i++)
+            {
+                var line = lines[i];
+                var trimmed = line.Trim();
+
+                if (skippingPeeled)
+                {
+                    skippingPeeled = false;
+                    if (trimmed.StartsWith('^'))
+                    {
+                        continue;
+                    }
+                }
+
+                if (string.IsNullOrEmpty(trimmed) || trimmed.StartsWith('#'))
+                {
+                    updatedLines.Add(line);
+                    continue;
+                }
+
+                if (trimmed.StartsWith('^'))
+                {
+                    updatedLines.Add(line);
+                    continue;
+                }
+
+                var separator = trimmed.IndexOf(' ');
+                if (separator > 0)
+                {
+                    var name = trimmed[(separator + 1)..];
+                    if (string.Equals(name, normalizedReferencePath, StringComparison.Ordinal))
+                    {
+                        modified = true;
+                        skippingPeeled = true;
+                        continue;
+                    }
+                }
+
+                updatedLines.Add(line);
+            }
+
+            if (modified)
+            {
+                var tempPath = Path.Combine(_gitDirectory, $"packed-refs.{Guid.NewGuid():N}.tmp");
+                await File.WriteAllLinesAsync(tempPath, updatedLines, cancellationToken).ConfigureAwait(false);
+                File.Move(tempPath, packedRefsPath, overwrite: true);
+            }
+        }
     }
 
     private async Task<Dictionary<string, GitHash>> LoadReferencesAsync()
     {
         var refs = new Dictionary<string, GitHash>(StringComparer.Ordinal);
-        var refsRoot = Path.Combine(_gitDirectory, "refs");
-        if (Directory.Exists(refsRoot))
-        {
-            foreach (var file in Directory.EnumerateFiles(refsRoot, "*", SearchOption.AllDirectories))
-            {
-                var relative = Path.GetRelativePath(_gitDirectory, file).Replace('\\', '/');
-                var content = (await File.ReadAllTextAsync(file).ConfigureAwait(false)).Trim();
-                if (GitHash.TryParse(content, out var hash))
-                {
-                    refs[relative] = hash;
-                }
-            }
-        }
 
         var packedRefs = Path.Combine(_gitDirectory, "packed-refs");
         if (File.Exists(packedRefs))
@@ -248,6 +402,20 @@ internal sealed class GitReferenceStore : IGitReferenceStore
             }
         }
 
+        var refsRoot = Path.Combine(_gitDirectory, "refs");
+        if (Directory.Exists(refsRoot))
+        {
+            foreach (var file in Directory.EnumerateFiles(refsRoot, "*", SearchOption.AllDirectories))
+            {
+                var relative = Path.GetRelativePath(_gitDirectory, file).Replace('\\', '/');
+                var content = (await File.ReadAllTextAsync(file).ConfigureAwait(false)).Trim();
+                if (GitHash.TryParse(content, out var hash))
+                {
+                    refs[relative] = hash;
+                }
+            }
+        }
+
         return refs;
     }
 
@@ -270,6 +438,32 @@ internal sealed class GitReferenceStore : IGitReferenceStore
         if (!normalized.StartsWith("refs/", StringComparison.Ordinal))
         {
             throw new ArgumentException($"Absolute reference path must start with 'refs/', got '{referencePath}'", nameof(referencePath));
+        }
+
+        var segments = normalized.Split('/');
+        if (segments.Length < 2)
+        {
+            throw new ArgumentException($"Reference path '{referencePath}' is invalid.", nameof(referencePath));
+        }
+
+        foreach (var segment in segments)
+        {
+            if (string.IsNullOrEmpty(segment) || segment == "." || segment == "..")
+            {
+                throw new ArgumentException($"Reference path '{referencePath}' contains invalid or traversal segments.", nameof(referencePath));
+            }
+            if (segment.Contains(".."))
+            {
+                throw new ArgumentException($"Reference component '{segment}' in path '{referencePath}' contains '..'.", nameof(referencePath));
+            }
+            if (segment.StartsWith('.') || segment.EndsWith(".lock", StringComparison.OrdinalIgnoreCase))
+            {
+                throw new ArgumentException($"Reference component '{segment}' in path '{referencePath}' is invalid.", nameof(referencePath));
+            }
+            if (segment.Any(c => char.IsControl(c) || c is ' ' or '~' or '^' or ':' or '?' or '*' or '[' or '@'))
+            {
+                throw new ArgumentException($"Reference component '{segment}' in path '{referencePath}' contains invalid characters.", nameof(referencePath));
+            }
         }
 
         return normalized;
