@@ -509,6 +509,353 @@ public class GitCliRepository
         InvalidateCaches();
     }
 
+    /// <summary>
+    /// Creates a new commit from currently staged changes (or all tracked changes when <paramref name="all"/> is true).
+    /// </summary>
+    /// <param name="message">The commit message.</param>
+    /// <param name="all">When <see langword="true"/>, automatically stages tracked files that have been modified or deleted (<c>-a</c>).</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    public async Task CommitAsync(string message, bool all = false, CancellationToken cancellationToken = default)
+    {
+        var arguments = new List<string> { "commit" };
+        if (all)
+        {
+            arguments.Add("-a");
+        }
+        arguments.Add("-m");
+        arguments.Add(message);
+
+        using var writeLock = await LockWriteAsync(cancellationToken).ConfigureAwait(false);
+        var result = await RunGit(cancellationToken, arguments.ToArray()).ConfigureAwait(false);
+        result.EnsureSuccess();
+        InvalidateCaches();
+    }
+
+    /// <summary>
+    /// Amends the current HEAD commit.
+    /// </summary>
+    /// <param name="message">A new commit message, or <see langword="null"/> to retain the existing commit message (<c>--no-edit</c>).</param>
+    /// <param name="all">When <see langword="true"/>, automatically stages tracked files that have been modified or deleted (<c>-a</c>).</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    public async Task CommitAmendAsync(string? message = null, bool all = false, CancellationToken cancellationToken = default)
+    {
+        var arguments = new List<string> { "commit", "--amend" };
+        if (all)
+        {
+            arguments.Add("-a");
+        }
+        if (message != null)
+        {
+            arguments.Add("-m");
+            arguments.Add(message);
+        }
+        else
+        {
+            arguments.Add("--no-edit");
+        }
+
+        using var writeLock = await LockWriteAsync(cancellationToken).ConfigureAwait(false);
+        var result = await RunGit(cancellationToken, arguments.ToArray()).ConfigureAwait(false);
+        result.EnsureSuccess();
+        InvalidateCaches();
+    }
+
+    /// <summary>
+    /// Reverts a commit by creating a new commit recording inverted changes.
+    /// </summary>
+    /// <param name="commitIsh">The commit hash or reference to revert.</param>
+    /// <param name="noCommit">When <see langword="true"/>, applies changes to working tree and index without committing (<c>--no-commit</c>).</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    public async Task RevertAsync(string commitIsh, bool noCommit = false, CancellationToken cancellationToken = default)
+    {
+        var arguments = new List<string> { "revert" };
+        if (noCommit)
+        {
+            arguments.Add("--no-commit");
+        }
+        else
+        {
+            arguments.Add("--no-edit");
+        }
+        arguments.Add(commitIsh);
+
+        using var writeLock = await LockWriteAsync(cancellationToken).ConfigureAwait(false);
+        var result = await RunGit(cancellationToken, arguments.ToArray()).ConfigureAwait(false);
+        result.EnsureSuccess();
+        InvalidateCaches();
+    }
+
+    /// <summary>
+    /// Restores a file in the working tree to its state in HEAD or the specified source commit.
+    /// </summary>
+    /// <param name="relativeFilePath">Relative path of the file in the repository.</param>
+    /// <param name="sourceCommit">Optional commit-ish to restore from (defaults to HEAD).</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    public async Task RestoreFileAsync(string relativeFilePath, string? sourceCommit = null, CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(relativeFilePath);
+
+        var source = sourceCommit ?? "HEAD";
+        var arguments = new[] { "restore", "--source", source, "--", relativeFilePath };
+
+        using var writeLock = await LockWriteAsync(cancellationToken).ConfigureAwait(false);
+        var result = await RunGit(cancellationToken, arguments).ConfigureAwait(false);
+        result.EnsureSuccess();
+        InvalidateCaches();
+    }
+
+    /// <summary>
+    /// Returns the unified diff output between commits or the working tree.
+    /// </summary>
+    /// <param name="fromCommit">Base commit-ish, or <see langword="null"/> to diff against HEAD or working tree.</param>
+    /// <param name="toCommit">Target commit-ish, or <see langword="null"/>.</param>
+    /// <param name="path">Optional relative file path to restrict the diff to.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>The unified diff text.</returns>
+    public async Task<string> GetDiffAsync(string? fromCommit = null, string? toCommit = null, string? path = null, CancellationToken cancellationToken = default)
+    {
+        var arguments = new List<string>();
+        if (fromCommit != null && toCommit != null)
+        {
+            arguments.Add("diff");
+            arguments.Add($"{fromCommit}..{toCommit}");
+        }
+        else if (fromCommit != null && toCommit == null)
+        {
+            arguments.Add("diff");
+            arguments.Add(fromCommit);
+        }
+        else
+        {
+            arguments.Add("diff");
+        }
+
+        if (path != null)
+        {
+            arguments.Add("--");
+            arguments.Add(path);
+        }
+
+        var result = await RunGit(cancellationToken, arguments.ToArray()).ConfigureAwait(false);
+        result.EnsureSuccess();
+        return result.StdOut;
+    }
+
+    /// <summary>
+    /// Returns the unified diff of changes introduced by a specific commit.
+    /// </summary>
+    /// <param name="commitIsh">Commit hash or reference to show.</param>
+    /// <param name="path">Optional relative file path to restrict the diff to.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>The unified diff text.</returns>
+    public async Task<string> GetCommitDiffAsync(string commitIsh, string? path = null, CancellationToken cancellationToken = default)
+    {
+        var arguments = new List<string> { "show", "--format=", commitIsh };
+        if (path != null)
+        {
+            arguments.Add("--");
+            arguments.Add(path);
+        }
+        var result = await RunGit(cancellationToken, arguments.ToArray()).ConfigureAwait(false);
+        result.EnsureSuccess();
+        return result.StdOut;
+    }
+
+    /// <summary>
+    /// Returns line insertion and deletion statistics for a commit.
+    /// </summary>
+    /// <param name="commitIsh">Commit hash or reference to inspect.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>A <see cref="GitDiffStat"/> containing files changed, insertions, and deletions.</returns>
+    public async Task<GitDiffStat> GetCommitStatAsync(string commitIsh, CancellationToken cancellationToken = default)
+    {
+        var result = await RunGit(cancellationToken, "show", "--shortstat", "--format=", commitIsh).ConfigureAwait(false);
+        result.EnsureSuccess();
+        return GitDiffStat.ParseShortStat(result.StdOut);
+    }
+
+    /// <summary>
+    /// Gets the upstream tracking status (ahead/behind commit counts) for the specified branch (defaults to current branch).
+    /// </summary>
+    /// <param name="branch">Name of the local branch to check, or <see langword="null"/> to check the current branch.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>A <see cref="GitTrackingStatus"/> describing upstream configuration and ahead/behind commit counts.</returns>
+    public async Task<GitTrackingStatus> GetTrackingStatusAsync(string? branch = null, CancellationToken cancellationToken = default)
+    {
+        var localBranch = branch ?? await GetCurrentBranchAsync(cancellationToken).ConfigureAwait(false);
+
+        var refPath = localBranch.StartsWith("refs/heads/", StringComparison.Ordinal)
+            ? localBranch
+            : $"refs/heads/{localBranch}";
+
+        var branchCheck = await RunGit(cancellationToken, "rev-parse", "--verify", "--quiet", $"{refPath}^{{commit}}").ConfigureAwait(false);
+        if (branchCheck.ExitCode != 0)
+        {
+            if (branch != null)
+            {
+                throw new ArgumentException($"Branch '{branch}' does not exist.", nameof(branch));
+            }
+        }
+
+        var upstreamResult = await RunGit(cancellationToken, "rev-parse", "--abbrev-ref", $"{localBranch}@{{upstream}}").ConfigureAwait(false);
+        if (upstreamResult.ExitCode != 0)
+        {
+            if (upstreamResult.StdErr.Contains("no such branch", StringComparison.OrdinalIgnoreCase))
+            {
+                throw new ArgumentException($"Branch '{localBranch}' does not exist.", nameof(branch));
+            }
+
+            return new GitTrackingStatus(localBranch, null, 0, 0);
+        }
+
+        var upstreamBranch = upstreamResult.StdOut.Trim();
+
+        var revListResult = await RunGit(cancellationToken, "rev-list", "--left-right", "--count", $"{localBranch}...{upstreamBranch}").ConfigureAwait(false);
+        revListResult.EnsureSuccess();
+
+        var parts = revListResult.StdOut.Trim().Split(new[] { '\t', ' ' }, StringSplitOptions.RemoveEmptyEntries);
+        var ahead = parts.Length > 0 && int.TryParse(parts[0], out var a) ? a : 0;
+        var behind = parts.Length > 1 && int.TryParse(parts[1], out var b) ? b : 0;
+
+        return new GitTrackingStatus(localBranch, upstreamBranch, ahead, behind);
+    }
+
+    /// <summary>
+    /// Checks whether the specified commit has been pushed to a remote branch.
+    /// </summary>
+    /// <param name="commitHash">The commit hash to check.</param>
+    /// <param name="remoteBranch">The specific remote branch (e.g. "origin/main"), or <see langword="null"/> to check any remote branch.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns><see langword="true"/> if the commit is reachable from the remote branch (or any remote branch); otherwise, <see langword="false"/>.</returns>
+    public async Task<bool> IsCommitPushedAsync(string commitHash, string? remoteBranch = null, CancellationToken cancellationToken = default)
+    {
+        if (remoteBranch != null)
+        {
+            var result = await RunGit(cancellationToken, "merge-base", "--is-ancestor", commitHash, remoteBranch).ConfigureAwait(false);
+            return result.ExitCode == 0;
+        }
+        else
+        {
+            var result = await RunGit(cancellationToken, "branch", "-r", "--contains", commitHash).ConfigureAwait(false);
+            return result.ExitCode == 0 && !string.IsNullOrWhiteSpace(result.StdOut);
+        }
+    }
+
+    /// <summary>
+    /// Checks whether the specified commit has been pushed to a remote branch.
+    /// </summary>
+    /// <param name="commitHash">The commit hash to check.</param>
+    /// <param name="remoteBranch">The specific remote branch (e.g. "origin/main"), or <see langword="null"/> to check any remote branch.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns><see langword="true"/> if the commit is reachable from the remote branch (or any remote branch); otherwise, <see langword="false"/>.</returns>
+    public Task<bool> IsCommitPushedAsync(GitHash commitHash, string? remoteBranch = null, CancellationToken cancellationToken = default)
+        => IsCommitPushedAsync(commitHash.Value, remoteBranch, cancellationToken);
+
+    /// <summary>
+    /// Gets the value of a git configuration key, or <see langword="null"/> if the key is not set.
+    /// </summary>
+    /// <param name="key">The configuration key name (e.g. "user.name", "user.email").</param>
+    /// <param name="global">When <see langword="true"/>, reads from global config; otherwise reads effective repository config.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>The configuration value, or <see langword="null"/> if unset.</returns>
+    public async Task<string?> GetConfigAsync(string key, bool global = false, CancellationToken cancellationToken = default)
+    {
+        var arguments = new List<string> { "config" };
+        if (global)
+        {
+            arguments.Add("--global");
+        }
+        arguments.Add("--get");
+        arguments.Add(key);
+
+        var result = await RunGit(cancellationToken, arguments.ToArray()).ConfigureAwait(false);
+        if (result.ExitCode == 0)
+        {
+            return result.StdOut.TrimEnd('\r', '\n');
+        }
+        if (result.ExitCode == 1)
+        {
+            return null;
+        }
+        result.EnsureSuccess();
+        return null;
+    }
+
+    /// <summary>
+    /// Sets the value of a git configuration key.
+    /// </summary>
+    /// <param name="key">The configuration key name.</param>
+    /// <param name="value">The value to set.</param>
+    /// <param name="global">When <see langword="true"/>, writes to global user config (<c>--global</c>); otherwise writes to repository config (<c>--local</c>).</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    public async Task SetConfigAsync(string key, string value, bool global = false, CancellationToken cancellationToken = default)
+    {
+        var arguments = new List<string> { "config" };
+        if (global)
+        {
+            arguments.Add("--global");
+        }
+        else
+        {
+            arguments.Add("--local");
+        }
+        arguments.Add(key);
+        arguments.Add(value);
+
+        if (!global)
+        {
+            using var writeLock = await LockWriteAsync(cancellationToken).ConfigureAwait(false);
+            var result = await RunGit(cancellationToken, arguments.ToArray()).ConfigureAwait(false);
+            result.EnsureSuccess();
+            InvalidateCaches(raiseChanged: false);
+        }
+        else
+        {
+            var result = await RunGit(cancellationToken, arguments.ToArray()).ConfigureAwait(false);
+            result.EnsureSuccess();
+        }
+    }
+
+    /// <summary>
+    /// Unsets (removes) a git configuration key.
+    /// </summary>
+    /// <param name="key">The configuration key name.</param>
+    /// <param name="global">When <see langword="true"/>, unsets from global user config (<c>--global</c>); otherwise unsets from repository config (<c>--local</c>).</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    public async Task UnsetConfigAsync(string key, bool global = false, CancellationToken cancellationToken = default)
+    {
+        var arguments = new List<string> { "config" };
+        if (global)
+        {
+            arguments.Add("--global");
+        }
+        else
+        {
+            arguments.Add("--local");
+        }
+        arguments.Add("--unset");
+        arguments.Add(key);
+
+        if (!global)
+        {
+            using var writeLock = await LockWriteAsync(cancellationToken).ConfigureAwait(false);
+            var result = await RunGit(cancellationToken, arguments.ToArray()).ConfigureAwait(false);
+            if (result.ExitCode != 0 && result.ExitCode != 5)
+            {
+                result.EnsureSuccess();
+            }
+            InvalidateCaches(raiseChanged: false);
+        }
+        else
+        {
+            var result = await RunGit(cancellationToken, arguments.ToArray()).ConfigureAwait(false);
+            if (result.ExitCode != 0 && result.ExitCode != 5)
+            {
+                result.EnsureSuccess();
+            }
+        }
+    }
+
     private static IReadOnlyList<string> ParseLines(string output)
     {
         return output
