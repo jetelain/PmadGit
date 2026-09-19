@@ -1,6 +1,8 @@
 # Pmad.Git.LocalRepositories
 
-`Pmad.Git.LocalRepositories` is a lightweight .NET 8 library that lets you inspect local Git repositories, and do basic commit operations, without shelling out to the `git` executable. It can open a repository, resolve commits, enumerate trees, read blobs, and inspect file history directly from the `.git` directory. Both SHA-1 and SHA-256 object formats are supported.
+`Pmad.Git.LocalRepositories` is a lightweight .NET 8 library that lets you inspect and author local Git repositories completely in managed C#, without shelling out to the `git` executable. It can open repositories, resolve commits, enumerate trees, read blobs, stage files, read/write binary Git indexes, and execute workspace operations directly against the `.git` directory. Both SHA-1 and SHA-256 object formats are supported.
+
+Because it has zero dependency on the native `git` CLI or C-bindings, it runs seamlessly across all platforms supported by .NET, including desktop operating systems, containers, and mobile platforms (iOS/Android) where `git.exe` is absent.
 
 ## Installation
 
@@ -8,15 +10,14 @@ Add a project reference to `Pmad.Git.LocalRepositories` or publish it as a packa
 
 ## Quick Start
 
+### Basic Inspection and Object Store Commits
+
 ```csharp
 using System.Text;
 using Pmad.Git.LocalRepositories;
 
-// Create a new repository
-var repository = GitRepository.Init("/path/to/new-repo");
-
-// Or open an existing repository
-var repository = GitRepository.Open("/path/to/repo");
+// Open an existing repository (or use GitRepository.Init to create a new one)
+using var repository = GitRepository.Open("/path/to/repo");
 
 var head = await repository.GetCommitAsync();
 Console.WriteLine($"HEAD: {head.Id} -> {head.Message}");
@@ -29,17 +30,10 @@ await foreach (var item in repository.EnumerateCommitTreeAsync(path: "src"))
 var fileContent = await repository.ReadFileAsync("src/Program.cs");
 Console.WriteLine(Encoding.UTF8.GetString(fileContent));
 
-await foreach (var commit in repository.EnumerateCommitsAsync())
-{
-    Console.WriteLine($"{commit.Id} {commit.Message}");
-}
-
+// Create a commit directly in the object store without touching working tree files
 var metadata = new GitCommitMetadata(
     message: "Automated change",
-    author: new GitCommitSignature(
-      name: "CI Bot",
-      email: "ci@example.com",
-      timestamp: DateTimeOffset.UtcNow));
+    author: new GitCommitSignature("CI Bot", "ci@example.com", DateTimeOffset.UtcNow));
 
 var commitId = await repository.CreateCommitAsync(
     branchName: "main",
@@ -51,67 +45,111 @@ var commitId = await repository.CreateCommitAsync(
 Console.WriteLine($"Created commit {commitId.Value}");
 ```
 
-### Creating a new repository
-- `GitRepository.Init(path, bare, initialBranch)` creates a new empty git repository at the specified location.
-- Set `bare` to `true` to create a bare repository (no working directory).
-- The `initialBranch` parameter defaults to "main" but can be customized.
+### Managed Workspace Repository (Working Tree & Index)
 
-### Opening a repository
-- `GitRepository.Open(path)` accepts either the working directory or the `.git` directory path.
-- `GitRepository.LockManager` exposes the `IGitRepositoryLockManager` used to synchronize reference/object writes. Share this instance (e.g. via `GitRepository.Open(path, lockManager)` or by passing `repository.LockManager` to a `GitCliRepository`) when another component operates on the same repository directory within the same process, so writes are properly synchronized. See the `Pmad.Git.Cli` README for details.
-- The repository must be local and fully cloned (no sparse checkout support yet).
+When you want Git working tree operations that synchronize with disk files and `.git/index` entirely in C#:
 
-### Reading commits and trees
-- `GetCommitAsync()` resolves `HEAD` or any reference/commit hash without blocking threads.
-- `EnumerateCommitsAsync()` yields commits reachable from the starting reference in reverse chronological (newest-first) order as an async stream.
-- `EnumerateCommitTreeAsync(reference, path, searchOption)` iterates the full tree or a subtree, exposing `GitTreeItem` entries asynchronously.
+```csharp
+using Pmad.Git.LocalRepositories;
 
-### Checking path existence
-- `PathExistsAsync(path, reference)` returns `true` if a path (file or directory) exists in the given commit.
-- `FileExistsAsync(filePath, reference)` returns `true` if a blob exists at the path.
-- `DirectoryExistsAsync(directoryPath, reference)` returns `true` if a tree exists at the path.
-- `GetPathTypeAsync(path, reference)` returns the `GitTreeEntryKind` (`Blob` or `Tree`) of the path, or `null` if it does not exist.
+// Open an existing repository with index and workspace support
+using var workspaceRepo = GitRepositoryWithIndexAndWorkspace.Open("/path/to/repo");
 
-### Reading file contents
-- `ReadFileAsync(path, reference)` returns the blob content at a path for a given commit/reference.
-- `ReadFileAndHashAsync(path, reference)` returns both the blob content and its `GitHash` as a `GitFileContentAndHash`.
-- `ReadFileStreamAsync(path, reference)` returns a `GitObjectStream` that exposes the blob as a `Stream` without buffering the full content for loose objects. Dispose the stream after use (supports both `using` and `await using`).
-- `EnumerateFileHistoryAsync(path, reference)` yields commits where the blob hash changes.
+// Check working tree status
+var status = await workspaceRepo.GetStatusAsync();
+foreach (var entry in status.Entries)
+{
+    Console.WriteLine($"{entry.Path}: {entry.WorkingTreeStatus}, Staged: {entry.IsStaged}");
+}
 
-### Querying last changes
-- `GetFilesWithLastChangeAsync(reference, path, predicate, searchOption)` traverses the commit graph once and returns a sorted list of `GitFileLastChange` entries, each pairing a file path with the most recent commit that changed it. More efficient than calling `EnumerateFileHistoryAsync` per file.
+// Capture baseline commit before making changes
+var baseCommit = await workspaceRepo.GetCommitAsync();
+var baseCommitHash = baseCommit.Id;
 
-### Creating commits
-- `CreateCommitAsync(branch, operations, metadata)` applies operations directly to the Git object store and updates the branch reference without invoking the CLI. The method is thread-safe against concurrent commits to the same branch.
-- Available operations derive from `GitCommitOperation`:
-  - `AddFileOperation(path, byte[])` — adds a new file from a byte array.
-  - `AddFileStreamOperation(path, Stream)` — adds a new file from a stream.
-  - `UpdateFileOperation(path, byte[], expectedPreviousHash?)` — updates an existing file from a byte array.
-  - `UpdateFileStreamOperation(path, Stream, expectedPreviousHash?)` — updates an existing file from a stream.
-  - `RemoveFileOperation(path)` — removes an existing file.
-  - `MoveFileOperation(sourcePath, destinationPath)` — moves or renames an existing file.
-- `GitCommitMetadata` captures the commit message plus author/committer identity and timestamps used to build the commit object.
+// Stage and commit working tree changes
+await workspaceRepo.StageAsync("src/NewFile.txt");
+var commitHash = await workspaceRepo.CommitAsync("Added new file");
 
-### Cache management
-- `InvalidateCaches(clearAllData)` clears cached references and loose-object metadata so subsequent operations reflect the current on-disk state. Pass `true` to also clear structural metadata such as the pack index.
+// Amend the tip commit with additional staged changes
+await workspaceRepo.StageAsync("README.md");
+var commitToRevertHash = await workspaceRepo.CommitAmendAsync("Added new file and updated README");
 
-### Reachability
-- `IsCommitReachableAsync(from, to)` returns `true` if the `to` commit is an ancestor of (or equal to) `from`; useful for fast-forward validation.
+// Revert a previous commit against the working tree and index
+await workspaceRepo.RevertAsync(commitToRevertHash);
+
+// Reset workspace (Soft, Mixed, or Hard) back to the base commit
+await workspaceRepo.ResetAsync(baseCommitHash, GitResetMode.Hard);
+
+// Squash a range of commits on the current branch (e.g. from baseCommitHash to HEAD)
+// await workspaceRepo.SquashRangeAsync(baseCommitHash, "Milestone: feature complete");
+```
+
+---
+
+## Features & APIs
+
+### Creating and Opening Repositories
+- `GitRepository.Init(path, bare, initialBranch)` initializes a new Git repository.
+- `GitRepository.Open(path)` opens an existing repository (accepting either the working root or `.git` directory).
+- `GitRepositoryWithIndexAndWorkspace.Init(path, initialBranch)` initializes a non-bare repository ready for workspace operations.
+- `GitRepositoryWithIndexAndWorkspace.Open(path)` opens a repository with working tree and index management enabled.
+- `GitRepository.LockManager` exposes an `IGitRepositoryLockManager` for in-process thread synchronization across reference and object operations.
+
+### Managed Workspace Repository (`IGitWorkspaceRepository`)
+`GitRepositoryWithIndexAndWorkspace` combines the low-level object store with working tree and `.git/index` management:
+- `CommitAsync(message, metadata, stageAll)` writes a Git tree from the current index, creates a commit object, advances the active branch (or detached HEAD), and updates the index stat cache.
+- `CommitAmendAsync(message, metadata, stageAll)` rewrites the tip commit with the current staged changes, preserving or updating commit metadata.
+- `ResetAsync(commitHash, mode)` supports all three Git reset workflows:
+  - `GitResetMode.Soft`: Moves HEAD to the target commit without modifying index or working tree.
+  - `GitResetMode.Mixed`: Moves HEAD and resets the index to match the target commit tree.
+  - `GitResetMode.Hard`: Moves HEAD, resets the index, restores file contents and permissions on disk, and deletes obsolete files.
+- `SquashRangeAsync(baseCommitHash, message, metadata)` squashes a linear range of commits (`baseCommit..HEAD`) into a single milestone commit, validating ancestor reachability and updating workspace files.
+- `RevertAsync(commitHash, metadata)` inverts the changes introduced by a commit directly against the index and working tree, ensuring the workspace is clean before executing.
+- `IsWorkingTreeCleanAsync()` verifies whether there are any unstaged or staged modifications in the workspace.
+
+### Working Tree Staging Engine (`GitIndexManager`)
+`GitIndexManager` manages status scanning, staging, and `.git/index` updates:
+- `GetStatusAsync()` scans the working tree and compares against index entries and HEAD. Uses a fast stat-cache comparison (`mtime`, `ctime`, file length, executable mode), falling back to blob hashing only when stat metadata differs.
+- `StageAsync(path)` / `StageAllAsync()` stages file additions, modifications, and deletions into the index.
+- `UnstageAsync(path)` / `UnstageAllAsync()` restores index entries from HEAD while preserving working-tree changes.
+- `RestoreFileAsync(path)` / `RestoreAllAsync()` discards working-tree changes by restoring files from the index.
+- Full `.gitignore` and `.git/info/exclude` rule evaluation via `GitIgnoreMatcher` (supports wildcards, leading/trailing slashes, directory anchors, and negation rules `!`).
+
+### 100% Managed Binary Git Index (`DIRC` v2)
+`GitIndex` and `GitIndexEntry` provide a complete pure-C# implementation of the canonical Git binary index format:
+- Supports 10 stat-cache fields: `ctime`, `mtime`, `dev`, `ino`, `fileMode` (100644 vs 100755), `uid`, `gid`, `fileSize`, `hash`, and flags.
+- Validates entry hash lengths against SHA-1 (20-byte) or SHA-256 (32-byte) index checksum formats.
+- Enforces cross-process atomic file locking (`.git/index.lock`) with safe ownership cleanup.
+
+### In-Process Tree Comparison & Commit Changes
+- `CompareTreesAsync(oldTreeHash, newTreeHash)` compares two Git trees in-memory, returning a list of `GitTreeChange` records (`Path`, `Kind`, `OldHash`, `NewHash`) covering `Added`, `Modified`, and `Deleted` entries.
+- `GetCommitChangesAsync(commitHash)` returns all file changes introduced by a commit relative to its first parent (or against an empty tree for root commits).
+
+### Reference & Branch Management (`ReferenceStore`)
+- `GetCurrentBranchNameAsync()` resolves the current branch name (e.g. `main`), properly handling symbolic references.
+- `IsHeadDetachedAsync()` checks if `HEAD` points directly to an object ID rather than a symbolic branch reference.
+- `CreateReferenceAsync(name, hash, overwrite)` creates or updates references (including safety backups under `refs/backups/*`, tags, or custom refs).
+- `GetReferencesByPrefixAsync(prefix)` retrieves all references under a given prefix (e.g. `refs/heads/`, `refs/backups/`).
+- `DeleteReferenceAsync(name)` safely deletes loose references and packed references.
+
+### Commit Rewriting at Object Store Level
+- `AmendCommitAsync(headHash, newTree, message, metadata)` creates an amended commit directly in the object database.
+- `SquashCommitsAsync(baseCommit, targetCommit, message, metadata)` creates a linear squash commit object in the object database.
+- `WriteTreeAsync(index)` writes tree objects from a `GitIndex` into the object store, rejecting unmerged (conflicted) entries.
+
+### Cache Management & Reachability
+- `InvalidateCaches(clearAllData)` clears cached references and loose-object metadata so subsequent operations reflect disk changes.
+- `IsCommitReachableAsync(from, to)` traverses the commit graph to determine if `to` is reachable from `from`.
+
+---
 
 ## Testing
 
-The solution includes an xUnit test project (`tests/Pmad.Git.LocalRepositories.Test`). Tests create temporary repositories through the real `git` CLI to cover end-to-end scenarios.
+The solution includes comprehensive unit tests and native `git` CLI interoperability tests in `tests/Pmad.Git.LocalRepositories.Test`:
+- Verifies full binary round-trip compatibility between `GitIndex` and native `git.exe`.
+- Validates repository integrity using `git fsck --full --strict` across managed commits, amends, squashes, and reverts.
 
-Run all tests:
-
+Run tests via:
 ```bash
-dotnet test
+dotnet test tests/Pmad.Git.LocalRepositories.Test/Pmad.Git.LocalRepositories.Test.csproj
 ```
-
-Ensure the `git` executable is available on the PATH when running tests.
-
-## Limitations & roadmap
-- Pack files are supported for reading; writing is not implemented.
-- SHA-256 repositories are supported for reading, but mixed-hash scenarios are not tested.
-
-Contributions and issues are welcome!
