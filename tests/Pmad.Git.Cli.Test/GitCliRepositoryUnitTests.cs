@@ -33,6 +33,17 @@ public class GitCliRepositoryUnitTests
     }
 
     [Fact]
+    public async Task FetchAsync_With_Branch_Only_Defaults_Remote_To_Origin()
+    {
+        var runner = new FakeGitRunner().Enqueue(0);
+        var repository = new GitCliRepository(ExistingDirectory, runner);
+
+        await repository.FetchAsync(branch: "main");
+
+        Assert.Equal(new[] { "fetch", "origin", "main" }, runner.Calls.Single());
+    }
+
+    [Fact]
     public async Task FetchAsync_Throws_On_Failure()
     {
         var runner = new FakeGitRunner().Enqueue(1, stderr: "boom");
@@ -54,6 +65,18 @@ public class GitCliRepositoryUnitTests
         Assert.Equal(new[] { "pull", "--no-rebase" }, runner.Calls.Single());
         Assert.True(result.IsSuccess);
         Assert.False(result.HasConflicts);
+    }
+
+    [Fact]
+    public async Task PullAsync_With_Branch_Only_Defaults_Remote_To_Origin()
+    {
+        var runner = new FakeGitRunner().Enqueue(0);
+        var repository = new GitCliRepository(ExistingDirectory, runner);
+
+        var result = await repository.PullAsync(branch: "feature");
+
+        Assert.Equal(new[] { "pull", "--no-rebase", "origin", "feature" }, runner.Calls.Single());
+        Assert.True(result.IsSuccess);
     }
 
     [Fact]
@@ -105,6 +128,17 @@ public class GitCliRepositoryUnitTests
         await repository.PushAsync();
 
         Assert.Equal(new[] { "push" }, runner.Calls.Single());
+    }
+
+    [Fact]
+    public async Task PushAsync_With_Branch_Only_Defaults_Remote_To_Origin()
+    {
+        var runner = new FakeGitRunner().Enqueue(0);
+        var repository = new GitCliRepository(ExistingDirectory, runner);
+
+        await repository.PushAsync(branch: "feature");
+
+        Assert.Equal(new[] { "push", "origin", "feature" }, runner.Calls.Single());
     }
 
     [Fact]

@@ -590,7 +590,9 @@ public sealed class GitSmartHttpEndToEndTest : IDisposable
         repository.Changed += (_, _) =>
         {
             changedCount++;
+#pragma warning disable xUnit1031 // Synchronous event handler must capture state at the moment Changed is raised
             mainRefAtLastChanged = repository.ReferenceStore.TryResolveReferenceAsync("refs/heads/main").GetAwaiter().GetResult();
+#pragma warning restore xUnit1031
         };
 
         var cloneDir = Path.Combine(_clientWorkingDir, "changed-event-test-clone");

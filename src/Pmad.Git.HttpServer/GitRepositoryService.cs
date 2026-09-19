@@ -31,7 +31,7 @@ internal sealed class GitRepositoryService : IGitRepositoryService
             return;
         }
 
-        var normalizedPath = Path.GetFullPath(repositoryPath);
+        var normalizedPath = NormalizePath(repositoryPath);
         _repositories.TryRemove(normalizedPath, out _);
     }
 
@@ -57,7 +57,7 @@ internal sealed class GitRepositoryService : IGitRepositoryService
             throw new ArgumentException("Repository path cannot be null or whitespace.", nameof(repositoryPath));
         }
 
-        return Path.GetFullPath(repositoryPath);
+        return Path.TrimEndingDirectorySeparator(Path.GetFullPath(repositoryPath));
     }
 
     /// <summary>

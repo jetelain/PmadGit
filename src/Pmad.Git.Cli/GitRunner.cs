@@ -1,4 +1,4 @@
-﻿using System.Diagnostics;
+using System.Diagnostics;
 using System.Text;
 
 namespace Pmad.Git.Cli;
@@ -25,14 +25,15 @@ internal class GitRunner : IGitRunner
             RedirectStandardInput = true,
             UseShellExecute = false,
             CreateNoWindow = true,
+            Environment = { ["GIT_TERMINAL_PROMPT"] = "0" },
         };
 
         var stdout = new StringBuilder();
         var stderr = new StringBuilder();
 
         using var process = Process.Start(startInfo) ?? throw new InvalidOperationException("Unable to start git process");
-        process.OutputDataReceived += (_, e) => { stdout.AppendLine(e.Data); };
-        process.ErrorDataReceived += (_, e) => { stderr.AppendLine(e.Data); };
+        process.OutputDataReceived += (_, e) => { if (e.Data != null) { stdout.AppendLine(e.Data); } };
+        process.ErrorDataReceived += (_, e) => { if (e.Data != null) { stderr.AppendLine(e.Data); } };
         process.BeginOutputReadLine();
         process.BeginErrorReadLine();
 
@@ -46,6 +47,8 @@ internal class GitRunner : IGitRunner
             await process.WaitForExitAsync(CancellationToken.None).ConfigureAwait(false);
             throw;
         }
+
+        process.WaitForExit();
 
         cancellationToken.ThrowIfCancellationRequested();
 

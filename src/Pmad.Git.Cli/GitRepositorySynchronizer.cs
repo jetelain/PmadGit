@@ -190,7 +190,11 @@ public sealed class GitRepositorySynchronizer : IAsyncDisposable
 
     private void OnPushDebounceElapsed(object? state)
     {
-        _ = FlushPendingPushAsync(CancellationToken.None);
+        if (_disposed)
+        {
+            return;
+        }
+        _ = FlushPendingPushAsync(_lifetimeCts.Token);
     }
 
     /// <summary>
@@ -202,7 +206,7 @@ public sealed class GitRepositorySynchronizer : IAsyncDisposable
     /// </summary>
     public async Task FlushPendingPushAsync(CancellationToken cancellationToken = default)
     {
-        if (!_pushPending || _state == GitSyncState.Conflict)
+        if (_disposed || !_pushPending || _state == GitSyncState.Conflict)
         {
             return;
         }
@@ -212,20 +216,35 @@ public sealed class GitRepositorySynchronizer : IAsyncDisposable
             // one-shot debounce timer has already fired (or this is a manual flush racing with it),
             // rearm it so the pending change is not forgotten until another notification or manual
             // flush occurs; it will fire again once the current synchronization releases the gate.
-            if (_pushPending && _state != GitSyncState.Conflict)
+            if (!_disposed && _pushPending && _state != GitSyncState.Conflict)
             {
-                _pushDebounceTimer?.Change(_options.PushDebounceDelay, Timeout.InfiniteTimeSpan);
+                try
+                {
+                    _pushDebounceTimer?.Change(_options.PushDebounceDelay, Timeout.InfiniteTimeSpan);
+                }
+                catch (ObjectDisposedException)
+                {
+                }
             }
             return;
         }
         try
         {
-            if (!_pushPending || _state == GitSyncState.Conflict)
+            if (_disposed || !_pushPending || _state == GitSyncState.Conflict)
             {
                 return;
             }
             _pushPending = false;
-            _pushDebounceTimer?.Change(Timeout.Infinite, Timeout.Infinite);
+            if (!_disposed)
+            {
+                try
+                {
+                    _pushDebounceTimer?.Change(Timeout.Infinite, Timeout.Infinite);
+                }
+                catch (ObjectDisposedException)
+                {
+                }
+            }
             _state = GitSyncState.Syncing;
             BeginSelfOperation();
             try

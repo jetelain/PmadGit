@@ -84,7 +84,7 @@ internal sealed class GitRepositorySynchronizerService : IGitRepositorySynchroni
             return;
         }
 
-        var normalizedPath = Path.GetFullPath(repositoryPath);
+        var normalizedPath = GitRepositoryService.NormalizePath(repositoryPath);
         if (_synchronizers.TryRemove(normalizedPath, out var synchronizer))
         {
             _ = synchronizer.DisposeAsync();

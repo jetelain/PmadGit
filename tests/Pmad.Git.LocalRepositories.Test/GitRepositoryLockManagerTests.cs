@@ -886,9 +886,6 @@ public sealed class GitRepositoryLockManagerTests
 
     private static GitRepositoryLockManager CreateLockManager()
     {
-        // Use reflection to create an instance since the class is internal
-        var type = typeof(GitRepository).Assembly.GetType("Pmad.Git.LocalRepositories.GitRepositoryLockManager");
-        Assert.NotNull(type);
-        return (GitRepositoryLockManager)Activator.CreateInstance(type, true)!;
+        return new GitRepositoryLockManager();
     }
 }

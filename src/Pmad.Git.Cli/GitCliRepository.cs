@@ -1,4 +1,4 @@
-﻿using System.Linq;
+using System.Linq;
 using Pmad.Git.LocalRepositories;
 
 namespace Pmad.Git.Cli;
@@ -192,9 +192,10 @@ public class GitCliRepository
         {
             arguments.Add("--prune");
         }
-        if (remote != null)
+        var targetRemote = remote ?? (branch != null ? "origin" : null);
+        if (targetRemote != null)
         {
-            arguments.Add(remote);
+            arguments.Add(targetRemote);
             if (branch != null)
             {
                 arguments.Add(branch);
@@ -224,9 +225,10 @@ public class GitCliRepository
         // local/global 'pull.rebase' git configuration, which may be unset (e.g. on CI machines),
         // causing 'git pull' to fail with "Need to specify how to reconcile divergent branches."
         arguments.Add(rebase ? "--rebase" : "--no-rebase");
-        if (remote != null)
+        var targetRemote = remote ?? (branch != null ? "origin" : null);
+        if (targetRemote != null)
         {
-            arguments.Add(remote);
+            arguments.Add(targetRemote);
             if (branch != null)
             {
                 arguments.Add(branch);
@@ -271,9 +273,10 @@ public class GitCliRepository
         {
             arguments.Add("--force-with-lease");
         }
-        if (remote != null)
+        var targetRemote = remote ?? (branch != null ? "origin" : null);
+        if (targetRemote != null)
         {
-            arguments.Add(remote);
+            arguments.Add(targetRemote);
             if (branch != null)
             {
                 arguments.Add(branch);

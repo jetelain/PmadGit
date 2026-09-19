@@ -54,6 +54,47 @@ public sealed class GitRepositorySynchronizerServiceTest : IDisposable
     }
 
     [Fact]
+    public async Task GetSynchronizerByPath_WithTrailingDirectorySeparator_ShouldReturnSameSynchronizer()
+    {
+        // Arrange
+        var repository = CreateRepository();
+        var repositoryService = new GitRepositoryService();
+        var service = new GitRepositorySynchronizerService(repositoryService);
+        var pathWithoutSlash = repository.WorkingDirectory.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        var pathWithSlash = pathWithoutSlash + Path.DirectorySeparatorChar;
+
+        // Act
+        var synchronizer = service.SetupSynchronizer(pathWithoutSlash, new GitSyncOptions());
+
+        // Assert
+        Assert.NotNull(synchronizer);
+        Assert.Same(synchronizer, service.GetSynchronizerByPath(pathWithSlash));
+
+        await synchronizer.DisposeAsync();
+    }
+
+    [Fact]
+    public async Task InvalidateSynchronizer_WithTrailingDirectorySeparator_ShouldRemoveCachedSynchronizer()
+    {
+        // Arrange
+        var repository = CreateRepository();
+        var repositoryService = new GitRepositoryService();
+        var service = new GitRepositorySynchronizerService(repositoryService);
+        var pathWithoutSlash = repository.WorkingDirectory.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        var pathWithSlash = pathWithoutSlash + Path.DirectorySeparatorChar;
+        service.SetupSynchronizer(pathWithoutSlash, new GitSyncOptions());
+
+        // Act
+        service.InvalidateSynchronizer(pathWithSlash);
+
+        // Assert
+        Assert.Null(service.GetSynchronizerByPath(pathWithoutSlash));
+        Assert.Null(service.GetSynchronizerByPath(pathWithSlash));
+
+        await Task.Delay(10);
+    }
+
+    [Fact]
     public async Task SetupSynchronizer_CalledTwice_ShouldReplacePreviousInstanceAndDisposeIt()
     {
         // Arrange

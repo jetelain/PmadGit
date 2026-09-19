@@ -39,4 +39,18 @@ public class GitRunnerTests
 
         await Assert.ThrowsAsync<TaskCanceledException>(() => runTask);
     }
+
+    [Fact]
+    public async Task RunGit_SingleLineOutput_DoesNotAppendExtraneousTrailingBlankLines()
+    {
+        var runner = new GitRunner();
+
+        var response = await runner.RunGit(Path.GetTempPath(), new[] { "--version" }, CancellationToken.None);
+
+        Assert.Equal(0, response.ExitCode);
+        var lines = response.StdOut.Split(new[] { "\r\n", "\n" }, StringSplitOptions.None);
+        Assert.Equal(2, lines.Length);
+        Assert.StartsWith("git version", lines[0]);
+        Assert.Empty(lines[1]);
+    }
 }

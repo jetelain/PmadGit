@@ -65,6 +65,11 @@ public sealed class GitRepository : IGitRepository, IGitRepositoryCacheInvalidat
     /// <param name="path">Path where the repository should be created.</param>
     /// <param name="bare">Whether to create a bare repository (no working directory).</param>
     /// <param name="initialBranch">Name of the initial branch; defaults to "main".</param>
+    /// <param name="lockManager">
+    /// Optional lock manager to use. Share the same instance with other components (e.g. a CLI-based
+    /// wrapper) operating on the same repository directory within the same process, to synchronize
+    /// their writes. When omitted, a new dedicated lock manager is created.
+    /// </param>
     /// <returns>An initialized <see cref="GitRepository"/>.</returns>
     public static GitRepository Init(string path, bool bare = false, string initialBranch = "main", IGitRepositoryLockManager? lockManager = null)
     {
