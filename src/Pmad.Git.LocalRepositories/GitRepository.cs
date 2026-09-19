@@ -1376,6 +1376,11 @@ public sealed class GitRepository : IGitRepository, IGitRepositoryCacheInvalidat
             throw new ArgumentNullException(nameof(index));
         }
 
+        if (index.Entries.Any(e => e.Stage > 0))
+        {
+            throw new InvalidOperationException("Cannot write tree from an unmerged index with conflicted entries.");
+        }
+
         var leaves = index.Entries.Where(e => e.Stage == 0)
             .ToDictionary(e => e.Path, e => new TreeLeaf(e.FileMode, e.Hash), StringComparer.Ordinal);
         return await BuildTreeAsync(leaves, cancellationToken).ConfigureAwait(false);

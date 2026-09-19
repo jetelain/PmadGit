@@ -243,4 +243,166 @@ public sealed class GitRepositoryWithIndexAndWorkspaceTests
         var cliStatus = testRepo.RunGit("status --porcelain");
         Assert.Empty(cliStatus.Trim());
     }
+
+    [Fact]
+    public async Task CommitAsync_ThrowsOnUnmergedEntries()
+    {
+        using var testRepo = GitTestRepository.Create();
+        testRepo.Commit("Initial", ("file.txt", "initial"));
+
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+
+        // Add a conflicted stage 2 entry into index
+        var index = await GitIndex.ReadAsync(repo.IndexManager.IndexPath);
+        var blobHash = await repo.ObjectStore.WriteObjectAsync(GitObjectType.Blob, "conflict"u8.ToArray());
+        index.AddOrUpdate(new GitIndexEntry("conflict.txt", blobHash, 33188, flags: (ushort)(2 << 12)));
+        await index.WriteAsync(repo.IndexManager.IndexPath);
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => repo.CommitAsync("Commit conflicted"));
+    }
+
+    [Fact]
+    public async Task CommitAmendAsync_ThrowsOnUnmergedEntries()
+    {
+        using var testRepo = GitTestRepository.Create();
+        testRepo.Commit("Initial", ("file.txt", "initial"));
+
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+
+        var index = await GitIndex.ReadAsync(repo.IndexManager.IndexPath);
+        var blobHash = await repo.ObjectStore.WriteObjectAsync(GitObjectType.Blob, "conflict"u8.ToArray());
+        index.AddOrUpdate(new GitIndexEntry("conflict.txt", blobHash, 33188, flags: (ushort)(1 << 12)));
+        await index.WriteAsync(repo.IndexManager.IndexPath);
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => repo.CommitAmendAsync());
+    }
+
+    [Fact]
+    public async Task CommitAsync_InDetachedHead_UpdatesHeadDirectly()
+    {
+        using var testRepo = GitTestRepository.Create();
+        testRepo.Commit("Initial", ("file.txt", "initial"));
+
+        // Detach HEAD
+        var initialHash = testRepo.RunGit("rev-parse HEAD").Trim();
+        testRepo.RunGit($"checkout {initialHash}");
+        var masterBefore = testRepo.RunGit("rev-parse master").Trim();
+
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+        Assert.True(await repo.IsHeadDetachedAsync());
+
+        await File.WriteAllTextAsync(Path.Combine(testRepo.WorkingDirectory, "file.txt"), "detached change");
+        await repo.StageAsync("file.txt");
+        var commitHash = await repo.CommitAsync("Detached commit", new GitCommitMetadata("Detached commit", TestSignature));
+
+        Assert.True(await repo.IsHeadDetachedAsync());
+        var headCommit = await repo.GetCommitAsync("HEAD");
+        Assert.Equal(commitHash, headCommit.Id);
+        Assert.Equal("Detached commit", headCommit.Message);
+
+        // master must NOT have changed!
+        var masterAfter = testRepo.RunGit("rev-parse master").Trim();
+        Assert.Equal(masterBefore, masterAfter);
+    }
+
+    [Fact]
+    public async Task RevertAsync_InDirtyWorkspace_ThrowsInvalidOperationException()
+    {
+        using var testRepo = GitTestRepository.Create();
+        testRepo.Commit("C1", ("file.txt", "v1"));
+        testRepo.Commit("C2", ("file.txt", "v2"));
+
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+        var c2 = await repo.GetCommitAsync("HEAD");
+
+        // Dirty the workspace
+        await File.WriteAllTextAsync(Path.Combine(testRepo.WorkingDirectory, "uncommitted.txt"), "unsaved work");
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => repo.RevertAsync(c2.Id));
+    }
+
+    [Fact]
+    public async Task SquashRangeAsync_WithBaseEqualToHead_ThrowsInvalidOperationException()
+    {
+        using var testRepo = GitTestRepository.Create();
+        testRepo.Commit("C1", ("file.txt", "v1"));
+
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+        var head = await repo.GetCommitAsync("HEAD");
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => repo.SquashRangeAsync(head.Id, "Squash"));
+    }
+
+    [Fact]
+    public async Task SquashRangeAsync_WithUnreachableBase_ThrowsArgumentException()
+    {
+        using var testRepo = GitTestRepository.Create();
+        testRepo.Commit("C1", ("file.txt", "v1"));
+
+        // Create an unrelated commit in object store
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+        var blobHash = await repo.ObjectStore.WriteObjectAsync(GitObjectType.Blob, "unrelated"u8.ToArray());
+        var unrelatedIndex = new GitIndex();
+        unrelatedIndex.AddOrUpdate(new GitIndexEntry("unrelated.txt", blobHash, 33188));
+        var treeHash = await repo.WriteTreeAsync(unrelatedIndex);
+        var payload = GitRepository.BuildCommitPayload(treeHash, Array.Empty<GitHash>(), new GitCommitMetadata("Unrelated", TestSignature));
+        var unrelatedCommit = await repo.ObjectStore.WriteObjectAsync(GitObjectType.Commit, payload);
+
+        await Assert.ThrowsAsync<ArgumentException>(() => repo.SquashRangeAsync(unrelatedCommit, "Squash"));
+    }
+
+    [Fact]
+    public async Task CreateCommitAsync_OnCurrentBranch_UpdatesWorkspaceAndIndex()
+    {
+        using var testRepo = GitTestRepository.Create();
+        testRepo.Commit("Initial", ("init.txt", "hello"));
+
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+        var currentBranch = await repo.ReferenceStore.GetCurrentBranchNameAsync();
+        Assert.NotNull(currentBranch);
+
+        var commitHash = await repo.CreateCommitAsync(
+            currentBranch,
+            new GitCommitOperation[]
+            {
+                new AddFileOperation("generated.txt", Encoding.UTF8.GetBytes("auto-generated content"))
+            },
+            new GitCommitMetadata("Direct commit on current branch", TestSignature));
+
+        // Working tree must contain generated.txt
+        var generatedPath = Path.Combine(testRepo.WorkingDirectory, "generated.txt");
+        Assert.True(File.Exists(generatedPath));
+        Assert.Equal("auto-generated content", await File.ReadAllTextAsync(generatedPath));
+
+        // Index and working tree must be clean
+        Assert.True(await repo.IsWorkingTreeCleanAsync());
+    }
+
+    [Fact]
+    public async Task AmendCommitAsync_OnCurrentBranch_UpdatesWorkspaceAndIndex()
+    {
+        using var testRepo = GitTestRepository.Create();
+        testRepo.Commit("Initial", ("init.txt", "hello"));
+
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+        var currentBranch = await repo.ReferenceStore.GetCurrentBranchNameAsync();
+        Assert.NotNull(currentBranch);
+
+        var commitHash = await repo.AmendCommitAsync(
+            currentBranch,
+            new GitCommitOperation[]
+            {
+                new AddFileOperation("amended.txt", Encoding.UTF8.GetBytes("amended content"))
+            },
+            new GitCommitMetadata("Amended on current branch", TestSignature));
+
+        // Working tree must contain amended.txt
+        var amendedPath = Path.Combine(testRepo.WorkingDirectory, "amended.txt");
+        Assert.True(File.Exists(amendedPath));
+        Assert.Equal("amended content", await File.ReadAllTextAsync(amendedPath));
+
+        // Index and working tree must be clean
+        Assert.True(await repo.IsWorkingTreeCleanAsync());
+    }
 }
+
