@@ -984,6 +984,83 @@ public sealed class GitRepositoryWriteOperationsTests
 
 	#endregion
 
+	#region WriteTreeAsync Tests
+
+	[Fact]
+	public async Task WriteTreeAsync_BuildsValidGitTreeFromIndex()
+	{
+		var repoPath = Path.Combine(Path.GetTempPath(), $"write-tree-test-{Guid.NewGuid():N}");
+		try
+		{
+			var repository = GitRepository.Init(repoPath);
+			var readmeContent = Encoding.UTF8.GetBytes("# Title");
+			var appContent = Encoding.UTF8.GetBytes("Console.WriteLine();");
+
+			var readmeHash = await repository.ObjectStore.WriteObjectAsync(GitObjectType.Blob, readmeContent);
+			var appHash = await repository.ObjectStore.WriteObjectAsync(GitObjectType.Blob, appContent);
+
+			var index = new GitIndex();
+			index.AddOrUpdate(new GitIndexEntry("README.md", readmeHash, 33188));
+			index.AddOrUpdate(new GitIndexEntry("src/App.cs", appHash, 33188));
+
+			var treeHash = await repository.WriteTreeAsync(index);
+			Assert.NotEqual(GitHash.Zero, treeHash);
+
+			// Verify the tree can be used in a commit and files are readable
+			var metadata = CreateMetadata("Test commit from tree");
+			var payload = GitRepository.BuildCommitPayload(treeHash, Array.Empty<GitHash>(), metadata);
+			var commitHash = await repository.ObjectStore.WriteObjectAsync(GitObjectType.Commit, payload);
+
+			var readReadme = await repository.ReadFileAsync("README.md", commitHash.Value);
+			Assert.Equal("# Title", Encoding.UTF8.GetString(readReadme));
+
+			var readApp = await repository.ReadFileAsync("src/App.cs", commitHash.Value);
+			Assert.Equal("Console.WriteLine();", Encoding.UTF8.GetString(readApp));
+		}
+		finally
+		{
+			GitTestHelper.TryDeleteDirectory(repoPath);
+		}
+	}
+
+	[Fact]
+	public async Task WriteTreeAsync_WithNullIndex_ThrowsArgumentNullException()
+	{
+		var repoPath = Path.Combine(Path.GetTempPath(), $"write-tree-null-{Guid.NewGuid():N}");
+		try
+		{
+			var repository = GitRepository.Init(repoPath);
+			await Assert.ThrowsAsync<ArgumentNullException>(() => repository.WriteTreeAsync(null!));
+		}
+		finally
+		{
+			GitTestHelper.TryDeleteDirectory(repoPath);
+		}
+	}
+
+	[Fact]
+	public async Task WriteTreeAsync_WithUnmergedEntries_ThrowsInvalidOperationException()
+	{
+		var repoPath = Path.Combine(Path.GetTempPath(), $"write-tree-conflict-{Guid.NewGuid():N}");
+		try
+		{
+			var repository = GitRepository.Init(repoPath);
+			var hash = await repository.ObjectStore.WriteObjectAsync(GitObjectType.Blob, "conflict"u8.ToArray());
+
+			var index = new GitIndex();
+			// Add stage 2 (ours) entry
+			index.AddOrUpdate(new GitIndexEntry("file.txt", hash, 33188, flags: (ushort)(2 << 12)));
+
+			await Assert.ThrowsAsync<InvalidOperationException>(() => repository.WriteTreeAsync(index));
+		}
+		finally
+		{
+			GitTestHelper.TryDeleteDirectory(repoPath);
+		}
+	}
+
+	#endregion
+
 	#region Helper Methods
 
 	private static GitCommitMetadata CreateMetadata(string message)
