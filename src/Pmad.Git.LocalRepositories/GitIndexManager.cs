@@ -10,6 +10,42 @@ namespace Pmad.Git.LocalRepositories;
 /// </summary>
 public sealed class GitIndexManager
 {
+    private sealed class IndexMutationLock : IDisposable
+    {
+        private readonly IDisposable _refLock;
+        private readonly FileStream _lockFileStream;
+        private readonly string _lockFilePath;
+        private bool _disposed;
+
+        public IndexMutationLock(IDisposable refLock, FileStream lockFileStream, string lockFilePath)
+        {
+            _refLock = refLock;
+            _lockFileStream = lockFileStream;
+            _lockFilePath = lockFilePath;
+        }
+
+        public void Dispose()
+        {
+            if (!_disposed)
+            {
+                _disposed = true;
+                _lockFileStream.Dispose();
+                try
+                {
+                    if (File.Exists(_lockFilePath))
+                    {
+                        File.Delete(_lockFilePath);
+                    }
+                }
+                catch
+                {
+                    // Ignore deletion failure if file was moved/deleted
+                }
+                _refLock.Dispose();
+            }
+        }
+    }
+
     private readonly IGitRepository _repository;
 
     /// <summary>
@@ -63,18 +99,22 @@ public sealed class GitIndexManager
         var ignoreMatcher = GitIgnoreMatcher.Load(WorkingDirectory);
         var diskFiles = new Dictionary<string, FileInfo>(StringComparer.Ordinal);
 
+        var trackedFiles = new HashSet<string>(StringComparer.Ordinal);
+        trackedFiles.UnionWith(headFiles.Keys);
+        trackedFiles.UnionWith(indexByPath.Keys);
+
         var trackedPrefixes = new HashSet<string>(StringComparer.Ordinal);
-        foreach (var entry in index.Entries)
+        foreach (var path in trackedFiles)
         {
-            var slashIdx = entry.Path.IndexOf('/');
+            var slashIdx = path.IndexOf('/');
             while (slashIdx >= 0)
             {
-                trackedPrefixes.Add(entry.Path[..slashIdx]);
-                slashIdx = entry.Path.IndexOf('/', slashIdx + 1);
+                trackedPrefixes.Add(path[..slashIdx]);
+                slashIdx = path.IndexOf('/', slashIdx + 1);
             }
         }
 
-        ScanWorkingDirectory(new DirectoryInfo(WorkingDirectory), string.Empty, ignoreMatcher, trackedPrefixes, diskFiles);
+        ScanWorkingDirectory(new DirectoryInfo(WorkingDirectory), string.Empty, ignoreMatcher, trackedPrefixes, trackedFiles, diskFiles);
 
         var allPaths = new HashSet<string>(StringComparer.Ordinal);
         allPaths.UnionWith(headFiles.Keys);
@@ -110,7 +150,7 @@ public sealed class GitIndexManager
             {
                 if (headEntry != null)
                 {
-                    stagedStatus = normalIndexEntry.Hash == headEntry.Hash
+                    stagedStatus = (normalIndexEntry.Hash == headEntry.Hash && normalIndexEntry.FileMode == headEntry.Mode)
                         ? GitFileStatus.Clean
                         : GitFileStatus.StagedModified;
                 }
@@ -148,8 +188,10 @@ public sealed class GitIndexManager
                     }
                     else
                     {
-                        var mtimeSec = (uint)Math.Max(0, new DateTimeOffset(fileInfo.LastWriteTimeUtc).ToUnixTimeSeconds());
-                        if (mtimeSec == normalIndexEntry.MtimeSeconds)
+                        var mtimeUtc = fileInfo.LastWriteTimeUtc;
+                        var mtimeSec = (uint)Math.Max(0, new DateTimeOffset(mtimeUtc).ToUnixTimeSeconds());
+                        var mtimeNano = (uint)((mtimeUtc.Ticks % TimeSpan.TicksPerSecond) * 100);
+                        if (mtimeSec == normalIndexEntry.MtimeSeconds && mtimeNano == normalIndexEntry.MtimeNanoseconds)
                         {
                             // Stat cache matches: content is unmodified
                             workTreeStatus = GitFileStatus.Clean;
@@ -217,53 +259,57 @@ public sealed class GitIndexManager
             throw new ArgumentNullException(nameof(relativePaths));
         }
 
-        var index = await GitIndex.ReadAsync(IndexPath, _repository.HashLengthBytes, cancellationToken).ConfigureAwait(false);
+        var pathsList = relativePaths.Select(NormalizeAndValidateRelativePath).ToList();
 
-        foreach (var rawPath in relativePaths)
+        using (await AcquireIndexMutationLockAsync(cancellationToken).ConfigureAwait(false))
         {
-            cancellationToken.ThrowIfCancellationRequested();
-            var path = rawPath.TrimStart('/', '\\').Replace('\\', '/');
-            var fullPath = Path.Combine(WorkingDirectory, path);
+            var index = await GitIndex.ReadAsync(IndexPath, _repository.HashLengthBytes, cancellationToken).ConfigureAwait(false);
 
-            if (File.Exists(fullPath))
+            foreach (var path in pathsList)
             {
-                var fileInfo = new FileInfo(fullPath);
-                GitHash blobHash;
-                var options = new FileStreamOptions
-                {
-                    Mode = FileMode.Open,
-                    Access = FileAccess.Read,
-                    Share = FileShare.ReadWrite | FileShare.Delete,
-                    Options = FileOptions.Asynchronous | FileOptions.SequentialScan
-                };
+                cancellationToken.ThrowIfCancellationRequested();
+                var fullPath = Path.Combine(WorkingDirectory, path);
 
-                await using (var stream = new FileStream(fullPath, options))
+                if (File.Exists(fullPath))
                 {
-                    blobHash = await _repository.ObjectStore.WriteObjectAsync(
-                        GitObjectType.Blob,
-                        stream,
-                        stream.Length,
-                        cancellationToken).ConfigureAwait(false);
+                    var fileInfo = new FileInfo(fullPath);
+                    GitHash blobHash;
+                    var options = new FileStreamOptions
+                    {
+                        Mode = FileMode.Open,
+                        Access = FileAccess.Read,
+                        Share = FileShare.ReadWrite | FileShare.Delete,
+                        Options = FileOptions.Asynchronous | FileOptions.SequentialScan
+                    };
+
+                    await using (var stream = new FileStream(fullPath, options))
+                    {
+                        blobHash = await _repository.ObjectStore.WriteObjectAsync(
+                            GitObjectType.Blob,
+                            stream,
+                            fileInfo.Length,
+                            cancellationToken).ConfigureAwait(false);
+                    }
+
+                    var entry = GitIndexEntry.FromFileInfo(path, fileInfo, blobHash);
+                    // Clear any merge conflict stages
+                    index.Remove(path, stage: 1);
+                    index.Remove(path, stage: 2);
+                    index.Remove(path, stage: 3);
+                    index.AddOrUpdate(entry);
                 }
+                else
+                {
+                    // File deleted on disk: remove all stages from index
+                    index.Remove(path, stage: 0);
+                    index.Remove(path, stage: 1);
+                    index.Remove(path, stage: 2);
+                    index.Remove(path, stage: 3);
+                }
+            }
 
-                var entry = GitIndexEntry.FromFileInfo(path, fileInfo, blobHash);
-                // Clear any merge conflict stages
-                index.Remove(path, stage: 1);
-                index.Remove(path, stage: 2);
-                index.Remove(path, stage: 3);
-                index.AddOrUpdate(entry);
-            }
-            else
-            {
-                // File deleted on disk: remove all stages from index
-                index.Remove(path, stage: 0);
-                index.Remove(path, stage: 1);
-                index.Remove(path, stage: 2);
-                index.Remove(path, stage: 3);
-            }
+            await index.WriteAsync(IndexPath, _repository.HashLengthBytes, cancellationToken).ConfigureAwait(false);
         }
-
-        await index.WriteAsync(IndexPath, _repository.HashLengthBytes, cancellationToken).ConfigureAwait(false);
     }
 
     /// <summary>
@@ -306,32 +352,36 @@ public sealed class GitIndexManager
             throw new ArgumentNullException(nameof(relativePaths));
         }
 
-        var index = await GitIndex.ReadAsync(IndexPath, _repository.HashLengthBytes, cancellationToken).ConfigureAwait(false);
-        var headFiles = await GetHeadFilesAsync(cancellationToken).ConfigureAwait(false);
+        var pathsList = relativePaths.Select(NormalizeAndValidateRelativePath).ToList();
 
-        foreach (var rawPath in relativePaths)
+        using (await AcquireIndexMutationLockAsync(cancellationToken).ConfigureAwait(false))
         {
-            cancellationToken.ThrowIfCancellationRequested();
-            var path = rawPath.TrimStart('/', '\\').Replace('\\', '/');
+            var index = await GitIndex.ReadAsync(IndexPath, _repository.HashLengthBytes, cancellationToken).ConfigureAwait(false);
+            var headFiles = await GetHeadFilesAsync(cancellationToken).ConfigureAwait(false);
 
-            // Remove all conflict stages
-            index.Remove(path, stage: 1);
-            index.Remove(path, stage: 2);
-            index.Remove(path, stage: 3);
+            foreach (var path in pathsList)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
 
-            if (headFiles.TryGetValue(path, out var headEntry))
-            {
-                var entry = new GitIndexEntry(path, headEntry.Hash, headEntry.Mode);
-                index.AddOrUpdate(entry);
+                // Remove all conflict stages
+                index.Remove(path, stage: 1);
+                index.Remove(path, stage: 2);
+                index.Remove(path, stage: 3);
+
+                if (headFiles.TryGetValue(path, out var headEntry))
+                {
+                    var entry = new GitIndexEntry(path, headEntry.Hash, headEntry.Mode);
+                    index.AddOrUpdate(entry);
+                }
+                else
+                {
+                    // File was not in HEAD: completely remove from index
+                    index.Remove(path, stage: 0);
+                }
             }
-            else
-            {
-                // File was not in HEAD: completely remove from index
-                index.Remove(path, stage: 0);
-            }
+
+            await index.WriteAsync(IndexPath, _repository.HashLengthBytes, cancellationToken).ConfigureAwait(false);
         }
-
-        await index.WriteAsync(IndexPath, _repository.HashLengthBytes, cancellationToken).ConfigureAwait(false);
     }
 
     /// <summary>
@@ -340,17 +390,20 @@ public sealed class GitIndexManager
     /// <param name="cancellationToken">Token used to cancel the async operation.</param>
     public async Task UnstageAllAsync(CancellationToken cancellationToken = default)
     {
-        var headFiles = await GetHeadFilesAsync(cancellationToken).ConfigureAwait(false);
-        var newIndex = new GitIndex();
-
-        foreach (var (path, headEntry) in headFiles)
+        using (await AcquireIndexMutationLockAsync(cancellationToken).ConfigureAwait(false))
         {
-            cancellationToken.ThrowIfCancellationRequested();
-            var entry = new GitIndexEntry(path, headEntry.Hash, headEntry.Mode);
-            newIndex.AddOrUpdate(entry);
-        }
+            var headFiles = await GetHeadFilesAsync(cancellationToken).ConfigureAwait(false);
+            var newIndex = new GitIndex();
 
-        await newIndex.WriteAsync(IndexPath, _repository.HashLengthBytes, cancellationToken).ConfigureAwait(false);
+            foreach (var (path, headEntry) in headFiles)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                var entry = new GitIndexEntry(path, headEntry.Hash, headEntry.Mode);
+                newIndex.AddOrUpdate(entry);
+            }
+
+            await newIndex.WriteAsync(IndexPath, _repository.HashLengthBytes, cancellationToken).ConfigureAwait(false);
+        }
     }
 
     /// <summary>
@@ -361,7 +414,7 @@ public sealed class GitIndexManager
     /// <param name="cancellationToken">Token used to cancel the async operation.</param>
     public async Task RestoreFileAsync(string relativePath, CancellationToken cancellationToken = default)
     {
-        var path = relativePath.TrimStart('/', '\\').Replace('\\', '/');
+        var path = NormalizeAndValidateRelativePath(relativePath);
         var index = await GitIndex.ReadAsync(IndexPath, _repository.HashLengthBytes, cancellationToken).ConfigureAwait(false);
         var entry = index.FindEntry(path);
 
@@ -440,6 +493,102 @@ public sealed class GitIndexManager
         }
     }
 
+    private string NormalizeAndValidateRelativePath(string relativePath)
+    {
+        if (string.IsNullOrWhiteSpace(relativePath))
+        {
+            throw new ArgumentException("Path cannot be empty.", nameof(relativePath));
+        }
+
+        if (Path.IsPathRooted(relativePath))
+        {
+            throw new ArgumentException($"Path cannot be rooted: '{relativePath}'", nameof(relativePath));
+        }
+
+        var normalized = relativePath.Replace('\\', '/').Trim('/');
+        if (string.IsNullOrEmpty(normalized))
+        {
+            throw new ArgumentException("Path cannot be empty.", nameof(relativePath));
+        }
+
+        var segments = normalized.Split('/');
+        foreach (var segment in segments)
+        {
+            if (segment == "." || segment == "..")
+            {
+                throw new ArgumentException($"Path traversal is not allowed: '{relativePath}'", nameof(relativePath));
+            }
+        }
+
+        var fullPath = Path.GetFullPath(Path.Combine(WorkingDirectory, normalized));
+        var workingDirFull = Path.GetFullPath(WorkingDirectory);
+        if (!workingDirFull.EndsWith(Path.DirectorySeparatorChar.ToString(), StringComparison.Ordinal) &&
+            !workingDirFull.EndsWith(Path.AltDirectorySeparatorChar.ToString(), StringComparison.Ordinal))
+        {
+            workingDirFull += Path.DirectorySeparatorChar;
+        }
+
+        if (!fullPath.StartsWith(workingDirFull, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new ArgumentException($"Path escapes the working directory: '{relativePath}'", nameof(relativePath));
+        }
+
+        return normalized;
+    }
+
+    private async Task<IDisposable> AcquireIndexMutationLockAsync(CancellationToken cancellationToken)
+    {
+        var refLock = await _repository.LockManager.AcquireReferenceLockAsync("index", cancellationToken).ConfigureAwait(false);
+        FileStream? lockStream = null;
+        var lockFilePath = IndexPath + ".lock";
+        try
+        {
+            var dir = Path.GetDirectoryName(lockFilePath);
+            if (!string.IsNullOrEmpty(dir))
+            {
+                Directory.CreateDirectory(dir);
+            }
+
+            const int maxAttempts = 10;
+            for (var i = 0; i < maxAttempts; i++)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                try
+                {
+                    lockStream = new FileStream(lockFilePath, FileMode.CreateNew, FileAccess.ReadWrite, FileShare.None);
+                    break;
+                }
+                catch (IOException) when (i < maxAttempts - 1)
+                {
+                    await Task.Delay(50, cancellationToken).ConfigureAwait(false);
+                }
+            }
+
+            if (lockStream == null)
+            {
+                throw new IOException($"Could not acquire index lock '{lockFilePath}'. The file already exists or is locked by another process.");
+            }
+
+            return new IndexMutationLock(refLock, lockStream, lockFilePath);
+        }
+        catch
+        {
+            lockStream?.Dispose();
+            try
+            {
+                if (File.Exists(lockFilePath))
+                {
+                    File.Delete(lockFilePath);
+                }
+            }
+            catch
+            {
+            }
+            refLock.Dispose();
+            throw;
+        }
+    }
+
     private async Task<Dictionary<string, GitTreeEntry>> GetHeadFilesAsync(CancellationToken cancellationToken)
     {
         var headFiles = new Dictionary<string, GitTreeEntry>(StringComparer.Ordinal);
@@ -463,6 +612,7 @@ public sealed class GitIndexManager
         string relativePrefix,
         GitIgnoreMatcher ignoreMatcher,
         HashSet<string> trackedPrefixes,
+        HashSet<string> trackedFiles,
         Dictionary<string, FileInfo> results)
     {
         if (!directory.Exists)
@@ -473,7 +623,7 @@ public sealed class GitIndexManager
         foreach (var file in directory.EnumerateFiles())
         {
             var relPath = string.IsNullOrEmpty(relativePrefix) ? file.Name : $"{relativePrefix}/{file.Name}";
-            if (!ignoreMatcher.IsIgnored(relPath, isDirectory: false))
+            if (trackedFiles.Contains(relPath) || !ignoreMatcher.IsIgnored(relPath, isDirectory: false))
             {
                 results[relPath] = file;
             }
@@ -483,13 +633,15 @@ public sealed class GitIndexManager
         {
             var dirRelPath = string.IsNullOrEmpty(relativePrefix) ? subDir.Name : $"{relativePrefix}/{subDir.Name}";
 
-            // If ignored, skip unless index tracks files inside this directory
-            if (ignoreMatcher.IsIgnored(dirRelPath, isDirectory: true) && !trackedPrefixes.Contains(dirRelPath))
+            // If ignored, skip unless index/HEAD tracks files inside this directory or negated rules exist
+            if (ignoreMatcher.IsIgnored(dirRelPath, isDirectory: true) &&
+                !trackedPrefixes.Contains(dirRelPath) &&
+                !ignoreMatcher.HasNegatedRuleUnder(dirRelPath))
             {
                 continue;
             }
 
-            ScanWorkingDirectory(subDir, dirRelPath, ignoreMatcher, trackedPrefixes, results);
+            ScanWorkingDirectory(subDir, dirRelPath, ignoreMatcher, trackedPrefixes, trackedFiles, results);
         }
     }
 

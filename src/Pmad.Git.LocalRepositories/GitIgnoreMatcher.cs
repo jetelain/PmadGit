@@ -9,13 +9,21 @@ namespace Pmad.Git.LocalRepositories;
 /// </summary>
 public sealed class GitIgnoreMatcher
 {
-    private sealed record Rule(Regex Regex, bool IsNegated, bool DirectoryOnly);
+    private sealed record Rule(Regex Regex, bool IsNegated, bool DirectoryOnly, string BasePrefix, string RawPattern);
+
+    private enum MatchResult
+    {
+        None,
+        Ignored,
+        Unignored
+    }
 
     private readonly List<Rule> _rules = new();
 
     /// <summary>
     /// Loads ignore rules from a repository working directory.
-    /// Inspects root .gitignore and .git/info/exclude if they exist.
+    /// Inspects .git/info/exclude (lowest precedence), root .gitignore, and
+    /// any per-directory .gitignore files discovered during scanning.
     /// </summary>
     /// <param name="workingDirectory">The root working tree directory.</param>
     /// <returns>A configured <see cref="GitIgnoreMatcher"/> instance.</returns>
@@ -23,26 +31,70 @@ public sealed class GitIgnoreMatcher
     {
         var matcher = new GitIgnoreMatcher();
 
-        var rootGitIgnore = Path.Combine(workingDirectory, ".gitignore");
-        if (File.Exists(rootGitIgnore))
-        {
-            matcher.AddRulesFromFile(rootGitIgnore);
-        }
-
+        // info/exclude has lower precedence than .gitignore; load it first so
+        // that repository rules in .gitignore can override it.
         var gitExclude = Path.Combine(workingDirectory, ".git", "info", "exclude");
         if (File.Exists(gitExclude))
         {
             matcher.AddRulesFromFile(gitExclude);
         }
 
+        var rootGitIgnore = Path.Combine(workingDirectory, ".gitignore");
+        if (File.Exists(rootGitIgnore))
+        {
+            matcher.AddRulesFromFile(rootGitIgnore);
+        }
+
+        // Load per-directory .gitignore files (Git resolves them during tree walk).
+        matcher.LoadSubdirectoryIgnoreFiles(workingDirectory, workingDirectory);
+
         return matcher;
+    }
+
+    /// <summary>
+    /// Recursively loads .gitignore files from subdirectories, anchoring their
+    /// patterns to their respective directory prefix.
+    /// </summary>
+    private void LoadSubdirectoryIgnoreFiles(string workingDirectory, string directory)
+    {
+        try
+        {
+            foreach (var subDir in Directory.EnumerateDirectories(directory))
+            {
+                var dirName = Path.GetFileName(subDir);
+
+                // Skip .git itself
+                if (dirName.Equals(".git", StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                var subIgnore = Path.Combine(subDir, ".gitignore");
+                if (File.Exists(subIgnore))
+                {
+                    var relPrefix = Path.GetRelativePath(workingDirectory, subDir).Replace('\\', '/');
+                    AddRulesFromFile(subIgnore, relPrefix);
+                }
+
+                LoadSubdirectoryIgnoreFiles(workingDirectory, subDir);
+            }
+        }
+        catch (UnauthorizedAccessException)
+        {
+            // Skip directories we cannot enumerate.
+        }
+        catch (IOException)
+        {
+            // Skip directories that are temporarily unavailable.
+        }
     }
 
     /// <summary>
     /// Parses and adds ignore patterns from a file.
     /// </summary>
     /// <param name="filePath">Absolute path to the ignore file.</param>
-    public void AddRulesFromFile(string filePath)
+    /// <param name="basePrefix">Optional repository-relative directory prefix for patterns in this file.</param>
+    public void AddRulesFromFile(string filePath, string? basePrefix = null)
     {
         if (!File.Exists(filePath))
         {
@@ -51,7 +103,7 @@ public sealed class GitIgnoreMatcher
 
         foreach (var line in File.ReadLines(filePath))
         {
-            AddRule(line);
+            AddRule(line, basePrefix);
         }
     }
 
@@ -59,7 +111,8 @@ public sealed class GitIgnoreMatcher
     /// Adds a single Git ignore pattern rule.
     /// </summary>
     /// <param name="rawPattern">The raw pattern line from a .gitignore file.</param>
-    public void AddRule(string rawPattern)
+    /// <param name="basePrefix">Optional repository-relative directory prefix for this pattern.</param>
+    public void AddRule(string rawPattern, string? basePrefix = null)
     {
         if (string.IsNullOrWhiteSpace(rawPattern))
         {
@@ -105,7 +158,8 @@ public sealed class GitIgnoreMatcher
         var regex = CompilePattern(trimmed, rootAnchored);
         if (regex is not null)
         {
-            _rules.Add(new Rule(regex, isNegated, directoryOnly));
+            var prefix = basePrefix?.Trim('/', '\\').Replace('\\', '/') ?? string.Empty;
+            _rules.Add(new Rule(regex, isNegated, directoryOnly, prefix, trimmed));
         }
     }
 
@@ -124,41 +178,106 @@ public sealed class GitIgnoreMatcher
             return true;
         }
 
-        // Check parent directory components
-        if (!isDirectory)
-        {
-            var slashIndex = normalized.IndexOf('/');
-            while (slashIndex >= 0)
-            {
-                var parentDir = normalized[..slashIndex];
-                if (IsSinglePathIgnored(parentDir, isDirectory: true))
-                {
-                    return true;
-                }
-                slashIndex = normalized.IndexOf('/', slashIndex + 1);
-            }
-        }
-
-        return IsSinglePathIgnored(normalized, isDirectory);
-    }
-
-    private bool IsSinglePathIgnored(string path, bool isDirectory)
-    {
         var isIgnored = false;
         foreach (var rule in _rules)
         {
-            if (rule.DirectoryOnly && !isDirectory)
+            var match = EvaluateRule(rule, normalized, isDirectory);
+            if (match == MatchResult.Ignored)
             {
-                continue;
+                isIgnored = true;
             }
-
-            if (rule.Regex.IsMatch(path))
+            else if (match == MatchResult.Unignored)
             {
-                isIgnored = !rule.IsNegated;
+                isIgnored = false;
             }
         }
 
         return isIgnored;
+    }
+
+    /// <summary>
+    /// Checks whether any negated rule exists that could match descendants of <paramref name="dirRelPath"/>.
+    /// </summary>
+    /// <param name="dirRelPath">Repository-relative directory path.</param>
+    /// <returns>True if any negated rule could apply within the directory; otherwise false.</returns>
+    public bool HasNegatedRuleUnder(string dirRelPath)
+    {
+        var normalizedDir = dirRelPath.Trim('/', '\\').Replace('\\', '/');
+        foreach (var rule in _rules)
+        {
+            if (!rule.IsNegated)
+            {
+                continue;
+            }
+
+            if (!string.IsNullOrEmpty(rule.BasePrefix))
+            {
+                if (rule.BasePrefix.Equals(normalizedDir, StringComparison.Ordinal) ||
+                    rule.BasePrefix.StartsWith(normalizedDir + "/", StringComparison.Ordinal) ||
+                    normalizedDir.StartsWith(rule.BasePrefix + "/", StringComparison.Ordinal))
+                {
+                    return true;
+                }
+            }
+            else
+            {
+                // Root/unanchored negated rules can potentially apply anywhere
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static MatchResult EvaluateRule(Rule rule, string path, bool isDirectory)
+    {
+        // 1. Direct match on path
+        if (!(rule.DirectoryOnly && !isDirectory))
+        {
+            if (MatchesPattern(rule, path, isDirectory))
+            {
+                return rule.IsNegated ? MatchResult.Unignored : MatchResult.Ignored;
+            }
+        }
+
+        // 2. Parent directory match
+        var slashIndex = path.IndexOf('/');
+        while (slashIndex >= 0)
+        {
+            var parent = path[..slashIndex];
+            if (MatchesPattern(rule, parent, isDirectory: true))
+            {
+                return rule.IsNegated ? MatchResult.Unignored : MatchResult.Ignored;
+            }
+            slashIndex = path.IndexOf('/', slashIndex + 1);
+        }
+
+        return MatchResult.None;
+    }
+
+    private static bool MatchesPattern(Rule rule, string targetPath, bool isDirectory)
+    {
+        if (rule.DirectoryOnly && !isDirectory)
+        {
+            return false;
+        }
+
+        if (!string.IsNullOrEmpty(rule.BasePrefix))
+        {
+            if (targetPath.Equals(rule.BasePrefix, StringComparison.Ordinal))
+            {
+                return isDirectory && rule.Regex.IsMatch(string.Empty);
+            }
+
+            if (targetPath.StartsWith(rule.BasePrefix + "/", StringComparison.Ordinal))
+            {
+                var relativeTarget = targetPath[(rule.BasePrefix.Length + 1)..];
+                return rule.Regex.IsMatch(relativeTarget);
+            }
+
+            return false;
+        }
+
+        return rule.Regex.IsMatch(targetPath);
     }
 
     private static Regex? CompilePattern(string pattern, bool rootAnchored)

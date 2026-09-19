@@ -484,4 +484,61 @@ public sealed class GitHashHelperTests
     }
 
     #endregion
+
+    #region ComputeBlobHash Tests
+
+    [Fact]
+    public void ComputeBlobHash_WithSha1_MatchesKnownVector()
+    {
+        // Arrange - "hello\n" in Git produces ce013625030ba8dba906f756967f9e9ca394464a
+        var content = System.Text.Encoding.UTF8.GetBytes("hello\n");
+
+        // Act
+        var hash = GitHashHelper.ComputeBlobHash(content, GitHash.Sha1ByteLength);
+
+        // Assert
+        Assert.Equal("ce013625030ba8dba906f756967f9e9ca394464a", hash.ToString());
+    }
+
+    [Fact]
+    public void ComputeBlobHash_EmptyContent_ProducesKnownEmptyBlobHash()
+    {
+        // Act - Git's empty blob hash is e69de29bb2d1d6434b8b29ae775ad8c2e48c5391
+        var hash = GitHashHelper.ComputeBlobHash(ReadOnlySpan<byte>.Empty, GitHash.Sha1ByteLength);
+
+        // Assert
+        Assert.Equal("e69de29bb2d1d6434b8b29ae775ad8c2e48c5391", hash.ToString());
+    }
+
+    [Fact]
+    public void ComputeBlobHash_WithSha256_ProducesValidHash()
+    {
+        // Arrange
+        var content = System.Text.Encoding.UTF8.GetBytes("hello world");
+
+        // Act
+        var hash = GitHashHelper.ComputeBlobHash(content, GitHash.Sha256ByteLength);
+
+        // Assert
+        Assert.Equal(GitHash.Sha256ByteLength, hash.ByteLength);
+        Assert.Equal(GitHash.Sha256HexLength, hash.Value.Length);
+        Assert.False(string.IsNullOrEmpty(hash.Value));
+    }
+
+    [Theory]
+    [InlineData(16)]
+    [InlineData(0)]
+    [InlineData(-1)]
+    [InlineData(64)]
+    public void ComputeBlobHash_UnsupportedLength_ThrowsNotSupportedException(int hashLength)
+    {
+        // Arrange
+        var content = "test"u8.ToArray();
+
+        // Act & Assert
+        Assert.Throws<NotSupportedException>(
+            () => GitHashHelper.ComputeBlobHash(content, hashLength));
+    }
+
+    #endregion
 }
