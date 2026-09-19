@@ -411,5 +411,123 @@ public sealed class GitIndexManagerTests
             Assert.Equal(GitFileStatus.StagedNew, entry.StagedStatus);
         }
     }
+
+    [Fact]
+    public async Task StageAsync_RejectsSymlinkEscapingRepository()
+    {
+        using var testRepo = GitTestRepository.Create();
+        var externalDir = Path.Combine(Path.GetTempPath(), $"pmad_ext_stage_{Guid.NewGuid():N}");
+        Directory.CreateDirectory(externalDir);
+        try
+        {
+            await File.WriteAllTextAsync(Path.Combine(externalDir, "secret.txt"), "classified");
+
+            var linkPath = Path.Combine(testRepo.WorkingDirectory, "ext_link");
+            if (!TryCreateDirectoryLink(linkPath, externalDir))
+            {
+                return;
+            }
+
+            var repo = GitRepository.Open(testRepo.WorkingDirectory);
+            var manager = repo.IndexManager!;
+
+            await Assert.ThrowsAsync<ArgumentException>(() => manager.StageAsync("ext_link/secret.txt"));
+        }
+        finally
+        {
+            try { Directory.Delete(externalDir, true); } catch { }
+        }
+    }
+
+    [Fact]
+    public async Task ScanWorkingDirectory_SkipsDirectorySymlinks()
+    {
+        using var testRepo = GitTestRepository.Create();
+        var externalDir = Path.Combine(Path.GetTempPath(), $"pmad_ext_scan_{Guid.NewGuid():N}");
+        Directory.CreateDirectory(externalDir);
+        try
+        {
+            await File.WriteAllTextAsync(Path.Combine(externalDir, "external.txt"), "outside");
+
+            var linkPath = Path.Combine(testRepo.WorkingDirectory, "scan_link");
+            if (!TryCreateDirectoryLink(linkPath, externalDir))
+            {
+                return;
+            }
+
+            var repo = GitRepository.Open(testRepo.WorkingDirectory);
+            var manager = repo.IndexManager!;
+
+            var status = await manager.GetStatusAsync();
+
+            // The external file reached through a directory symlink must NOT be reported
+            Assert.Null(status.FindEntry("scan_link/external.txt"));
+        }
+        finally
+        {
+            try { Directory.Delete(externalDir, true); } catch { }
+        }
+    }
+
+    [Fact]
+    public async Task RestoreFileAsync_RestoresContentAndPreservesExecutableMode()
+    {
+        using var testRepo = GitTestRepository.Create();
+        testRepo.Commit("Initial", ("run.sh", "#!/bin/sh\necho hello\n"));
+
+        var repo = GitRepository.Open(testRepo.WorkingDirectory);
+        var manager = repo.IndexManager!;
+
+        // Record entry as executable in index
+        var index = await GitIndex.ReadAsync(manager.IndexPath);
+        var entry = index.FindEntry("run.sh")!;
+        entry.FileMode = 33261; // 100755
+        await index.WriteAsync(manager.IndexPath);
+
+        // Delete from working tree
+        var filePath = Path.Combine(testRepo.WorkingDirectory, "run.sh");
+        File.Delete(filePath);
+
+        // Restore file
+        await manager.RestoreFileAsync("run.sh");
+
+        Assert.True(File.Exists(filePath));
+        Assert.Equal("#!/bin/sh\necho hello\n", await File.ReadAllTextAsync(filePath));
+
+        if (!OperatingSystem.IsWindows())
+        {
+            var unixMode = File.GetUnixFileMode(filePath);
+            Assert.True((unixMode & UnixFileMode.UserExecute) != 0, "Executable bit should be restored on Unix");
+        }
+    }
+
+    private static bool TryCreateDirectoryLink(string linkPath, string targetPath)
+    {
+        try
+        {
+            if (OperatingSystem.IsWindows())
+            {
+                var process = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+                {
+                    FileName = "cmd.exe",
+                    Arguments = $"/c mklink /J \"{linkPath}\" \"{targetPath}\"",
+                    CreateNoWindow = true,
+                    UseShellExecute = false
+                });
+                process?.WaitForExit();
+                return Directory.Exists(linkPath);
+            }
+            else
+            {
+                Directory.CreateSymbolicLink(linkPath, targetPath);
+                return true;
+            }
+        }
+        catch
+        {
+            return false;
+        }
+    }
 }
+
 

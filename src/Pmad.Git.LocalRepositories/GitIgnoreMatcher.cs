@@ -69,6 +69,13 @@ public sealed class GitIgnoreMatcher
                     continue;
                 }
 
+                var subDirInfo = new DirectoryInfo(subDir);
+                // Skip symlinks and reparse points to avoid escaping repository or infinite recursion cycles
+                if ((subDirInfo.Attributes & FileAttributes.ReparsePoint) != 0 || subDirInfo.LinkTarget != null)
+                {
+                    continue;
+                }
+
                 var subIgnore = Path.Combine(subDir, ".gitignore");
                 if (File.Exists(subIgnore))
                 {

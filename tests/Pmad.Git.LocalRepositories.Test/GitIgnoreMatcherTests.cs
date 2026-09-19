@@ -157,4 +157,64 @@ public sealed class GitIgnoreMatcherTests
         Assert.False(matcher.IsIgnored("local.txt", isDirectory: false));
         Assert.False(matcher.IsIgnored("sub/nested/local.txt", isDirectory: false));
     }
+
+    [Fact]
+    public void Load_SkipsDirectorySymlinksAndReparsePoints()
+    {
+        using var testRepo = GitTestRepository.Create();
+
+        // Create an external directory outside the repository with a .gitignore
+        var externalDir = Path.Combine(Path.GetTempPath(), $"pmad_ext_{Guid.NewGuid():N}");
+        Directory.CreateDirectory(externalDir);
+        try
+        {
+            File.WriteAllText(Path.Combine(externalDir, ".gitignore"), "*.external\n");
+
+            var linkPath = Path.Combine(testRepo.WorkingDirectory, "external_link");
+            if (!TryCreateDirectoryLink(linkPath, externalDir))
+            {
+                // Platform could not create symlink/junction in test environment
+                return;
+            }
+
+            var matcher = GitIgnoreMatcher.Load(testRepo.WorkingDirectory);
+
+            // Rules from external_link/.gitignore must NOT be loaded
+            Assert.False(matcher.IsIgnored("file.external", isDirectory: false));
+            Assert.False(matcher.IsIgnored("external_link/file.external", isDirectory: false));
+        }
+        finally
+        {
+            try { Directory.Delete(externalDir, true); } catch { }
+        }
+    }
+
+    private static bool TryCreateDirectoryLink(string linkPath, string targetPath)
+    {
+        try
+        {
+            if (OperatingSystem.IsWindows())
+            {
+                var process = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+                {
+                    FileName = "cmd.exe",
+                    Arguments = $"/c mklink /J \"{linkPath}\" \"{targetPath}\"",
+                    CreateNoWindow = true,
+                    UseShellExecute = false
+                });
+                process?.WaitForExit();
+                return Directory.Exists(linkPath);
+            }
+            else
+            {
+                Directory.CreateSymbolicLink(linkPath, targetPath);
+                return true;
+            }
+        }
+        catch
+        {
+            return false;
+        }
+    }
 }
+

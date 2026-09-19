@@ -14,14 +14,12 @@ public sealed class GitIndexManager
     {
         private readonly IDisposable _refLock;
         private readonly FileStream _lockFileStream;
-        private readonly string _lockFilePath;
         private bool _disposed;
 
-        public IndexMutationLock(IDisposable refLock, FileStream lockFileStream, string lockFilePath)
+        public IndexMutationLock(IDisposable refLock, FileStream lockFileStream)
         {
             _refLock = refLock;
             _lockFileStream = lockFileStream;
-            _lockFilePath = lockFilePath;
         }
 
         public void Dispose()
@@ -29,18 +27,10 @@ public sealed class GitIndexManager
             if (!_disposed)
             {
                 _disposed = true;
+                // Closing the stream automatically deletes the file because it was created
+                // with FileOptions.DeleteOnClose. We NEVER call File.Delete separately after
+                // closing, as that could race and delete a subsequent owner's lock file.
                 _lockFileStream.Dispose();
-                try
-                {
-                    if (File.Exists(_lockFilePath))
-                    {
-                        File.Delete(_lockFilePath);
-                    }
-                }
-                catch
-                {
-                    // Ignore deletion failure if file was moved/deleted
-                }
                 _refLock.Dispose();
             }
         }
@@ -181,8 +171,13 @@ public sealed class GitIndexManager
                 }
                 else
                 {
-                    // Stat cache fast-path check
-                    if (fileInfo!.Length != normalIndexEntry.FileSize)
+                    var currentMode = GitIndexEntry.GetFileMode(fileInfo!);
+                    if (currentMode != normalIndexEntry.FileMode)
+                    {
+                        // Executable mode changed in working tree
+                        workTreeStatus = GitFileStatus.Modified;
+                    }
+                    else if (fileInfo!.Length != normalIndexEntry.FileSize)
                     {
                         workTreeStatus = GitFileStatus.Modified;
                     }
@@ -193,7 +188,7 @@ public sealed class GitIndexManager
                         var mtimeNano = (uint)((mtimeUtc.Ticks % TimeSpan.TicksPerSecond) * 100);
                         if (mtimeSec == normalIndexEntry.MtimeSeconds && mtimeNano == normalIndexEntry.MtimeNanoseconds)
                         {
-                            // Stat cache matches: content is unmodified
+                            // Stat cache matches: content and mode are unmodified
                             workTreeStatus = GitFileStatus.Clean;
                             workTreeHash = normalIndexEntry.Hash;
                         }
@@ -202,7 +197,7 @@ public sealed class GitIndexManager
                             // Timestamp changed: verify content hash
                             var computedHash = await ComputeFileBlobHashAsync(fileInfo.FullName, cancellationToken).ConfigureAwait(false);
                             workTreeHash = computedHash;
-                            workTreeStatus = computedHash == normalIndexEntry.Hash
+                            workTreeStatus = (computedHash == normalIndexEntry.Hash && currentMode == normalIndexEntry.FileMode)
                                 ? GitFileStatus.Clean
                                 : GitFileStatus.Modified;
                         }
@@ -408,7 +403,7 @@ public sealed class GitIndexManager
 
     /// <summary>
     /// Discards working tree changes for the specified file by restoring its content
-    /// from the index (or HEAD if not in index).
+    /// and executable file mode from the index (or HEAD if not in index).
     /// </summary>
     /// <param name="relativePath">Repository-relative file path.</param>
     /// <param name="cancellationToken">Token used to cancel the async operation.</param>
@@ -419,9 +414,11 @@ public sealed class GitIndexManager
         var entry = index.FindEntry(path);
 
         GitHash? targetHash = null;
+        int? targetMode = null;
         if (entry is not null)
         {
             targetHash = entry.Hash;
+            targetMode = entry.FileMode;
         }
         else
         {
@@ -429,6 +426,7 @@ public sealed class GitIndexManager
             if (headFiles.TryGetValue(path, out var headEntry))
             {
                 targetHash = headEntry.Hash;
+                targetMode = headEntry.Mode;
             }
         }
 
@@ -456,8 +454,31 @@ public sealed class GitIndexManager
                 Options = FileOptions.Asynchronous
             };
 
-            await using var fileStream = new FileStream(fullPath, options);
-            await objectStream.Content.CopyToAsync(fileStream, cancellationToken).ConfigureAwait(false);
+            await using (var fileStream = new FileStream(fullPath, options))
+            {
+                await objectStream.Content.CopyToAsync(fileStream, cancellationToken).ConfigureAwait(false);
+            }
+
+            // Restore executable file mode if required on Unix platforms
+            if (targetMode.HasValue && !OperatingSystem.IsWindows())
+            {
+                try
+                {
+                    var currentUnixMode = File.GetUnixFileMode(fullPath);
+                    if (targetMode.Value == 33261) // 100755
+                    {
+                        File.SetUnixFileMode(fullPath, currentUnixMode | UnixFileMode.UserExecute | UnixFileMode.GroupExecute | UnixFileMode.OtherExecute);
+                    }
+                    else if (targetMode.Value == 33188) // 100644
+                    {
+                        File.SetUnixFileMode(fullPath, currentUnixMode & ~(UnixFileMode.UserExecute | UnixFileMode.GroupExecute | UnixFileMode.OtherExecute));
+                    }
+                }
+                catch
+                {
+                    // Best effort for file systems that do not support Unix permissions
+                }
+            }
         }
         else if (File.Exists(fullPath))
         {
@@ -533,6 +554,35 @@ public sealed class GitIndexManager
             throw new ArgumentException($"Path escapes the working directory: '{relativePath}'", nameof(relativePath));
         }
 
+        // Check each path component for symbolic links/reparse points escaping the repository
+        var current = workingDirFull;
+        for (var i = 0; i < segments.Length; i++)
+        {
+            current = Path.Combine(current, segments[i]);
+            if (Directory.Exists(current) || File.Exists(current))
+            {
+                var fileInfo = new FileInfo(current);
+                if ((fileInfo.Attributes & FileAttributes.ReparsePoint) != 0 || fileInfo.LinkTarget != null)
+                {
+                    var resolvedTarget = fileInfo.ResolveLinkTarget(returnFinalTarget: true);
+                    if (resolvedTarget != null)
+                    {
+                        var targetFull = resolvedTarget.FullName;
+                        var repoRootTrimmed = workingDirFull.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+                        if (!targetFull.StartsWith(repoRootTrimmed + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase) &&
+                            !targetFull.Equals(repoRootTrimmed, StringComparison.OrdinalIgnoreCase))
+                        {
+                            throw new ArgumentException($"Path traverses a symlink escaping the working directory: '{relativePath}'", nameof(relativePath));
+                        }
+                    }
+                    else if (i < segments.Length - 1)
+                    {
+                        throw new ArgumentException($"Path traverses an unresolved symlink directory: '{relativePath}'", nameof(relativePath));
+                    }
+                }
+            }
+        }
+
         return normalized;
     }
 
@@ -555,7 +605,10 @@ public sealed class GitIndexManager
                 cancellationToken.ThrowIfCancellationRequested();
                 try
                 {
-                    lockStream = new FileStream(lockFilePath, FileMode.CreateNew, FileAccess.ReadWrite, FileShare.None);
+                    // Use FileOptions.DeleteOnClose so that the OS kernel automatically and atomically
+                    // deletes the lock file when the handle is closed, preventing race conditions with
+                    // other processes acquiring the lock.
+                    lockStream = new FileStream(lockFilePath, FileMode.CreateNew, FileAccess.ReadWrite, FileShare.None, 4096, FileOptions.DeleteOnClose);
                     break;
                 }
                 catch (IOException) when (i < maxAttempts - 1)
@@ -569,21 +622,11 @@ public sealed class GitIndexManager
                 throw new IOException($"Could not acquire index lock '{lockFilePath}'. The file already exists or is locked by another process.");
             }
 
-            return new IndexMutationLock(refLock, lockStream, lockFilePath);
+            return new IndexMutationLock(refLock, lockStream);
         }
         catch
         {
             lockStream?.Dispose();
-            try
-            {
-                if (File.Exists(lockFilePath))
-                {
-                    File.Delete(lockFilePath);
-                }
-            }
-            catch
-            {
-            }
             refLock.Dispose();
             throw;
         }
@@ -632,6 +675,12 @@ public sealed class GitIndexManager
         foreach (var subDir in directory.EnumerateDirectories())
         {
             var dirRelPath = string.IsNullOrEmpty(relativePrefix) ? subDir.Name : $"{relativePrefix}/{subDir.Name}";
+
+            // Skip directory symlinks and reparse points to avoid escaping the working tree or recursing infinitely
+            if ((subDir.Attributes & FileAttributes.ReparsePoint) != 0 || subDir.LinkTarget != null)
+            {
+                continue;
+            }
 
             // If ignored, skip unless index/HEAD tracks files inside this directory or negated rules exist
             if (ignoreMatcher.IsIgnored(dirRelPath, isDirectory: true) &&
