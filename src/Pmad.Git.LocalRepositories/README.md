@@ -16,7 +16,7 @@ Add a project reference to `Pmad.Git.LocalRepositories` or publish it as a packa
 using System.Text;
 using Pmad.Git.LocalRepositories;
 
-// Create or open an existing repository
+// Open an existing repository (or use GitRepository.Init to create a new one)
 using var repository = GitRepository.Open("/path/to/repo");
 
 var head = await repository.GetCommitAsync();
@@ -52,7 +52,7 @@ When you want Git working tree operations that synchronize with disk files and `
 ```csharp
 using Pmad.Git.LocalRepositories;
 
-// Open repository with index and workspace support
+// Open an existing repository with index and workspace support
 using var workspaceRepo = GitRepositoryWithIndexAndWorkspace.Open("/path/to/repo");
 
 // Check working tree status
@@ -62,22 +62,26 @@ foreach (var entry in status.Entries)
     Console.WriteLine($"{entry.Path}: {entry.WorkingTreeStatus}, Staged: {entry.IsStaged}");
 }
 
+// Capture baseline commit before making changes
+var baseCommit = await workspaceRepo.GetCommitAsync();
+var baseCommitHash = baseCommit.Id;
+
 // Stage and commit working tree changes
 await workspaceRepo.StageAsync("src/NewFile.txt");
 var commitHash = await workspaceRepo.CommitAsync("Added new file");
 
 // Amend the tip commit with additional staged changes
 await workspaceRepo.StageAsync("README.md");
-await workspaceRepo.CommitAmendAsync("Added new file and updated README");
-
-// Reset workspace (Soft, Mixed, or Hard)
-await workspaceRepo.ResetAsync(commitHash, GitResetMode.Hard);
-
-// Squash a range of commits on the current branch
-await workspaceRepo.SquashRangeAsync(baseCommitHash, "Milestone: feature complete");
+var commitToRevertHash = await workspaceRepo.CommitAmendAsync("Added new file and updated README");
 
 // Revert a previous commit against the working tree and index
 await workspaceRepo.RevertAsync(commitToRevertHash);
+
+// Reset workspace (Soft, Mixed, or Hard) back to the base commit
+await workspaceRepo.ResetAsync(baseCommitHash, GitResetMode.Hard);
+
+// Squash a range of commits on the current branch (e.g. from baseCommitHash to HEAD)
+// await workspaceRepo.SquashRangeAsync(baseCommitHash, "Milestone: feature complete");
 ```
 
 ---

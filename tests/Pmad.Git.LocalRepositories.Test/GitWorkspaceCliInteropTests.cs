@@ -164,22 +164,58 @@ public sealed class GitWorkspaceCliInteropTests
         using var testRepo = GitTestRepository.Create();
         using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
 
-        // Initial commit
+        // Initial commit with a normal file and an executable script
         await File.WriteAllTextAsync(Path.Combine(testRepo.WorkingDirectory, "tracked.txt"), "original\n");
+        var scriptPath = Path.Combine(testRepo.WorkingDirectory, "run.sh");
+        await File.WriteAllTextAsync(scriptPath, "#!/bin/sh\necho hello\n");
+
         await repo.StageAsync("tracked.txt");
+        await repo.StageAsync("run.sh");
+
+        // Mark run.sh as executable (mode 100755 / 33261) in index and commit
+        var initialIndex = await GitIndex.ReadAsync(repo.IndexManager.IndexPath);
+        var runEntry = initialIndex.FindEntry("run.sh")!;
+        runEntry.FileMode = 33261;
+        await initialIndex.WriteAsync(repo.IndexManager.IndexPath);
+
         var c1 = await repo.CommitAsync("Initial commit", new GitCommitMetadata("Initial commit", TestSignature));
+
+        // Verify git ls-tree records run.sh as 100755
+        var lsTree = testRepo.RunGit("ls-tree HEAD run.sh");
+        Assert.StartsWith("100755", lsTree);
 
         // Create dirty modifications
         await File.WriteAllTextAsync(Path.Combine(testRepo.WorkingDirectory, "tracked.txt"), "dirty modifications\n");
         await repo.StageAsync("tracked.txt");
         await File.WriteAllTextAsync(Path.Combine(testRepo.WorkingDirectory, "tracked.txt"), "even dirtier working tree\n");
 
+        // Mutate executable script mode on disk (non-Windows) and in index
+        if (!OperatingSystem.IsWindows())
+        {
+            File.SetUnixFileMode(scriptPath, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+        }
+        var dirtyIndex = await GitIndex.ReadAsync(repo.IndexManager.IndexPath);
+        var dirtyEntry = dirtyIndex.FindEntry("run.sh")!;
+        dirtyEntry.FileMode = 33188;
+        await dirtyIndex.WriteAsync(repo.IndexManager.IndexPath);
+
         // Hard reset back to c1
         await repo.ResetAsync(c1, GitResetMode.Hard);
 
-        // Working tree file must be restored
+        // Working tree file content must be restored
         var text = await File.ReadAllTextAsync(Path.Combine(testRepo.WorkingDirectory, "tracked.txt"));
         Assert.Equal("original\n", text);
+
+        // Executable mode must be restored on supported platforms
+        if (!OperatingSystem.IsWindows())
+        {
+            var unixMode = File.GetUnixFileMode(scriptPath);
+            Assert.True((unixMode & UnixFileMode.UserExecute) != 0, "Executable bit should be restored on Unix");
+        }
+
+        // Restored index must have mode 33261
+        var restoredIndex = await GitIndex.ReadAsync(repo.IndexManager.IndexPath);
+        Assert.Equal(33261, restoredIndex.FindEntry("run.sh")!.FileMode);
 
         // Git CLI status must be completely clean
         var status = testRepo.RunGit("status --porcelain").Trim();
@@ -216,3 +252,4 @@ public sealed class GitWorkspaceCliInteropTests
         Assert.Equal("auto-generated content\n", showOutput);
     }
 }
+

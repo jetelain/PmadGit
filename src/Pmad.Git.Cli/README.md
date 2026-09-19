@@ -72,7 +72,7 @@ string? userName = await cliRepo.GetConfigAsync("user.name");
 - `PushAsync(remote, branch, force, setUpstream)`: Pushes local commits to a remote. When `force` is true, uses `--force-with-lease` to prevent overwriting unseen remote changes.
 
 ### Branch Management
-- `GetCurrentBranchAsync()`: Returns the name of the currently checked out branch (throws `GitDetachedHeadException` if HEAD is detached).
+- `GetCurrentBranchAsync()`: Returns the name of the currently checked out branch, or `"HEAD"` when the repository is in a detached HEAD state.
 - `GetBranchesAsync(includeRemote)`: Lists local branches and optionally remote-tracking branches.
 - `CreateBranchAsync(branchName, startPoint)`: Creates a new branch without switching to it.
 - `CheckoutAsync(branchName, createNew, startPoint, updateWorkingTree)`: Switches branches. When `updateWorkingTree` is `false`, moves `HEAD` via `git symbolic-ref` without modifying disk files.
@@ -162,4 +162,4 @@ await cliRepository.PullAsync();
 var head = await repository.GetCommitAsync();
 ```
 
-When sharing a lock manager, all CLI write operations (`fetch`, `pull`, `push`, `checkout`, `merge`, `revert`) acquire the write lock used by `GitRepository`, guaranteeing thread safety and eliminating cache inconsistencies.
+When sharing a lock manager, all mutating operations performed by `GitCliRepository` (including `fetch`, `pull`, `push`, `checkout`, branch operations, `commit`, `amend`, merge resolution, `revert`, `restore`, and local `config` updates) acquire the shared in-process write lock used by `GitRepository`, coordinating operations and triggering automatic cache invalidation between cooperating instances in the same process. Note that this in-process lock only synchronizes cooperating instances within the current process; it does not protect against independent `git` CLI processes or external applications modifying the repository concurrently.

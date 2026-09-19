@@ -42,7 +42,7 @@ It is split into three focused packages:
 ```csharp
 using Pmad.Git.LocalRepositories;
 
-// Open repository with index and workspace management
+// Open an existing repository with index and workspace management (or use GitRepositoryWithIndexAndWorkspace.Init to create a new one)
 using var repo = GitRepositoryWithIndexAndWorkspace.Open("/path/to/repo");
 
 // Inspect status
@@ -62,6 +62,7 @@ await repo.CommitAmendAsync("Amended: Updated application entry point with tests
 using Pmad.Git.Cli;
 using Pmad.Git.LocalRepositories;
 
+// Open an existing repository and wrap with GitCliRepository
 using var repo = GitRepository.Open("/path/to/repo");
 var cliRepo = new GitCliRepository(repo);
 
