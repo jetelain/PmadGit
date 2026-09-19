@@ -38,6 +38,12 @@ internal sealed class HashingWriteStream : Stream
         _inner.Write(buffer, offset, count);
     }
 
+    public override void Write(ReadOnlySpan<byte> buffer)
+    {
+        _hash.AppendData(buffer);
+        _inner.Write(buffer);
+    }
+
     public override async ValueTask WriteAsync(ReadOnlyMemory<byte> buffer, CancellationToken cancellationToken = default)
     {
         _hash.AppendData(buffer.Span);
