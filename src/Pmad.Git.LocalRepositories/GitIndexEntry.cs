@@ -164,14 +164,17 @@ public sealed class GitIndexEntry
     /// Returns the Git file mode for the given file: 33261 (100755) when the file is executable on
     /// Unix, or 33188 (100644) otherwise (including all Windows files).
     /// </summary>
-    private static int GetFileMode(FileInfo fileInfo)
+    internal static int GetFileMode(FileInfo fileInfo)
     {
         if (!OperatingSystem.IsWindows())
         {
-            // On Unix, inspect owner-execute bit via UnixFileMode (available since .NET 7).
+            // On Unix, inspect owner-execute bit via FileInfo.UnixFileMode (available since .NET 7).
+            // We use the property on the existing FileInfo rather than File.GetUnixFileMode(path)
+            // because the latter opens a new FileStream internally, which can throw IOException
+            // when the file was previously opened with FileOptions.SequentialScan.
             try
             {
-                var mode = File.GetUnixFileMode(fileInfo.FullName);
+                var mode = fileInfo.UnixFileMode;
                 if ((mode & UnixFileMode.UserExecute) != 0)
                 {
                     return 33261; // 100755
@@ -186,3 +189,4 @@ public sealed class GitIndexEntry
         return 33188; // 100644
     }
 }
+
