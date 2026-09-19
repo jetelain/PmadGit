@@ -116,4 +116,29 @@ public sealed class GitRepositoryCompareTreesTests
         Assert.Equal("test.txt", changes[0].Path);
         Assert.Equal(GitChangeKind.Modified, changes[0].Kind);
     }
+
+    [Fact]
+    public async Task CompareTreesAsync_ModeChangeOnly_ReportsModified()
+    {
+        using var testRepo = GitTestRepository.Create();
+        testRepo.Commit("Add script", ("script.sh", "#!/bin/sh\necho hello\n"));
+
+        var repo = GitRepository.Open(testRepo.WorkingDirectory);
+        var c1 = await repo.GetCommitAsync("HEAD");
+
+        testRepo.RunGit("update-index --chmod=+x script.sh");
+        testRepo.RunGit("commit -m \"Make script executable\" --quiet");
+
+        repo.InvalidateCaches();
+        var c2 = await repo.GetCommitAsync("HEAD");
+
+        var changes = await repo.CompareTreesAsync(c1.Tree, c2.Tree);
+
+        Assert.Single(changes);
+        Assert.Equal("script.sh", changes[0].Path);
+        Assert.Equal(GitChangeKind.Modified, changes[0].Kind);
+        Assert.NotNull(changes[0].OldHash);
+        Assert.NotNull(changes[0].NewHash);
+        Assert.Equal(changes[0].OldHash, changes[0].NewHash);
+    }
 }

@@ -873,7 +873,7 @@ public sealed class GitRepository : IGitRepository, IGitRepositoryCacheInvalidat
             {
                 changes.Add(new GitTreeChange(path, GitChangeKind.Added, null, newLeaf.Hash));
             }
-            else if (!oldLeaf.Hash.Equals(newLeaf.Hash))
+            else if (!oldLeaf.Hash.Equals(newLeaf.Hash) || oldLeaf.Mode != newLeaf.Mode)
             {
                 changes.Add(new GitTreeChange(path, GitChangeKind.Modified, oldLeaf.Hash, newLeaf.Hash));
             }
