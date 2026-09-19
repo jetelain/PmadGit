@@ -589,20 +589,17 @@ public class GitCliRepository
     /// Restores a file in the working tree to its state in HEAD or the specified source commit.
     /// </summary>
     /// <param name="relativeFilePath">Relative path of the file in the repository.</param>
-    /// <param name="sourceCommit">Optional commit-ish to restore from (defaults to HEAD / index).</param>
+    /// <param name="sourceCommit">Optional commit-ish to restore from (defaults to HEAD).</param>
     /// <param name="cancellationToken">Cancellation token.</param>
     public async Task RestoreFileAsync(string relativeFilePath, string? sourceCommit = null, CancellationToken cancellationToken = default)
     {
-        var arguments = new List<string> { "checkout" };
-        if (sourceCommit != null)
-        {
-            arguments.Add(sourceCommit);
-        }
-        arguments.Add("--");
-        arguments.Add(relativeFilePath);
+        ArgumentException.ThrowIfNullOrWhiteSpace(relativeFilePath);
+
+        var source = sourceCommit ?? "HEAD";
+        var arguments = new[] { "restore", "--source", source, "--", relativeFilePath };
 
         using var writeLock = await LockWriteAsync(cancellationToken).ConfigureAwait(false);
-        var result = await RunGit(cancellationToken, arguments.ToArray()).ConfigureAwait(false);
+        var result = await RunGit(cancellationToken, arguments).ConfigureAwait(false);
         result.EnsureSuccess();
         InvalidateCaches();
     }
@@ -687,9 +684,27 @@ public class GitCliRepository
     {
         var localBranch = branch ?? await GetCurrentBranchAsync(cancellationToken).ConfigureAwait(false);
 
+        var refPath = localBranch.StartsWith("refs/heads/", StringComparison.Ordinal)
+            ? localBranch
+            : $"refs/heads/{localBranch}";
+
+        var branchCheck = await RunGit(cancellationToken, "rev-parse", "--verify", "--quiet", $"{refPath}^{{commit}}").ConfigureAwait(false);
+        if (branchCheck.ExitCode != 0)
+        {
+            if (branch != null)
+            {
+                throw new ArgumentException($"Branch '{branch}' does not exist.", nameof(branch));
+            }
+        }
+
         var upstreamResult = await RunGit(cancellationToken, "rev-parse", "--abbrev-ref", $"{localBranch}@{{upstream}}").ConfigureAwait(false);
         if (upstreamResult.ExitCode != 0)
         {
+            if (upstreamResult.StdErr.Contains("no such branch", StringComparison.OrdinalIgnoreCase))
+            {
+                throw new ArgumentException($"Branch '{localBranch}' does not exist.", nameof(branch));
+            }
+
             return new GitTrackingStatus(localBranch, null, 0, 0);
         }
 

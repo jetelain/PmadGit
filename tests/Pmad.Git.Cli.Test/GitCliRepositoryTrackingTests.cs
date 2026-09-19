@@ -181,6 +181,71 @@ public class GitCliRepositoryTrackingTests
     }
 
     [Fact]
+    public async Task RestoreFileAsync_RestoresFromHead_WhenStagedChangesExist()
+    {
+        using var repo = GitCliTestRepository.Create();
+        var git = new GitCliRepository(repo.WorkingDirectory);
+
+        // Initial commit has README.md == "seed"
+        // Mutate and stage it
+        repo.WriteFile("README.md", "staged content");
+        repo.RunGit("add README.md");
+
+        // Mutate in working tree again
+        repo.WriteFile("README.md", "dirty working tree content");
+        Assert.Equal("dirty working tree content", repo.ReadFile("README.md"));
+
+        // RestoreFileAsync must restore from HEAD ("seed"), discarding both dirty working tree and staged content
+        await git.RestoreFileAsync("README.md");
+
+        Assert.Equal("seed", repo.ReadFile("README.md"));
+    }
+
+    [Fact]
+    public async Task RestoreFileAsync_WithSourceCommit_RestoresFromSpecifiedCommit()
+    {
+        using var repo = GitCliTestRepository.Create();
+        var git = new GitCliRepository(repo.WorkingDirectory);
+
+        repo.Commit("Second commit", ("file.txt", "v1"));
+        repo.Commit("Third commit", ("file.txt", "v2"));
+
+        repo.WriteFile("file.txt", "dirty");
+        Assert.Equal("dirty", repo.ReadFile("file.txt"));
+
+        await git.RestoreFileAsync("file.txt", sourceCommit: "HEAD~1");
+
+        Assert.Equal("v1", repo.ReadFile("file.txt"));
+    }
+
+    [Fact]
+    public async Task GetTrackingStatusAsync_NonexistentBranch_ThrowsArgumentException()
+    {
+        using var repo = GitCliTestRepository.Create();
+        var git = new GitCliRepository(repo.WorkingDirectory);
+
+        var ex = await Assert.ThrowsAsync<ArgumentException>(() => git.GetTrackingStatusAsync("nonexistent-typo-branch"));
+        Assert.Contains("nonexistent-typo-branch", ex.Message);
+    }
+
+    [Fact]
+    public async Task GetTrackingStatusAsync_ExplicitExistingBranchWithoutUpstream_ReturnsNoUpstream()
+    {
+        using var repo = GitCliTestRepository.Create();
+        var git = new GitCliRepository(repo.WorkingDirectory);
+
+        await git.CreateBranchAsync("feature-branch");
+
+        var status = await git.GetTrackingStatusAsync("feature-branch");
+
+        Assert.Equal("feature-branch", status.LocalBranch);
+        Assert.Null(status.UpstreamBranch);
+        Assert.False(status.HasUpstream);
+        Assert.Equal(0, status.AheadCount);
+        Assert.Equal(0, status.BehindCount);
+    }
+
+    [Fact]
     public async Task GetCommitStatAsync_And_GetDiffAsync_ReturnAccurateResults()
     {
         using var repo = GitCliTestRepository.Create();
