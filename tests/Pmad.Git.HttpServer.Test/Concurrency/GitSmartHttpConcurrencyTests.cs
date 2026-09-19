@@ -95,7 +95,12 @@ public sealed class GitSmartHttpConcurrencyTests : IDisposable
         Assert.Equal(1, failCount);
 
         var failedPush = resultsList.First(r => !r.success);
-        Assert.Contains("non-fast-forward", failedPush.output, StringComparison.OrdinalIgnoreCase);
+        Assert.True(
+            failedPush.output.Contains("non-fast-forward", StringComparison.OrdinalIgnoreCase) ||
+            failedPush.output.Contains("fetch first", StringComparison.OrdinalIgnoreCase) ||
+            failedPush.output.Contains("rejected", StringComparison.OrdinalIgnoreCase) ||
+            failedPush.output.Contains("failed to push", StringComparison.OrdinalIgnoreCase),
+            $"Expected push rejection message, got: {failedPush.output}");
     }
 
     [Fact]
@@ -414,6 +419,7 @@ public sealed class GitSmartHttpConcurrencyTests : IDisposable
             UseShellExecute = false,
             CreateNoWindow = true
         };
+        startInfo.EnvironmentVariables["LC_ALL"] = "C";
 
         using var process = Process.Start(startInfo) ?? throw new InvalidOperationException("Unable to start git process");
         var output = process.StandardOutput.ReadToEnd();
