@@ -191,4 +191,38 @@ public interface IGitRepository : IGitRepositoryCacheInvalidator
     /// <param name="cancellationToken">Token used to cancel the async operation.</param>
     /// <returns>True if 'to' is reachable from 'from', false otherwise.</returns>
     Task<bool> IsCommitReachableAsync(GitHash from, GitHash to, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Compares two trees and returns the list of added, modified, and deleted files.
+    /// </summary>
+    /// <param name="oldTreeHash">The hash of the baseline tree.</param>
+    /// <param name="newTreeHash">The hash of the target tree.</param>
+    /// <param name="cancellationToken">Token used to cancel the async operation.</param>
+    /// <returns>A list of <see cref="GitTreeChange"/> entries sorted by path in ordinal order.</returns>
+    Task<IReadOnlyList<GitTreeChange>> CompareTreesAsync(
+        GitHash oldTreeHash,
+        GitHash newTreeHash,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Returns the file-level changes introduced by a commit compared to its primary parent.
+    /// If the commit has no parent (root commit), all files in the tree are reported as added.
+    /// </summary>
+    /// <param name="commitHash">The commit hash to inspect.</param>
+    /// <param name="cancellationToken">Token used to cancel the async operation.</param>
+    /// <returns>A list of <see cref="GitTreeChange"/> entries sorted by path in ordinal order.</returns>
+    Task<IReadOnlyList<GitTreeChange>> GetCommitChangesAsync(
+        GitHash commitHash,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Returns the file-level changes introduced by the commit referenced by <paramref name="reference"/> (defaults to HEAD) compared to its primary parent.
+    /// If the commit has no parent (root commit), all files in the tree are reported as added.
+    /// </summary>
+    /// <param name="reference">Commit hash or reference name; defaults to HEAD.</param>
+    /// <param name="cancellationToken">Token used to cancel the async operation.</param>
+    /// <returns>A list of <see cref="GitTreeChange"/> entries sorted by path in ordinal order.</returns>
+    Task<IReadOnlyList<GitTreeChange>> GetCommitChangesAsync(
+        string? reference = null,
+        CancellationToken cancellationToken = default);
 }

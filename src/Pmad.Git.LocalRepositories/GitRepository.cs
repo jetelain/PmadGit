@@ -852,6 +852,76 @@ public sealed class GitRepository : IGitRepository, IGitRepositoryCacheInvalidat
         return false;
     }
 
+    /// <inheritdoc />
+    public async Task<IReadOnlyList<GitTreeChange>> CompareTreesAsync(
+        GitHash oldTreeHash,
+        GitHash newTreeHash,
+        CancellationToken cancellationToken = default)
+    {
+        if (oldTreeHash.Equals(newTreeHash))
+        {
+            return Array.Empty<GitTreeChange>();
+        }
+
+        var oldLeaves = await LoadLeafEntriesAsync(oldTreeHash, cancellationToken).ConfigureAwait(false);
+        var newLeaves = await LoadLeafEntriesAsync(newTreeHash, cancellationToken).ConfigureAwait(false);
+
+        var changes = new List<GitTreeChange>();
+        foreach (var (path, newLeaf) in newLeaves)
+        {
+            if (!oldLeaves.TryGetValue(path, out var oldLeaf))
+            {
+                changes.Add(new GitTreeChange(path, GitChangeKind.Added, null, newLeaf.Hash));
+            }
+            else if (!oldLeaf.Hash.Equals(newLeaf.Hash))
+            {
+                changes.Add(new GitTreeChange(path, GitChangeKind.Modified, oldLeaf.Hash, newLeaf.Hash));
+            }
+        }
+
+        foreach (var (path, oldLeaf) in oldLeaves)
+        {
+            if (!newLeaves.ContainsKey(path))
+            {
+                changes.Add(new GitTreeChange(path, GitChangeKind.Deleted, oldLeaf.Hash, null));
+            }
+        }
+
+        changes.Sort((a, b) => string.Compare(a.Path, b.Path, StringComparison.Ordinal));
+        return changes;
+    }
+
+    /// <inheritdoc />
+    public async Task<IReadOnlyList<GitTreeChange>> GetCommitChangesAsync(
+        GitHash commitHash,
+        CancellationToken cancellationToken = default)
+    {
+        var commit = await GetCommitAsync(commitHash, cancellationToken).ConfigureAwait(false);
+        if (commit.Parents.Count == 0)
+        {
+            var leaves = await LoadLeafEntriesAsync(commit.Tree, cancellationToken).ConfigureAwait(false);
+            var changes = new List<GitTreeChange>(leaves.Count);
+            foreach (var (path, leaf) in leaves)
+            {
+                changes.Add(new GitTreeChange(path, GitChangeKind.Added, null, leaf.Hash));
+            }
+            changes.Sort((a, b) => string.Compare(a.Path, b.Path, StringComparison.Ordinal));
+            return changes;
+        }
+
+        var parentCommit = await GetCommitAsync(commit.Parents[0], cancellationToken).ConfigureAwait(false);
+        return await CompareTreesAsync(parentCommit.Tree, commit.Tree, cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <inheritdoc />
+    public async Task<IReadOnlyList<GitTreeChange>> GetCommitChangesAsync(
+        string? reference = null,
+        CancellationToken cancellationToken = default)
+    {
+        var hash = await ResolveReferenceAsync(reference, cancellationToken).ConfigureAwait(false);
+        return await GetCommitChangesAsync(hash, cancellationToken).ConfigureAwait(false);
+    }
+
     private async Task<GitCommit> GetCommitAsync(GitHash hash, CancellationToken cancellationToken)
     {
         lock (_commitLock)
