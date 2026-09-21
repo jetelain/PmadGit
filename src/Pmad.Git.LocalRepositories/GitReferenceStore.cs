@@ -276,7 +276,18 @@ internal sealed class GitReferenceStore : IGitReferenceStore
         GitHash targetCommit,
         CancellationToken cancellationToken)
     {
-        var normalized = NormalizeAbsoluteReferencePath(referencePath);
+        var trimmed = referencePath?.Replace('\\', '/').Trim();
+        if (string.Equals(trimmed, "HEAD", StringComparison.OrdinalIgnoreCase))
+        {
+            var headPath = Path.Combine(_gitDirectory, "HEAD");
+            var tempPath = Path.Combine(_gitDirectory, $"HEAD.{Guid.NewGuid():N}.tmp");
+            await File.WriteAllTextAsync(tempPath, targetCommit.ToString() + "\n", cancellationToken).ConfigureAwait(false);
+            File.Move(tempPath, headPath, overwrite: true);
+            Interlocked.Exchange(ref _cache, CreateCache());
+            return;
+        }
+
+        var normalized = NormalizeAbsoluteReferencePath(referencePath!);
         await WriteReferenceAsync(normalized, targetCommit, cancellationToken).ConfigureAwait(false);
         Interlocked.Exchange(ref _cache, CreateCache());
     }
@@ -437,6 +448,22 @@ internal sealed class GitReferenceStore : IGitReferenceStore
 
     private Lazy<Task<Dictionary<string, GitHash>>> CreateCache()
         => new(LoadReferencesAsync, LazyThreadSafetyMode.ExecutionAndPublication);
+
+    internal static string NormalizeReferenceOrHead(string referencePath)
+    {
+        if (string.IsNullOrWhiteSpace(referencePath))
+        {
+            throw new ArgumentException("Reference path cannot be empty", nameof(referencePath));
+        }
+
+        var trimmed = referencePath.Replace('\\', '/').Trim();
+        if (string.Equals(trimmed, "HEAD", StringComparison.OrdinalIgnoreCase))
+        {
+            return "HEAD";
+        }
+
+        return NormalizeAbsoluteReferencePath(trimmed);
+    }
 
     internal static string NormalizeAbsoluteReferencePath(string referencePath)
     {

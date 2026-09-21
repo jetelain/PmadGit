@@ -1,4 +1,6 @@
+using System.Buffers.Binary;
 using System.IO;
+using System.Security.Cryptography;
 using System.Text;
 using Pmad.Git.Tests.Infrastructure;
 
@@ -450,5 +452,42 @@ public sealed class GitIndexTests
         Assert.Equal((uint)456, rt2.FileSize);
         Assert.False((rt2.Flags & 0x4000) != 0, "CE_EXTENDED flag should not be set for standard entry");
         Assert.Equal((ushort)0, rt2.ExtendedFlags);
+    }
+
+    [Fact]
+    public void FromSpan_MalformedEntryUnterminatedPath_WithZeroByteInChecksum_ThrowsInvalidDataException()
+    {
+        var index = new GitIndex();
+        index.AddOrUpdate(new GitIndexEntry("test.txt", new GitHash("1111111111111111111111111111111111111111")));
+        var validBytes = index.ToByteArray(GitHash.Sha1ByteLength);
+
+        // Find the NUL terminator of "test.txt" in the validBytes
+        var pathBytes = Encoding.UTF8.GetBytes("test.txt");
+        var pathIndex = validBytes.AsSpan().IndexOf(pathBytes);
+        Assert.True(pathIndex >= 0);
+        var nulIndex = pathIndex + pathBytes.Length;
+        Assert.Equal(0, validBytes[nulIndex]);
+
+        // Overwrite the path terminator and all padding with non-zero bytes up to the checksum
+        var corruptBytes = (byte[])validBytes.Clone();
+        var bodyLength = corruptBytes.Length - GitHash.Sha1ByteLength;
+        corruptBytes.AsSpan(pathIndex, bodyLength - pathIndex).Fill((byte)'X');
+        using var sha1 = SHA1.Create();
+        for (uint tweak = 0; tweak < 1000; tweak++)
+        {
+            BinaryPrimitives.WriteUInt32BigEndian(corruptBytes.AsSpan(16, 4), tweak); // tweak dev field
+            var hash = sha1.ComputeHash(corruptBytes, 0, bodyLength);
+            if (Array.IndexOf(hash, (byte)0) >= 0)
+            {
+                hash.CopyTo(corruptBytes, bodyLength);
+                break;
+            }
+        }
+
+        // Verify checksum actually contains 0x00
+        Assert.Contains((byte)0, corruptBytes.AsSpan(bodyLength).ToArray());
+
+        var ex = Assert.Throws<InvalidDataException>(() => GitIndex.FromSpan(corruptBytes, GitHash.Sha1ByteLength));
+        Assert.Contains("null-terminated", ex.Message, StringComparison.OrdinalIgnoreCase);
     }
 }

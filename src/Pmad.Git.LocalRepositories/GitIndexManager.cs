@@ -602,14 +602,14 @@ public sealed class GitIndexManager
     internal Task<IDisposable> AcquireIndexMutationLockAsync(CancellationToken cancellationToken)
         => AcquireIndexMutationLockAsync(null, cancellationToken);
 
-    internal async Task<IDisposable> AcquireIndexMutationLockAsync(string? targetBranchRef, CancellationToken cancellationToken)
+    internal async Task<IDisposable> AcquireIndexMutationLockAsync(string? targetRef, CancellationToken cancellationToken)
     {
-        var normalizedBranchRef = targetBranchRef != null
-            ? GitReferenceStore.NormalizeAbsoluteReferencePath(targetBranchRef)
+        var normalizedRef = targetRef != null
+            ? GitReferenceStore.NormalizeReferenceOrHead(targetRef)
             : null;
 
-        var lockPaths = normalizedBranchRef != null
-            ? new[] { "index", normalizedBranchRef }
+        var lockPaths = normalizedRef != null
+            ? new[] { "index", normalizedRef }
             : new[] { "index" };
 
         var refLock = await _repository.LockManager.AcquireMultipleReferenceLocksAsync(lockPaths, cancellationToken).ConfigureAwait(false);

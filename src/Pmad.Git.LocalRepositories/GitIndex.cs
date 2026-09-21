@@ -188,7 +188,13 @@ public sealed class GitIndex
             }
 
             var pathOffset = offset + currentHeaderLength;
-            var nulPos = data.Slice(pathOffset).IndexOf((byte)0);
+            var maxPathLength = data.Length - hashLengthBytes - pathOffset;
+            if (maxPathLength < 1)
+            {
+                throw new InvalidDataException("Unexpected end of index data while reading entry path.");
+            }
+
+            var nulPos = data.Slice(pathOffset, maxPathLength).IndexOf((byte)0);
             if (nulPos < 0)
             {
                 throw new InvalidDataException("Index entry path is not null-terminated.");
@@ -199,6 +205,10 @@ public sealed class GitIndex
             // Pad to 8-byte boundary relative to entry start
             var paddedLength = (entryLength + 7) & ~7;
             offset += paddedLength;
+            if (offset > data.Length - hashLengthBytes)
+            {
+                throw new InvalidDataException("Unexpected end of index data after entry padding.");
+            }
 
             index.Entries.Add(new GitIndexEntry(
                 path,

@@ -26,7 +26,6 @@ public sealed class GitRepositoryLockManager : IGitRepositoryLockManager
     // reader arriving after a writer is queued blocks here instead of joining the cohort and
     // extending its lifetime indefinitely.
     private readonly SemaphoreSlim _turnstile = new(1, 1);
-    private readonly AsyncLocal<int> _currentReaderDepth = new();
     private int _activeReaders;
 
     /// <summary>
@@ -35,6 +34,11 @@ public sealed class GitRepositoryLockManager : IGitRepositoryLockManager
     /// <param name="referencePath">Fully qualified reference path (e.g., refs/heads/main).</param>
     /// <param name="cancellationToken">Token used to cancel the async operation.</param>
     /// <returns>A disposable lock that must be released after the operation completes.</returns>
+    /// <remarks>
+    /// Reentrant lock acquisition is prohibited. Callers requiring locks on multiple references
+    /// concurrently must use <see cref="AcquireMultipleReferenceLocksAsync"/> to acquire them
+    /// together in a single operation, avoiding deadlocks with <see cref="LockAllAsync"/>.
+    /// </remarks>
     public async Task<IDisposable> AcquireReferenceLockAsync(string referencePath, CancellationToken cancellationToken = default)
     {
         if (referencePath is null)
@@ -89,15 +93,6 @@ public sealed class GitRepositoryLockManager : IGitRepositoryLockManager
     /// </summary>
     private async Task EnterReadAsync(CancellationToken cancellationToken)
     {
-        // If this execution context is already part of the active reader cohort,
-        // increment depth and skip the turnstile to prevent deadlocking against
-        // a writer waiting on LockAllAsync.
-        if (_currentReaderDepth.Value > 0)
-        {
-            _currentReaderDepth.Value++;
-            return;
-        }
-
         // Pass through the turnstile first. This is a no-op when no writer is queued/active,
         // but blocks readers arriving after LockAllAsync has taken the turnstile, ensuring they
         // wait behind the writer instead of joining the active-reader cohort.
@@ -124,8 +119,6 @@ public sealed class GitRepositoryLockManager : IGitRepositoryLockManager
         {
             _readerCountLock.Release();
         }
-
-        _currentReaderDepth.Value = 1;
     }
 
     /// <summary>
@@ -134,11 +127,6 @@ public sealed class GitRepositoryLockManager : IGitRepositoryLockManager
     /// </summary>
     private void ExitRead()
     {
-        if (--_currentReaderDepth.Value > 0)
-        {
-            return;
-        }
-
         _readerCountLock.Wait();
         try
         {
