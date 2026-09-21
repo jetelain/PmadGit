@@ -1,4 +1,5 @@
 using System.Threading;
+using Pmad.Git.LocalRepositories.Config;
 
 namespace Pmad.Git.LocalRepositories;
 
@@ -206,6 +207,117 @@ internal sealed class GitReferenceStore : IGitReferenceStore
             await DeleteReferenceAsyncInternal(normalized, cancellationToken).ConfigureAwait(false);
             Interlocked.Exchange(ref _cache, CreateCache());
         }
+    }
+
+    /// <inheritdoc/>
+    public async Task RenameBranchAsync(
+        string oldName,
+        string newName,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(oldName);
+        ArgumentException.ThrowIfNullOrWhiteSpace(newName);
+
+        var oldRef = NormalizeBranchRef(oldName);
+        var newRef = NormalizeBranchRef(newName);
+
+        if (string.Equals(oldRef, newRef, StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        var normalizedOldBranch = oldRef["refs/heads/".Length..];
+        var normalizedNewBranch = newRef["refs/heads/".Length..];
+
+        using (await _lockManager.AcquireMultipleReferenceLocksAsync(new[] { oldRef, newRef, "HEAD", "packed-refs" }, cancellationToken).ConfigureAwait(false))
+        {
+            var targetCommit = await TryResolveReferenceAsync(oldRef, cancellationToken).ConfigureAwait(false);
+            if (!targetCommit.HasValue)
+            {
+                throw new InvalidOperationException($"Branch '{normalizedOldBranch}' does not exist.");
+            }
+
+            var existingNew = await TryResolveReferenceAsync(newRef, cancellationToken).ConfigureAwait(false);
+            if (existingNew.HasValue)
+            {
+                throw new InvalidOperationException($"A branch named '{normalizedNewBranch}' already exists.");
+            }
+
+            await WriteReferenceAsync(newRef, targetCommit.Value, cancellationToken).ConfigureAwait(false);
+            await DeleteReferenceAsyncInternal(oldRef, cancellationToken).ConfigureAwait(false);
+
+            var headPath = Path.Combine(_gitDirectory, "HEAD");
+            if (File.Exists(headPath))
+            {
+                var headContent = (await File.ReadAllTextAsync(headPath, cancellationToken).ConfigureAwait(false)).Trim();
+                if (headContent == $"ref: {oldRef}")
+                {
+                    await File.WriteAllTextAsync(headPath, $"ref: {newRef}\n", cancellationToken).ConfigureAwait(false);
+                }
+            }
+
+            var configPath = Path.Combine(_gitDirectory, "config");
+            if (File.Exists(configPath))
+            {
+                var config = await GitConfigFile.ReadFromFileAsync(configPath, cancellationToken).ConfigureAwait(false);
+                if (config.RenameSubsection("branch", normalizedOldBranch, normalizedNewBranch))
+                {
+                    await config.WriteToFileAsync(configPath, cancellationToken).ConfigureAwait(false);
+                }
+            }
+
+            Interlocked.Exchange(ref _cache, CreateCache());
+        }
+    }
+
+    /// <inheritdoc/>
+    public async Task DeleteBranchAsync(
+        string branchName,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(branchName);
+        var refPath = NormalizeBranchRef(branchName);
+        var normalizedBranch = refPath["refs/heads/".Length..];
+
+        using (await _lockManager.AcquireMultipleReferenceLocksAsync(new[] { refPath, "HEAD", "packed-refs" }, cancellationToken).ConfigureAwait(false))
+        {
+            var currentBranch = await GetCurrentBranchNameAsync(cancellationToken).ConfigureAwait(false);
+            if (string.Equals(currentBranch, normalizedBranch, StringComparison.Ordinal))
+            {
+                throw new InvalidOperationException($"Cannot delete branch '{normalizedBranch}' used by worktree at '{_gitDirectory}'.");
+            }
+
+            var exists = await TryResolveReferenceAsync(refPath, cancellationToken).ConfigureAwait(false);
+            if (!exists.HasValue)
+            {
+                throw new InvalidOperationException($"Branch '{normalizedBranch}' not found.");
+            }
+
+            await DeleteReferenceAsyncInternal(refPath, cancellationToken).ConfigureAwait(false);
+
+            var configPath = Path.Combine(_gitDirectory, "config");
+            if (File.Exists(configPath))
+            {
+                var config = await GitConfigFile.ReadFromFileAsync(configPath, cancellationToken).ConfigureAwait(false);
+                if (config.RemoveSection("branch", normalizedBranch))
+                {
+                    await config.WriteToFileAsync(configPath, cancellationToken).ConfigureAwait(false);
+                }
+            }
+
+            Interlocked.Exchange(ref _cache, CreateCache());
+        }
+    }
+
+    private static string NormalizeBranchRef(string branchName)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(branchName);
+        var normalized = branchName.Replace('\\', '/').Trim();
+        if (!normalized.StartsWith("refs/heads/", StringComparison.Ordinal))
+        {
+            normalized = "refs/heads/" + normalized;
+        }
+        return NormalizeAbsoluteReferencePath(normalized);
     }
 
     /// <inheritdoc/>

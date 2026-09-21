@@ -101,6 +101,26 @@ public interface IGitReferenceStore
         CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Renames a local branch from <paramref name="oldName"/> to <paramref name="newName"/>.
+    /// </summary>
+    /// <param name="oldName">Current branch name.</param>
+    /// <param name="newName">New branch name.</param>
+    /// <param name="cancellationToken">Token used to cancel the async operation.</param>
+    Task RenameBranchAsync(
+        string oldName,
+        string newName,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Deletes a local branch.
+    /// </summary>
+    /// <param name="branchName">The local branch name to delete.</param>
+    /// <param name="cancellationToken">Token used to cancel the async operation.</param>
+    Task DeleteBranchAsync(
+        string branchName,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// Discards the cached reference index so that subsequent reads reflect the current state.
     /// </summary>
     void InvalidateCaches();
