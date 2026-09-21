@@ -160,4 +160,138 @@ public sealed class GitConfigFileTests
             }
         }
     }
+
+    [Fact]
+    public void Parse_KeyOnlyBoolean_EvaluatesToTrue()
+    {
+        var content = """
+            [core]
+            	bare
+            	filemode = false
+            """;
+        var config = GitConfigFile.Parse(content);
+
+        Assert.Equal("true", config.GetValue("core.bare"));
+        Assert.True(config.GetBoolean("core.bare"));
+        Assert.Equal("false", config.GetValue("core.filemode"));
+        Assert.False(config.GetBoolean("core.filemode"));
+    }
+
+    [Fact]
+    public void UnsetValue_KeyOnlyBoolean_RemovesKey()
+    {
+        var content = """
+            [core]
+            	bare
+            	filemode = false
+            """;
+        var config = GitConfigFile.Parse(content);
+        var removed = config.UnsetValue("core.bare");
+
+        Assert.True(removed);
+        Assert.Null(config.GetValue("core.bare"));
+        Assert.Equal("false", config.GetValue("core.filemode"));
+        Assert.DoesNotContain("bare", config.Serialize());
+    }
+
+    [Fact]
+    public void SetValue_KeyOnlyBoolean_UpdatesValue()
+    {
+        var content = """
+            [core]
+            	bare
+            """;
+        var config = GitConfigFile.Parse(content);
+        config.SetValue("core.bare", "false");
+
+        Assert.Equal("false", config.GetValue("core.bare"));
+        Assert.Contains("bare = false", config.Serialize());
+    }
+
+    [Fact]
+    public void Parse_InlineComments_AreStrippedFromValues()
+    {
+        var content = """
+            [user]
+            	name = John Doe # full name
+            	email = john@example.com ; primary email
+            """;
+        var config = GitConfigFile.Parse(content);
+
+        Assert.Equal("John Doe", config.GetValue("user.name"));
+        Assert.Equal("john@example.com", config.GetValue("user.email"));
+    }
+
+    [Fact]
+    public void Parse_InvalidSyntaxOutsideSection_ThrowsFormatException()
+    {
+        var content = "not-in-a-section = value\n[core]\n\tbare";
+        Assert.Throws<System.FormatException>(() => GitConfigFile.Parse(content));
+    }
+
+    [Fact]
+    public void Parse_InvalidSyntaxInsideSection_ThrowsFormatException()
+    {
+        var content = "[core]\n\t123 invalid key ???";
+        Assert.Throws<System.FormatException>(() => GitConfigFile.Parse(content));
+    }
+
+    [Fact]
+    public void GetAllValues_ReturnsAllMatchingValues()
+    {
+        var content = """
+            [remote "origin"]
+            	fetch = +refs/heads/*:refs/remotes/origin/*
+            	fetch = +refs/tags/*:refs/tags/*
+            """;
+        var config = GitConfigFile.Parse(content);
+        var values = config.GetAllValues("remote.origin.fetch");
+
+        Assert.Equal(2, values.Count);
+        Assert.Equal("+refs/heads/*:refs/remotes/origin/*", values[0]);
+        Assert.Equal("+refs/tags/*:refs/tags/*", values[1]);
+    }
+
+    [Fact]
+    public async Task ReadWithIncludesAsync_ResolvesIncludesAndPrecedence()
+    {
+        var tempDir = Path.Combine(Path.GetTempPath(), Path.GetRandomFileName());
+        Directory.CreateDirectory(tempDir);
+        try
+        {
+            var mainFile = Path.Combine(tempDir, "main.config");
+            var incFile = Path.Combine(tempDir, "inc.config");
+
+            var incContent = """
+                [user]
+                	name = Overridden Name
+                	email = inc@example.com
+                """;
+            var mainContent = """
+                [user]
+                	name = Initial Name
+                [include]
+                	path = inc.config
+                [other]
+                	key = value
+                """;
+
+            await File.WriteAllTextAsync(incFile, incContent);
+            await File.WriteAllTextAsync(mainFile, mainContent);
+
+            var config = await GitConfigFile.ReadWithIncludesAsync(mainFile);
+
+            // inc.config was included after Initial Name, so it overrides user.name
+            Assert.Equal("Overridden Name", config.GetValue("user.name"));
+            Assert.Equal("inc@example.com", config.GetValue("user.email"));
+            Assert.Equal("value", config.GetValue("other.key"));
+        }
+        finally
+        {
+            if (Directory.Exists(tempDir))
+            {
+                Directory.Delete(tempDir, true);
+            }
+        }
+    }
 }

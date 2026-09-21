@@ -1681,7 +1681,7 @@ public sealed class GitRepository : IGitRepository, IGitRepositoryCacheInvalidat
         }
 
         var configPath = Path.Combine(GitDirectory, "config");
-        var config = await GitConfigFile.ReadFromFileAsync(configPath, cancellationToken).ConfigureAwait(false);
+        var config = await GitConfigFile.ReadWithIncludesAsync(configPath, cancellationToken).ConfigureAwait(false);
 
         var remoteName = config.GetValue("branch", localBranch, "remote");
         var mergeRef = config.GetValue("branch", localBranch, "merge");
@@ -1693,22 +1693,42 @@ public sealed class GitRepository : IGitRepository, IGitRepositoryCacheInvalidat
 
         string upstreamRef;
         string userFacingUpstreamName;
-        if (mergeRef.StartsWith("refs/heads/", StringComparison.Ordinal))
+        if (string.Equals(remoteName, ".", StringComparison.Ordinal))
         {
-            var remoteBranchName = mergeRef["refs/heads/".Length..];
-            upstreamRef = $"refs/remotes/{remoteName}/{remoteBranchName}";
-            userFacingUpstreamName = $"{remoteName}/{remoteBranchName}";
+            // Upstream is another local branch in the same repository
+            if (mergeRef.StartsWith("refs/heads/", StringComparison.Ordinal))
+            {
+                upstreamRef = mergeRef;
+                userFacingUpstreamName = mergeRef["refs/heads/".Length..];
+            }
+            else
+            {
+                upstreamRef = $"refs/heads/{mergeRef}";
+                userFacingUpstreamName = mergeRef;
+            }
         }
         else
         {
-            upstreamRef = $"refs/remotes/{remoteName}/{mergeRef}";
-            userFacingUpstreamName = $"{remoteName}/{mergeRef}";
+            // Upstream is a remote tracking branch
+            if (mergeRef.StartsWith("refs/heads/", StringComparison.Ordinal))
+            {
+                var remoteBranchName = mergeRef["refs/heads/".Length..];
+                upstreamRef = $"refs/remotes/{remoteName}/{remoteBranchName}";
+                userFacingUpstreamName = $"{remoteName}/{remoteBranchName}";
+            }
+            else
+            {
+                upstreamRef = $"refs/remotes/{remoteName}/{mergeRef}";
+                userFacingUpstreamName = $"{remoteName}/{mergeRef}";
+            }
         }
 
         var upstreamCommitHash = await _referenceStore.TryResolveReferenceAsync(upstreamRef, cancellationToken).ConfigureAwait(false);
         if (!upstreamCommitHash.HasValue)
         {
-            return new GitTrackingStatus(localBranch, userFacingUpstreamName, 0, 0);
+            // Upstream reference is unresolvable (does not exist or tracking branch disappeared).
+            // Return no upstream, matching CLI behavior (rev-parse @{upstream} failure).
+            return new GitTrackingStatus(localBranch, null, 0, 0);
         }
 
         if (localCommitHash.Value.Equals(upstreamCommitHash.Value))
@@ -1831,14 +1851,53 @@ public sealed class GitRepository : IGitRepository, IGitRepositoryCacheInvalidat
     /// <inheritdoc/>
     public async Task<string?> GetConfigAsync(string key, bool global = false, CancellationToken cancellationToken = default)
     {
-        var configPath = GetConfigFilePath(global);
-        if (!File.Exists(configPath))
+        if (global)
         {
-            return null;
+            var globalPath = GitConfigEnvironment.GetGlobalConfigPath();
+            if (!File.Exists(globalPath))
+            {
+                return null;
+            }
+
+            var globalConfig = await GitConfigFile.ReadWithIncludesAsync(globalPath, cancellationToken).ConfigureAwait(false);
+            return globalConfig.GetValue(key);
         }
 
-        var config = await GitConfigFile.ReadFromFileAsync(configPath, cancellationToken).ConfigureAwait(false);
-        return config.GetValue(key);
+        // Effective repository configuration: local -> global -> system
+        var localPath = Path.Combine(GitDirectory, "config");
+        if (File.Exists(localPath))
+        {
+            var localConfig = await GitConfigFile.ReadWithIncludesAsync(localPath, cancellationToken).ConfigureAwait(false);
+            var localValue = localConfig.GetValue(key);
+            if (localValue != null)
+            {
+                return localValue;
+            }
+        }
+
+        var envGlobalPath = GitConfigEnvironment.GetGlobalConfigPath();
+        if (File.Exists(envGlobalPath))
+        {
+            var globalConfig = await GitConfigFile.ReadWithIncludesAsync(envGlobalPath, cancellationToken).ConfigureAwait(false);
+            var globalValue = globalConfig.GetValue(key);
+            if (globalValue != null)
+            {
+                return globalValue;
+            }
+        }
+
+        var systemPath = GitConfigEnvironment.GetSystemConfigPath();
+        if (systemPath != null && File.Exists(systemPath))
+        {
+            var systemConfig = await GitConfigFile.ReadWithIncludesAsync(systemPath, cancellationToken).ConfigureAwait(false);
+            var systemValue = systemConfig.GetValue(key);
+            if (systemValue != null)
+            {
+                return systemValue;
+            }
+        }
+
+        return null;
     }
 
     /// <inheritdoc/>
@@ -1905,7 +1964,7 @@ public sealed class GitRepository : IGitRepository, IGitRepositoryCacheInvalidat
     {
         if (global)
         {
-            return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".gitconfig");
+            return GitConfigEnvironment.GetGlobalConfigPath();
         }
 
         return Path.Combine(GitDirectory, "config");

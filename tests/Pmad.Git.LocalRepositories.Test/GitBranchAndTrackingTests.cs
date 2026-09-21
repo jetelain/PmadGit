@@ -198,4 +198,132 @@ public sealed class GitBranchAndTrackingTests
         var unsetValue = await git.GetConfigAsync("test.section.key");
         Assert.Null(unsetValue);
     }
+
+    [Fact]
+    public async Task GetTrackingStatusAsync_WithLocalBranchUpstreamRemoteDot_ResolvesCorrectly()
+    {
+        using var repo = GitTestRepository.Create();
+        var git = GitRepository.Open(repo.WorkingDirectory);
+
+        // Create feature branch
+        await git.CreateBranchAsync("feature");
+
+        // Configure upstream of feature to point to master using remote '.'
+        await git.SetConfigAsync("branch.feature.remote", ".");
+        await git.SetConfigAsync("branch.feature.merge", "refs/heads/master");
+
+        // Initially synchronized
+        var status = await git.GetTrackingStatusAsync("feature");
+        Assert.Equal("feature", status.LocalBranch);
+        Assert.Equal("master", status.UpstreamBranch);
+        Assert.True(status.HasUpstream);
+        Assert.True(status.IsSynchronized);
+        Assert.Equal(0, status.AheadCount);
+        Assert.Equal(0, status.BehindCount);
+
+        // Commit on master: feature is now 1 commit behind master
+        repo.Commit("Master update", ("master.txt", "v2"));
+        git.InvalidateCaches();
+
+        status = await git.GetTrackingStatusAsync("feature");
+        Assert.Equal("master", status.UpstreamBranch);
+        Assert.True(status.HasUpstream);
+        Assert.False(status.IsSynchronized);
+        Assert.Equal(0, status.AheadCount);
+        Assert.Equal(1, status.BehindCount);
+    }
+
+    [Fact]
+    public async Task GetTrackingStatusAsync_MissingUpstreamBranch_ReportsNoUpstream()
+    {
+        using var repo = GitTestRepository.Create();
+        var git = GitRepository.Open(repo.WorkingDirectory);
+
+        // Configure upstream in .git/config pointing to a non-existent remote tracking ref
+        await git.SetConfigAsync("branch.master.remote", "origin");
+        await git.SetConfigAsync("branch.master.merge", "refs/heads/master");
+
+        // refs/remotes/origin/master does NOT exist
+        var status = await git.GetTrackingStatusAsync();
+
+        Assert.Equal("master", status.LocalBranch);
+        Assert.Null(status.UpstreamBranch);
+        Assert.False(status.HasUpstream);
+        Assert.False(status.IsSynchronized);
+        Assert.Equal(0, status.AheadCount);
+        Assert.Equal(0, status.BehindCount);
+    }
+
+    [Fact]
+    public async Task GetConfigAsync_ResolvesEffectiveConfig_LocalOverridesGlobal()
+    {
+        using var repo = GitTestRepository.Create();
+        var git = GitRepository.Open(repo.WorkingDirectory);
+
+        var tempGlobal = Path.Combine(Path.GetTempPath(), Path.GetRandomFileName() + ".gitconfig");
+        var prevEnv = Environment.GetEnvironmentVariable("GIT_CONFIG_GLOBAL");
+        try
+        {
+            await File.WriteAllTextAsync(tempGlobal, "[test]\n\tscope = from-global\n\tglobalonly = true\n");
+            Environment.SetEnvironmentVariable("GIT_CONFIG_GLOBAL", tempGlobal);
+
+            // 1. Read global value through effective config
+            var globalOnlyVal = await git.GetConfigAsync("test.globalonly");
+            Assert.Equal("true", globalOnlyVal);
+
+            var scopeVal = await git.GetConfigAsync("test.scope");
+            Assert.Equal("from-global", scopeVal);
+
+            // 2. Set local value in repository - overrides global
+            await git.SetConfigAsync("test.scope", "from-local");
+
+            var effectiveScope = await git.GetConfigAsync("test.scope");
+            Assert.Equal("from-local", effectiveScope);
+
+            // 3. Explicit global read still gets global value
+            var explicitGlobalScope = await git.GetConfigAsync("test.scope", global: true);
+            Assert.Equal("from-global", explicitGlobalScope);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GIT_CONFIG_GLOBAL", prevEnv);
+            if (File.Exists(tempGlobal))
+            {
+                File.Delete(tempGlobal);
+            }
+        }
+    }
+
+    [Fact]
+    public async Task GetConfigAsync_GlobalRespectsEnvironmentVariable()
+    {
+        using var repo = GitTestRepository.Create();
+        var git = GitRepository.Open(repo.WorkingDirectory);
+
+        var tempGlobal = Path.Combine(Path.GetTempPath(), Path.GetRandomFileName() + ".gitconfig");
+        var prevEnv = Environment.GetEnvironmentVariable("GIT_CONFIG_GLOBAL");
+        try
+        {
+            await File.WriteAllTextAsync(tempGlobal, "[user]\n\tname = CustomGlobalUser\n");
+            Environment.SetEnvironmentVariable("GIT_CONFIG_GLOBAL", tempGlobal);
+
+            var name = await git.GetConfigAsync("user.name", global: true);
+            Assert.Equal("CustomGlobalUser", name);
+
+            await git.SetConfigAsync("user.email", "custom@example.com", global: true);
+            var email = await git.GetConfigAsync("user.email", global: true);
+            Assert.Equal("custom@example.com", email);
+
+            var fileContent = await File.ReadAllTextAsync(tempGlobal);
+            Assert.Contains("email = custom@example.com", fileContent);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GIT_CONFIG_GLOBAL", prevEnv);
+            if (File.Exists(tempGlobal))
+            {
+                File.Delete(tempGlobal);
+            }
+        }
+    }
 }

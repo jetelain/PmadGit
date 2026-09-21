@@ -80,41 +80,86 @@ public sealed class GitConfigFile
                 continue;
             }
 
-            if (trimmed[0] == '[' && trimmed[^1] == ']')
+            if (trimmed[0] == '[')
             {
-                var inside = trimmed[1..^1].Trim();
-                var quoteIndex = inside.IndexOf('"');
-                if (quoteIndex > 0 && inside[^1] == '"')
+                var closeBracket = trimmed.LastIndexOf(']');
+                if (closeBracket > 0)
                 {
-                    var sec = inside[..quoteIndex].Trim();
-                    var sub = inside[(quoteIndex + 1)..^1];
-                    currentSection = new SectionHeaderLine(rawLine, sec, sub);
+                    var trailing = trimmed[(closeBracket + 1)..].Trim();
+                    if (trailing.Length == 0 || trailing[0] == '#' || trailing[0] == ';')
+                    {
+                        var inside = trimmed[1..closeBracket].Trim();
+                        var quoteIndex = inside.IndexOf('"');
+                        if (quoteIndex > 0 && inside[^1] == '"')
+                        {
+                            var sec = inside[..quoteIndex].Trim();
+                            var sub = inside[(quoteIndex + 1)..^1];
+                            currentSection = new SectionHeaderLine(rawLine, sec, sub);
+                        }
+                        else if (quoteIndex == -1 && inside.Contains('.'))
+                        {
+                            var dotIndex = inside.IndexOf('.');
+                            var sec = inside[..dotIndex].Trim();
+                            var sub = inside[(dotIndex + 1)..].Trim();
+                            currentSection = new SectionHeaderLine(rawLine, sec, sub);
+                        }
+                        else
+                        {
+                            currentSection = new SectionHeaderLine(rawLine, inside, null);
+                        }
+                        config._lines.Add(currentSection);
+                        continue;
+                    }
+                }
+            }
+
+            if (currentSection == null)
+            {
+                throw new FormatException($"Git config line outside of any section: '{rawLine}'");
+            }
+
+            var equalIndex = trimmed.IndexOf('=');
+            if (equalIndex > 0)
+            {
+                var key = trimmed[..equalIndex].Trim();
+                if (!IsValidKeyName(key))
+                {
+                    throw new FormatException($"Invalid Git config variable name '{key}' in section '[{currentSection.Section}]': '{rawLine}'");
+                }
+
+                var val = trimmed[(equalIndex + 1)..].Trim();
+                if (val.Length >= 2 && val[0] == '"' && val[^1] == '"')
+                {
+                    val = val[1..^1];
                 }
                 else
                 {
-                    currentSection = new SectionHeaderLine(rawLine, inside, null);
+                    var commentIdx = -1;
+                    for (var c = 0; c < val.Length; c++)
+                    {
+                        if (val[c] == '#' || val[c] == ';')
+                        {
+                            commentIdx = c;
+                            break;
+                        }
+                    }
+                    if (commentIdx >= 0)
+                    {
+                        val = val[..commentIdx].Trim();
+                    }
                 }
-                config._lines.Add(currentSection);
+                config._lines.Add(new KeyValueLine(rawLine, currentSection, key, val));
                 continue;
             }
 
-            if (currentSection != null)
+            if (equalIndex == -1 && IsValidKeyName(trimmed))
             {
-                var equalIndex = trimmed.IndexOf('=');
-                if (equalIndex > 0)
-                {
-                    var key = trimmed[..equalIndex].Trim();
-                    var val = trimmed[(equalIndex + 1)..].Trim();
-                    if (val.Length >= 2 && val[0] == '"' && val[^1] == '"')
-                    {
-                        val = val[1..^1];
-                    }
-                    config._lines.Add(new KeyValueLine(rawLine, currentSection, key, val));
-                    continue;
-                }
+                // Key-only boolean entry: in Git config, a key without an equals sign evaluates to boolean "true".
+                config._lines.Add(new KeyValueLine(rawLine, currentSection, trimmed, "true"));
+                continue;
             }
 
-            config._lines.Add(new BlankOrCommentLine(rawLine));
+            throw new FormatException($"Invalid Git config line in section '[{currentSection.Section}]': '{rawLine}'");
         }
 
         return config;
@@ -135,6 +180,75 @@ public sealed class GitConfigFile
 
         var content = await File.ReadAllTextAsync(filePath, Encoding.UTF8, cancellationToken).ConfigureAwait(false);
         return Parse(content);
+    }
+
+    /// <summary>
+    /// Reads and parses a Git configuration file from disk, resolving any <c>[include]</c> path directives.
+    /// This is intended for reading effective configuration.
+    /// </summary>
+    /// <param name="filePath">Absolute path to the configuration file.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>A <see cref="GitConfigFile"/> instance containing all entries including those from included files.</returns>
+    public static async Task<GitConfigFile> ReadWithIncludesAsync(string filePath, CancellationToken cancellationToken = default)
+    {
+        var visited = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        return await ReadWithIncludesCoreAsync(filePath, visited, cancellationToken).ConfigureAwait(false);
+    }
+
+    private static async Task<GitConfigFile> ReadWithIncludesCoreAsync(
+        string filePath,
+        HashSet<string> visited,
+        CancellationToken cancellationToken)
+    {
+        var resolvedPath = Path.GetFullPath(filePath);
+        if (!visited.Add(resolvedPath) || !File.Exists(resolvedPath))
+        {
+            return new GitConfigFile();
+        }
+
+        var parsed = await ReadFromFileAsync(resolvedPath, cancellationToken).ConfigureAwait(false);
+        var baseDir = Path.GetDirectoryName(resolvedPath) ?? string.Empty;
+
+        var mergedLines = new List<LineNode>();
+        foreach (var line in parsed._lines)
+        {
+            mergedLines.Add(line);
+
+            if (line is KeyValueLine kv &&
+                string.Equals(kv.SectionHeader.Section, "include", StringComparison.OrdinalIgnoreCase) &&
+                kv.SectionHeader.Subsection == null &&
+                string.Equals(kv.Key, "path", StringComparison.OrdinalIgnoreCase))
+            {
+                var incPath = kv.Value;
+                if (!string.IsNullOrWhiteSpace(incPath))
+                {
+                    string targetIncPath;
+                    if (incPath.StartsWith("~/") || incPath.StartsWith("~\\"))
+                    {
+                        var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+                        targetIncPath = Path.Combine(home, incPath[2..]);
+                    }
+                    else if (Path.IsPathRooted(incPath))
+                    {
+                        targetIncPath = incPath;
+                    }
+                    else
+                    {
+                        targetIncPath = Path.Combine(baseDir, incPath);
+                    }
+
+                    if (File.Exists(targetIncPath))
+                    {
+                        var includedConfig = await ReadWithIncludesCoreAsync(targetIncPath, visited, cancellationToken).ConfigureAwait(false);
+                        mergedLines.AddRange(includedConfig._lines);
+                    }
+                }
+            }
+        }
+
+        var result = new GitConfigFile();
+        result._lines.AddRange(mergedLines);
+        return result;
     }
 
     /// <summary>
@@ -201,6 +315,81 @@ public sealed class GitConfigFile
         }
 
         return null;
+    }
+
+    /// <summary>
+    /// Retrieves all configuration values for a dotted key path.
+    /// </summary>
+    /// <param name="keyPath">The dotted configuration key path.</param>
+    /// <returns>A list of matching values in order of appearance.</returns>
+    public IReadOnlyList<string> GetAllValues(string keyPath)
+    {
+        if (!TryParseKeyPath(keyPath, out var section, out var subsection, out var key))
+        {
+            return Array.Empty<string>();
+        }
+
+        return GetAllValues(section, subsection, key);
+    }
+
+    /// <summary>
+    /// Retrieves all configuration values for a section, optional subsection, and key.
+    /// </summary>
+    /// <param name="section">Section name.</param>
+    /// <param name="subsection">Subsection name (or null).</param>
+    /// <param name="key">Key name.</param>
+    /// <returns>A list of matching values in order of appearance.</returns>
+    public IReadOnlyList<string> GetAllValues(string section, string? subsection, string key)
+    {
+        var values = new List<string>();
+        foreach (var line in _lines)
+        {
+            if (line is KeyValueLine kv && Matches(kv.SectionHeader, section, subsection) && string.Equals(kv.Key, key, StringComparison.OrdinalIgnoreCase))
+            {
+                values.Add(kv.Value);
+            }
+        }
+        return values;
+    }
+
+    /// <summary>
+    /// Retrieves the configuration value for a key path parsed as a Git boolean.
+    /// </summary>
+    /// <param name="keyPath">The dotted configuration key path.</param>
+    /// <returns>The boolean value, or <see langword="null"/> if not set.</returns>
+    public bool? GetBoolean(string keyPath)
+    {
+        var val = GetValue(keyPath);
+        return val != null ? ParseGitBoolean(val) : null;
+    }
+
+    /// <summary>
+    /// Parses a Git configuration string as a boolean value.
+    /// Values "true", "yes", "on", "1" evaluate to <see langword="true"/>.
+    /// Values "false", "no", "off", "0", "" evaluate to <see langword="false"/>.
+    /// </summary>
+    /// <param name="value">The raw string value.</param>
+    /// <returns>The parsed boolean value.</returns>
+    public static bool ParseGitBoolean(string value)
+    {
+        if (string.Equals(value, "true", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(value, "yes", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(value, "on", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(value, "1", StringComparison.Ordinal))
+        {
+            return true;
+        }
+
+        if (string.Equals(value, "false", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(value, "no", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(value, "off", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(value, "0", StringComparison.Ordinal) ||
+            value.Length == 0)
+        {
+            return false;
+        }
+
+        throw new FormatException($"Cannot parse '{value}' as a Git boolean value.");
     }
 
     /// <summary>
@@ -431,6 +620,25 @@ public sealed class GitConfigFile
         }
 
         return string.Equals(header.Subsection, subsection, StringComparison.Ordinal);
+    }
+
+    private static bool IsValidKeyName(string key)
+    {
+        if (string.IsNullOrEmpty(key) || !char.IsLetter(key[0]))
+        {
+            return false;
+        }
+
+        for (var i = 1; i < key.Length; i++)
+        {
+            var c = key[i];
+            if (!char.IsLetterOrDigit(c) && c != '-')
+            {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     private static string FormatValue(string value)
