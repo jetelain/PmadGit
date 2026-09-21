@@ -1,4 +1,4 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk">
 
 	<PropertyGroup>
 		<TargetFramework>net8.0</TargetFramework>
@@ -25,6 +25,7 @@
 	<ItemGroup>
 		<InternalsVisibleTo Include="Pmad.Git.LocalRepositories.Test" />
 		<InternalsVisibleTo Include="Pmad.Git.HttpServer" />
+		<InternalsVisibleTo Include="Pmad.Git.Protocol" />
 	</ItemGroup>
 	<ItemGroup>
 		<None Include="README.md" Pack="true" PackagePath="\" />

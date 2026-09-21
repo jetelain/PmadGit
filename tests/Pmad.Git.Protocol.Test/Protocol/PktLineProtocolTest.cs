@@ -1,7 +1,7 @@
 using System.Text;
-using Pmad.Git.HttpServer.Protocol;
+using Pmad.Git.Protocol;
 
-namespace Pmad.Git.HttpServer.Test.Protocol;
+namespace Pmad.Git.Protocol.Test.Protocol;
 
 public sealed class PktLineProtocolTest
 {

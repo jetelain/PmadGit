@@ -1,14 +1,29 @@
+using System;
+using System.Collections.Generic;
+using System.IO;
 using System.Security.Cryptography;
-using Pmad.Git.LocalRepositories.Utilities;
+using System.Threading;
+using System.Threading.Tasks;
 using Pmad.Git.LocalRepositories;
 using Pmad.Git.LocalRepositories.Pack;
+using Pmad.Git.LocalRepositories.Utilities;
 
-namespace Pmad.Git.HttpServer.Pack;
+namespace Pmad.Git.Protocol.Pack;
 
-internal sealed class GitPackReader
+/// <summary>
+/// Unpacks Git packfiles (.pack) into a repository object store.
+/// </summary>
+public sealed class GitPackReader
 {
     private const int HeaderLength = 12;
 
+    /// <summary>
+    /// Reads and unpacks Git objects from a packfile stream into the specified repository.
+    /// </summary>
+    /// <param name="repository">The target repository.</param>
+    /// <param name="source">The packfile stream.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>A list of object hashes that were read and written to the object store.</returns>
     public async Task<IReadOnlyList<GitHash>> ReadAsync(IGitRepository repository, Stream source, CancellationToken cancellationToken)
     {
         if (repository is null)
@@ -43,7 +58,7 @@ internal sealed class GitPackReader
         var objectCount = await ValidatePackFile(repository, fileStream, cancellationToken).ConfigureAwait(false);
 
         fileStream.Position = HeaderLength;
-       
+
         var created = new List<GitHash>(checked((int)objectCount));
         var offsetCache = new Dictionary<long, GitObjectData>();
         var hashCache = new Dictionary<string, GitObjectData>(StringComparer.Ordinal);
@@ -98,7 +113,7 @@ internal sealed class GitPackReader
         var algorithm = GitHashHelper.GetAlgorithmName(repository.HashLengthBytes);
 
         using var hashingStream = new HashingReadStream(fileStream, algorithm, leaveOpen: true);
-        
+
         await hashingStream.ReadExactlyAsync(header, cancellationToken).ConfigureAwait(false);
         ValidateHeader(header);
 
@@ -122,7 +137,7 @@ internal sealed class GitPackReader
         {
             throw new InvalidDataException("Pack checksum mismatch");
         }
-        
+
         return ReadUInt32(header.AsSpan(8, 4));
     }
 
@@ -143,3 +158,4 @@ internal sealed class GitPackReader
     private static uint ReadUInt32(ReadOnlySpan<byte> data)
         => (uint)(data[0] << 24 | data[1] << 16 | data[2] << 8 | data[3]);
 }
+

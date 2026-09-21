@@ -2,7 +2,7 @@ using System.Diagnostics;
 using System.IO.Compression;
 using System.Security.Cryptography;
 
-namespace Pmad.Git.HttpServer.Test.Pack;
+namespace Pmad.Git.Protocol.Test.Pack;
 
 public class PackFileDebugTest : IDisposable
 {

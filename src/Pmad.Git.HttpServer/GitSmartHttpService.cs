@@ -2,8 +2,8 @@ using System.Text;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Options;
 using Microsoft.Extensions.Primitives;
-using Pmad.Git.HttpServer.Pack;
-using Pmad.Git.HttpServer.Protocol;
+using Pmad.Git.Protocol;
+using Pmad.Git.Protocol.Pack;
 using Pmad.Git.LocalRepositories;
 
 namespace Pmad.Git.HttpServer;

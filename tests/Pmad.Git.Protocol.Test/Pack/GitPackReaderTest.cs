@@ -1,9 +1,9 @@
 using System.Diagnostics;
 using System.IO.Compression;
-using Pmad.Git.HttpServer.Pack;
+using Pmad.Git.Protocol.Pack;
 using Pmad.Git.LocalRepositories;
 
-namespace Pmad.Git.HttpServer.Test.Pack;
+namespace Pmad.Git.Protocol.Test.Pack;
 
 public sealed class GitPackReaderTest : IDisposable
 {

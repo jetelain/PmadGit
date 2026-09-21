@@ -1,7 +1,7 @@
 using System.Diagnostics;
 using Pmad.Git.LocalRepositories;
 
-namespace Pmad.Git.HttpServer.Test.Pack;
+namespace Pmad.Git.Protocol.Test.Pack;
 
 public class PackFormatTest : IDisposable
 {

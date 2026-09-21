@@ -5,25 +5,49 @@ using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 
-namespace Pmad.Git.HttpServer.Protocol;
+namespace Pmad.Git.Protocol;
 
-internal readonly record struct PktLine(ReadOnlyMemory<byte> Payload, bool IsFlush, bool IsDelimiter)
+/// <summary>
+/// Represents a parsed Git packet-line (pkt-line) message.
+/// </summary>
+/// <param name="Payload">The binary payload of the packet.</param>
+/// <param name="IsFlush">Indicates whether this is a flush packet (0000).</param>
+/// <param name="IsDelimiter">Indicates whether this is a delimiter packet (0001).</param>
+public readonly record struct PktLine(ReadOnlyMemory<byte> Payload, bool IsFlush, bool IsDelimiter)
 {
+    /// <summary>
+    /// Gets a value indicating whether the payload is empty.
+    /// </summary>
     public bool IsEmpty => Payload.IsEmpty;
 
+    /// <summary>
+    /// Returns the payload decoded as a UTF-8 string.
+    /// </summary>
     public string AsString() => Encoding.UTF8.GetString(Payload.Span);
 }
 
-internal sealed class PktLineReader
+/// <summary>
+/// Reads Git packet-line (pkt-line) formatted streams.
+/// </summary>
+public sealed class PktLineReader
 {
     private readonly Stream _stream;
     private readonly byte[] _headerBuffer = new byte[4];
 
+    /// <summary>
+    /// Initializes a new instance of the <see cref="PktLineReader"/> class.
+    /// </summary>
+    /// <param name="stream">The source stream to read packet lines from.</param>
     public PktLineReader(Stream stream)
     {
         _stream = stream ?? throw new ArgumentNullException(nameof(stream));
     }
 
+    /// <summary>
+    /// Reads the next packet line from the stream.
+    /// </summary>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>The parsed <see cref="PktLine"/>, or <see langword="null"/> if the end of the stream was reached.</returns>
     public async Task<PktLine?> ReadAsync(CancellationToken cancellationToken)
     {
         var read = await ReadExactAsync(_headerBuffer, cancellationToken).ConfigureAwait(false);
@@ -110,3 +134,4 @@ internal sealed class PktLineReader
         return value;
     }
 }
+
