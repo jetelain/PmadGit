@@ -1,17 +1,34 @@
+using System;
+using System.Collections.Generic;
 using System.Text;
+using System.Threading;
+using System.Threading.Tasks;
 using Pmad.Git.LocalRepositories;
 
-namespace Pmad.Git.HttpServer.Pack;
+namespace Pmad.Git.Protocol.Pack;
 
-internal sealed class GitObjectWalker
+/// <summary>
+/// Traverses Git object graphs starting from root references to collect reachable objects for packfiles.
+/// </summary>
+public sealed class GitObjectWalker
 {
     private readonly IGitRepository _repository;
 
+    /// <summary>
+    /// Initializes a new instance of the <see cref="GitObjectWalker"/> class.
+    /// </summary>
+    /// <param name="repository">The Git repository to walk objects from.</param>
     public GitObjectWalker(IGitRepository repository)
     {
         _repository = repository ?? throw new ArgumentNullException(nameof(repository));
     }
 
+    /// <summary>
+    /// Traverses and collects all reachable objects starting from the specified root hashes.
+    /// </summary>
+    /// <param name="roots">The root object hashes.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>A list of all visited unique object hashes in topological order.</returns>
     public async Task<IReadOnlyList<GitHash>> CollectAsync(IEnumerable<GitHash> roots, CancellationToken cancellationToken)
     {
         var ordered = new List<GitHash>();
@@ -84,3 +101,4 @@ internal sealed class GitObjectWalker
         return null;
     }
 }
+

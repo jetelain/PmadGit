@@ -5,14 +5,13 @@
 		<ImplicitUsings>enable</ImplicitUsings>
 		<Nullable>enable</Nullable>
 		<IsAotCompatible>true</IsAotCompatible>
-		<EnableRequestDelegateGenerator>true</EnableRequestDelegateGenerator>
 		<GenerateDocumentationFile>true</GenerateDocumentationFile>
-		
+
 		<GeneratePackageOnBuild>true</GeneratePackageOnBuild>
 		<PackageLicenseExpression>MIT</PackageLicenseExpression>
 		<PackageProjectUrl>https://github.com/jetelain/PmadGit</PackageProjectUrl>
 		<PackageReadmeFile>README.md</PackageReadmeFile>
-		<Description>ASP.NET Core library that lets git synchronize with a server side stored repository.</Description>
+		<Description>Low-level Git wire protocol and packfile utilities for .NET.</Description>
 		<PublishRepositoryUrl>true</PublishRepositoryUrl>
 		<IncludeSymbols>true</IncludeSymbols>
 		<SymbolPackageFormat>snupkg</SymbolPackageFormat>
@@ -21,20 +20,19 @@
 
 	<ItemGroup>
 		<ProjectReference Include="..\Pmad.Git.LocalRepositories\Pmad.Git.LocalRepositories.csproj" />
-		<ProjectReference Include="..\Pmad.Git.Protocol\Pmad.Git.Protocol.csproj" />
-		<ProjectReference Include="..\Pmad.Git.Cli\Pmad.Git.Cli.csproj" />
 		<PackageReference Include="Microsoft.SourceLink.GitHub" Version="10.0.102" PrivateAssets="All" />
 	</ItemGroup>
 
 	<ItemGroup>
-		<FrameworkReference Include="Microsoft.AspNetCore.App" />
-	</ItemGroup>
-	
-	<ItemGroup>
+		<InternalsVisibleTo Include="Pmad.Git.HttpServer" />
+		<InternalsVisibleTo Include="Pmad.Git.RemoteClient" />
+		<InternalsVisibleTo Include="Pmad.Git.Protocol.Test" />
 		<InternalsVisibleTo Include="Pmad.Git.HttpServer.Test" />
 	</ItemGroup>
-	
+
 	<ItemGroup>
 		<None Include="README.md" Pack="true" PackagePath="\" />
 	</ItemGroup>
+
 </Project>
+

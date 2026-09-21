@@ -1,12 +1,27 @@
+using System;
+using System.Collections.Generic;
+using System.IO;
 using System.IO.Compression;
 using System.Security.Cryptography;
-using Pmad.Git.LocalRepositories.Utilities;
+using System.Threading;
+using System.Threading.Tasks;
 using Pmad.Git.LocalRepositories;
+using Pmad.Git.LocalRepositories.Utilities;
 
-namespace Pmad.Git.HttpServer.Pack;
+namespace Pmad.Git.Protocol.Pack;
 
-internal sealed class GitPackBuilder
+/// <summary>
+/// Authors standard Git packfiles (.pack) from a collection of Git objects.
+/// </summary>
+public sealed class GitPackBuilder
 {
+    /// <summary>
+    /// Writes a Git packfile containing the specified objects to the destination stream.
+    /// </summary>
+    /// <param name="repository">The Git repository containing the objects.</param>
+    /// <param name="objects">The list of object hashes to include in the packfile.</param>
+    /// <param name="destination">The destination stream to write the packfile to.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
     public async Task WriteAsync(IGitRepository repository, IReadOnlyList<GitHash> objects, Stream destination, CancellationToken cancellationToken)
     {
         if (repository is null)
@@ -100,3 +115,4 @@ internal sealed class GitPackBuilder
         return buffer[..index].ToArray();
     }
 }
+

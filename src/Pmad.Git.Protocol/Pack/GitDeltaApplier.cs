@@ -1,10 +1,20 @@
 using System;
+using System.IO;
 using Pmad.Git.LocalRepositories;
 
-namespace Pmad.Git.HttpServer.Pack;
+namespace Pmad.Git.Protocol.Pack;
 
-internal static class GitDeltaApplier
+/// <summary>
+/// Applies Git binary deltas to base objects.
+/// </summary>
+public static class GitDeltaApplier
 {
+    /// <summary>
+    /// Applies a delta byte sequence to the specified base object.
+    /// </summary>
+    /// <param name="baseObject">The base Git object.</param>
+    /// <param name="delta">The delta byte payload.</param>
+    /// <returns>A new <see cref="GitObjectData"/> representing the patched object.</returns>
     public static GitObjectData Apply(GitObjectData baseObject, ReadOnlySpan<byte> delta)
     {
         var patched = ApplyDeltaCore(baseObject.Content, delta);
@@ -100,3 +110,4 @@ internal static class GitDeltaApplier
         return result;
     }
 }
+

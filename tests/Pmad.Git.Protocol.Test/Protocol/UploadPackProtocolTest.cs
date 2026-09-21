@@ -1,8 +1,8 @@
 using System.Text;
-using Pmad.Git.HttpServer.Protocol;
+using Pmad.Git.Protocol;
 using Pmad.Git.LocalRepositories;
 
-namespace Pmad.Git.HttpServer.Test.Protocol;
+namespace Pmad.Git.Protocol.Test.Protocol;
 
 public sealed class UploadPackProtocolTest
 {
