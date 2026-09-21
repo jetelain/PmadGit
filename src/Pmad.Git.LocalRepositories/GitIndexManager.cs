@@ -599,9 +599,20 @@ public sealed class GitIndexManager
         return normalized;
     }
 
-    internal async Task<IDisposable> AcquireIndexMutationLockAsync(CancellationToken cancellationToken)
+    internal Task<IDisposable> AcquireIndexMutationLockAsync(CancellationToken cancellationToken)
+        => AcquireIndexMutationLockAsync(null, cancellationToken);
+
+    internal async Task<IDisposable> AcquireIndexMutationLockAsync(string? targetBranchRef, CancellationToken cancellationToken)
     {
-        var refLock = await _repository.LockManager.AcquireReferenceLockAsync("index", cancellationToken).ConfigureAwait(false);
+        var normalizedBranchRef = targetBranchRef != null
+            ? GitReferenceStore.NormalizeAbsoluteReferencePath(targetBranchRef)
+            : null;
+
+        var lockPaths = normalizedBranchRef != null
+            ? new[] { "index", normalizedBranchRef }
+            : new[] { "index" };
+
+        var refLock = await _repository.LockManager.AcquireMultipleReferenceLocksAsync(lockPaths, cancellationToken).ConfigureAwait(false);
         FileStream? lockStream = null;
         var lockFilePath = IndexPath + ".lock";
         try

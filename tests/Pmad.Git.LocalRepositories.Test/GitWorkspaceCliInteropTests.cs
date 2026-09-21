@@ -329,11 +329,17 @@ public sealed class GitWorkspaceCliInteropTests
         var commitB = await repo.ObjectStore.WriteObjectAsync(GitObjectType.Commit, payloadB);
         await repo.ReferenceStore.CreateReferenceAsync("refs/heads/feature-b", commitB, overwrite: true);
 
-        // Create merge commit with parents commitA and commitB
-        await File.WriteAllTextAsync(Path.Combine(testRepo.WorkingDirectory, "file_b.txt"), "content B");
-        await repo.StageAsync("file_b.txt");
+        // Switch to separate branch ref for Feature C
+        await File.WriteAllTextAsync(Path.Combine(testRepo.WorkingDirectory, "file_c.txt"), "content C");
+        await repo.StageAsync("file_c.txt");
+        var treeC = await repo.IndexManager.Repository.WriteTreeAsync(await GitIndex.ReadAsync(repo.IndexManager.IndexPath));
+        var payloadC = GitRepository.BuildCommitPayload(treeC, new[] { c1.Id }, new GitCommitMetadata("Feature C", TestSignature));
+        var commitC = await repo.ObjectStore.WriteObjectAsync(GitObjectType.Commit, payloadC);
+        await repo.ReferenceStore.CreateReferenceAsync("refs/heads/feature-c", commitC, overwrite: true);
+
+        // Create octopus merge commit with 3 parents: commitA, commitB, and commitC
         var mergeTree = await repo.IndexManager.Repository.WriteTreeAsync(await GitIndex.ReadAsync(repo.IndexManager.IndexPath));
-        var mergePayload = GitRepository.BuildCommitPayload(mergeTree, new[] { commitA, commitB }, new GitCommitMetadata("Merge branch feature-b", TestSignature));
+        var mergePayload = GitRepository.BuildCommitPayload(mergeTree, new[] { commitA, commitB, commitC }, new GitCommitMetadata("Octopus merge feature-b and feature-c", TestSignature));
         var mergeCommit = await repo.ObjectStore.WriteObjectAsync(GitObjectType.Commit, mergePayload);
 
         var currentBranch = await repo.ReferenceStore.GetCurrentBranchNameAsync();
@@ -344,17 +350,18 @@ public sealed class GitWorkspaceCliInteropTests
         var fsck = testRepo.RunGit("fsck --full --strict");
         Assert.DoesNotContain("error:", fsck, StringComparison.OrdinalIgnoreCase);
 
-        // Native git rev-list --parents must show 2 parents for merge commit
+        // Native git rev-list --parents must show 3 parents for octopus merge commit
         var revList = testRepo.RunGit("rev-list --parents -n 1 HEAD").Trim();
         var parts = revList.Split(' ', StringSplitOptions.RemoveEmptyEntries);
-        Assert.Equal(3, parts.Length); // HEAD commitA commitB
+        Assert.Equal(4, parts.Length); // HEAD commitA commitB commitC
         Assert.Equal(mergeCommit.ToString(), parts[0]);
         Assert.Equal(commitA.ToString(), parts[1]);
         Assert.Equal(commitB.ToString(), parts[2]);
+        Assert.Equal(commitC.ToString(), parts[3]);
 
         // Native git log --graph must succeed
-        var logGraph = testRepo.RunGit("log --graph --oneline -n 4");
-        Assert.Contains("Merge branch feature-b", logGraph);
+        var logGraph = testRepo.RunGit("log --graph --oneline -n 5");
+        Assert.Contains("Octopus merge feature-b and feature-c", logGraph);
     }
 
     [Fact]

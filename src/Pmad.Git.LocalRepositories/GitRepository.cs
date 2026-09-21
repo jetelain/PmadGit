@@ -1439,7 +1439,7 @@ public sealed class GitRepository : IGitRepository, IGitRepositoryCacheInvalidat
             var modeBytes = Encoding.ASCII.GetBytes(modeString);
             buffer.Write(modeBytes, 0, modeBytes.Length);
             buffer.WriteByte((byte)' ');
-            var nameBytes = Encoding.UTF8.GetBytes(entry.Name);
+            var nameBytes = entry.EncodedName;
             buffer.Write(nameBytes, 0, nameBytes.Length);
             buffer.WriteByte(0);
             var hashBytes = entry.Hash.ToByteArray();
@@ -1451,9 +1451,7 @@ public sealed class GitRepository : IGitRepository, IGitRepositoryCacheInvalidat
 
     internal static int CompareTreeEntries(TreeEntryData left, TreeEntryData right)
     {
-        var bytes1 = Encoding.UTF8.GetBytes(left.Name);
-        var bytes2 = Encoding.UTF8.GetBytes(right.Name);
-        return CompareTreeEntryNames(bytes1, left.Mode == DirectoryMode, bytes2, right.Mode == DirectoryMode);
+        return CompareTreeEntryNames(left.EncodedName, left.Mode == DirectoryMode, right.EncodedName, right.Mode == DirectoryMode);
     }
 
     internal static int CompareTreeEntryNames(ReadOnlySpan<byte> name1, bool isDir1, ReadOnlySpan<byte> name2, bool isDir2)

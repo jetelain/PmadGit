@@ -267,6 +267,20 @@ internal sealed class GitReferenceStore : IGitReferenceStore
         Interlocked.Exchange(ref _cache, CreateCache());
     }
 
+    /// <summary>
+    /// Writes a reference directly without acquiring a lock.
+    /// The caller must already hold the reference lock for <paramref name="referencePath"/>.
+    /// </summary>
+    internal async Task WriteReferenceWithoutLockAsync(
+        string referencePath,
+        GitHash targetCommit,
+        CancellationToken cancellationToken)
+    {
+        var normalized = NormalizeAbsoluteReferencePath(referencePath);
+        await WriteReferenceAsync(normalized, targetCommit, cancellationToken).ConfigureAwait(false);
+        Interlocked.Exchange(ref _cache, CreateCache());
+    }
+
     private async Task ValidateReferenceOldValueAsync(string normalized, GitHash? expectedOldValue, CancellationToken cancellationToken)
     {
         var currentValue = await TryResolveReferenceAsync(normalized, cancellationToken).ConfigureAwait(false);

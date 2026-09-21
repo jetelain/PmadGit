@@ -282,7 +282,8 @@ public sealed class GitRepositoryWithIndexAndWorkspace : IGitWorkspaceRepository
         bool stageAll = false,
         CancellationToken cancellationToken = default)
     {
-        using (await _indexManager.AcquireIndexMutationLockAsync(cancellationToken).ConfigureAwait(false))
+        var targetBranchRef = await GetTargetBranchRefIfAttachedAsync(cancellationToken).ConfigureAwait(false);
+        using (await _indexManager.AcquireIndexMutationLockAsync(targetBranchRef, cancellationToken).ConfigureAwait(false))
         {
             if (stageAll)
             {
@@ -304,7 +305,7 @@ public sealed class GitRepositoryWithIndexAndWorkspace : IGitWorkspaceRepository
             var payload = GitRepository.BuildCommitPayload(treeHash, parents, commitMetadata);
             var commitHash = await ObjectStore.WriteObjectAsync(GitObjectType.Commit, payload, cancellationToken).ConfigureAwait(false);
 
-            await UpdateHeadOrBranchAsync(commitHash, cancellationToken).ConfigureAwait(false);
+            await UpdateHeadOrBranchAsync(commitHash, targetBranchRef, cancellationToken).ConfigureAwait(false);
 
             // Update index stat cache for committed files
             UpdateIndexStatCache(index);
@@ -322,7 +323,8 @@ public sealed class GitRepositoryWithIndexAndWorkspace : IGitWorkspaceRepository
         bool stageAll = false,
         CancellationToken cancellationToken = default)
     {
-        using (await _indexManager.AcquireIndexMutationLockAsync(cancellationToken).ConfigureAwait(false))
+        var targetBranchRef = await GetTargetBranchRefIfAttachedAsync(cancellationToken).ConfigureAwait(false);
+        using (await _indexManager.AcquireIndexMutationLockAsync(targetBranchRef, cancellationToken).ConfigureAwait(false))
         {
             if (stageAll)
             {
@@ -349,7 +351,7 @@ public sealed class GitRepositoryWithIndexAndWorkspace : IGitWorkspaceRepository
             var payload = GitRepository.BuildCommitPayload(treeHash, headCommit.Parents, commitMetadata);
             var commitHash = await ObjectStore.WriteObjectAsync(GitObjectType.Commit, payload, cancellationToken).ConfigureAwait(false);
 
-            await UpdateHeadOrBranchAsync(commitHash, cancellationToken).ConfigureAwait(false);
+            await UpdateHeadOrBranchAsync(commitHash, targetBranchRef, cancellationToken).ConfigureAwait(false);
 
             UpdateIndexStatCache(index);
             await index.WriteAsync(_indexManager.IndexPath, HashLengthBytes, cancellationToken).ConfigureAwait(false);
@@ -365,11 +367,12 @@ public sealed class GitRepositoryWithIndexAndWorkspace : IGitWorkspaceRepository
         GitResetMode mode = GitResetMode.Mixed,
         CancellationToken cancellationToken = default)
     {
-        using (await _indexManager.AcquireIndexMutationLockAsync(cancellationToken).ConfigureAwait(false))
+        var targetBranchRef = await GetTargetBranchRefIfAttachedAsync(cancellationToken).ConfigureAwait(false);
+        using (await _indexManager.AcquireIndexMutationLockAsync(targetBranchRef, cancellationToken).ConfigureAwait(false))
         {
             var targetCommit = await GetCommitAsync(targetCommitHash.Value, cancellationToken).ConfigureAwait(false);
 
-            await UpdateHeadOrBranchAsync(targetCommitHash, cancellationToken).ConfigureAwait(false);
+            await UpdateHeadOrBranchAsync(targetCommitHash, targetBranchRef, cancellationToken).ConfigureAwait(false);
             InvalidateCaches();
 
             if (mode == GitResetMode.Soft)
@@ -404,11 +407,12 @@ public sealed class GitRepositoryWithIndexAndWorkspace : IGitWorkspaceRepository
         GitCommitMetadata? metadata = null,
         CancellationToken cancellationToken = default)
     {
-        using (await _indexManager.AcquireIndexMutationLockAsync(cancellationToken).ConfigureAwait(false))
-        {
-            var currentBranch = await ReferenceStore.GetCurrentBranchNameAsync(cancellationToken).ConfigureAwait(false)
-                ?? throw new InvalidOperationException("Cannot squash on detached HEAD.");
+        var currentBranch = await ReferenceStore.GetCurrentBranchNameAsync(cancellationToken).ConfigureAwait(false)
+            ?? throw new InvalidOperationException("Cannot squash on detached HEAD.");
+        var branchRef = $"refs/heads/{currentBranch}";
 
+        using (await _indexManager.AcquireIndexMutationLockAsync(branchRef, cancellationToken).ConfigureAwait(false))
+        {
             var headHash = await ReferenceStore.ResolveHeadAsync(cancellationToken).ConfigureAwait(false);
             if (headHash.Equals(baseCommitHash))
             {
@@ -427,7 +431,14 @@ public sealed class GitRepositoryWithIndexAndWorkspace : IGitWorkspaceRepository
             var payload = GitRepository.BuildCommitPayload(headCommit.Tree, new[] { baseCommitHash }, finalMetadata);
             var squashedHash = await ObjectStore.WriteObjectAsync(GitObjectType.Commit, payload, cancellationToken).ConfigureAwait(false);
 
-            await ReferenceStore.CreateReferenceAsync($"refs/heads/{currentBranch}", squashedHash, overwrite: true, cancellationToken).ConfigureAwait(false);
+            if (_repo.ReferenceStore is GitReferenceStore localRefStore)
+            {
+                await localRefStore.WriteReferenceWithoutLockAsync(branchRef, squashedHash, cancellationToken).ConfigureAwait(false);
+            }
+            else
+            {
+                await ReferenceStore.CreateReferenceAsync(branchRef, squashedHash, overwrite: true, cancellationToken).ConfigureAwait(false);
+            }
             InvalidateCaches();
             return squashedHash;
         }
@@ -636,18 +647,40 @@ public sealed class GitRepositoryWithIndexAndWorkspace : IGitWorkspaceRepository
         return string.Equals(currentBranch, normalized, StringComparison.Ordinal);
     }
 
-    private async Task UpdateHeadOrBranchAsync(GitHash commitHash, CancellationToken cancellationToken)
+    private async Task<string?> GetTargetBranchRefIfAttachedAsync(CancellationToken cancellationToken)
     {
         if (await ReferenceStore.IsHeadDetachedAsync(cancellationToken).ConfigureAwait(false))
+        {
+            return null;
+        }
+        var currentBranch = await ReferenceStore.GetCurrentBranchNameAsync(cancellationToken).ConfigureAwait(false);
+        return currentBranch != null ? $"refs/heads/{currentBranch}" : await GetHeadTargetRefAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task UpdateHeadOrBranchAsync(GitHash commitHash, string? branchRef, CancellationToken cancellationToken)
+    {
+        if (branchRef == null && await ReferenceStore.IsHeadDetachedAsync(cancellationToken).ConfigureAwait(false))
         {
             var headPath = Path.Combine(GitDirectory, "HEAD");
             await File.WriteAllTextAsync(headPath, commitHash.ToString() + "\n", cancellationToken).ConfigureAwait(false);
         }
         else
         {
-            var currentBranch = await ReferenceStore.GetCurrentBranchNameAsync(cancellationToken).ConfigureAwait(false);
-            var branchRef = currentBranch != null ? $"refs/heads/{currentBranch}" : await GetHeadTargetRefAsync(cancellationToken).ConfigureAwait(false);
-            await ReferenceStore.CreateReferenceAsync(branchRef, commitHash, overwrite: true, cancellationToken).ConfigureAwait(false);
+            var targetRef = branchRef;
+            if (targetRef == null)
+            {
+                var currentBranch = await ReferenceStore.GetCurrentBranchNameAsync(cancellationToken).ConfigureAwait(false);
+                targetRef = currentBranch != null ? $"refs/heads/{currentBranch}" : await GetHeadTargetRefAsync(cancellationToken).ConfigureAwait(false);
+            }
+
+            if (_repo.ReferenceStore is GitReferenceStore localRefStore)
+            {
+                await localRefStore.WriteReferenceWithoutLockAsync(targetRef, commitHash, cancellationToken).ConfigureAwait(false);
+            }
+            else
+            {
+                await ReferenceStore.CreateReferenceAsync(targetRef, commitHash, overwrite: true, cancellationToken).ConfigureAwait(false);
+            }
         }
     }
 
