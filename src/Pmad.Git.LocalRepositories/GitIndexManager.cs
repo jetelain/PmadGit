@@ -258,53 +258,58 @@ public sealed class GitIndexManager
 
         using (await AcquireIndexMutationLockAsync(cancellationToken).ConfigureAwait(false))
         {
-            var index = await GitIndex.ReadAsync(IndexPath, _repository.HashLengthBytes, cancellationToken).ConfigureAwait(false);
-
-            foreach (var path in pathsList)
-            {
-                cancellationToken.ThrowIfCancellationRequested();
-                var fullPath = Path.Combine(WorkingDirectory, path);
-
-                if (File.Exists(fullPath))
-                {
-                    var fileInfo = new FileInfo(fullPath);
-                    GitHash blobHash;
-                    var options = new FileStreamOptions
-                    {
-                        Mode = FileMode.Open,
-                        Access = FileAccess.Read,
-                        Share = FileShare.ReadWrite | FileShare.Delete,
-                        Options = FileOptions.Asynchronous | FileOptions.SequentialScan
-                    };
-
-                    await using (var stream = new FileStream(fullPath, options))
-                    {
-                        blobHash = await _repository.ObjectStore.WriteObjectAsync(
-                            GitObjectType.Blob,
-                            stream,
-                            fileInfo.Length,
-                            cancellationToken).ConfigureAwait(false);
-                    }
-
-                    var entry = GitIndexEntry.FromFileInfo(path, fileInfo, blobHash);
-                    // Clear any merge conflict stages
-                    index.Remove(path, stage: 1);
-                    index.Remove(path, stage: 2);
-                    index.Remove(path, stage: 3);
-                    index.AddOrUpdate(entry);
-                }
-                else
-                {
-                    // File deleted on disk: remove all stages from index
-                    index.Remove(path, stage: 0);
-                    index.Remove(path, stage: 1);
-                    index.Remove(path, stage: 2);
-                    index.Remove(path, stage: 3);
-                }
-            }
-
-            await index.WriteAsync(IndexPath, _repository.HashLengthBytes, cancellationToken).ConfigureAwait(false);
+            await StageCoreAsync(pathsList, cancellationToken).ConfigureAwait(false);
         }
+    }
+
+    internal async Task StageCoreAsync(IReadOnlyList<string> pathsList, CancellationToken cancellationToken)
+    {
+        var index = await GitIndex.ReadAsync(IndexPath, _repository.HashLengthBytes, cancellationToken).ConfigureAwait(false);
+
+        foreach (var path in pathsList)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var fullPath = Path.Combine(WorkingDirectory, path);
+
+            if (File.Exists(fullPath))
+            {
+                var fileInfo = new FileInfo(fullPath);
+                GitHash blobHash;
+                var options = new FileStreamOptions
+                {
+                    Mode = FileMode.Open,
+                    Access = FileAccess.Read,
+                    Share = FileShare.ReadWrite | FileShare.Delete,
+                    Options = FileOptions.Asynchronous | FileOptions.SequentialScan
+                };
+
+                await using (var stream = new FileStream(fullPath, options))
+                {
+                    blobHash = await _repository.ObjectStore.WriteObjectAsync(
+                        GitObjectType.Blob,
+                        stream,
+                        fileInfo.Length,
+                        cancellationToken).ConfigureAwait(false);
+                }
+
+                var entry = GitIndexEntry.FromFileInfo(path, fileInfo, blobHash);
+                // Clear any merge conflict stages
+                index.Remove(path, stage: 1);
+                index.Remove(path, stage: 2);
+                index.Remove(path, stage: 3);
+                index.AddOrUpdate(entry);
+            }
+            else
+            {
+                // File deleted on disk: remove all stages from index
+                index.Remove(path, stage: 0);
+                index.Remove(path, stage: 1);
+                index.Remove(path, stage: 2);
+                index.Remove(path, stage: 3);
+            }
+        }
+
+        await index.WriteAsync(IndexPath, _repository.HashLengthBytes, cancellationToken).ConfigureAwait(false);
     }
 
     /// <summary>
@@ -312,6 +317,14 @@ public sealed class GitIndexManager
     /// </summary>
     /// <param name="cancellationToken">Token used to cancel the async operation.</param>
     public async Task StageAllAsync(CancellationToken cancellationToken = default)
+    {
+        using (await AcquireIndexMutationLockAsync(cancellationToken).ConfigureAwait(false))
+        {
+            await StageAllCoreAsync(cancellationToken).ConfigureAwait(false);
+        }
+    }
+
+    internal async Task StageAllCoreAsync(CancellationToken cancellationToken)
     {
         var status = await GetStatusAsync(includeUntracked: true, includeClean: false, cancellationToken).ConfigureAwait(false);
         var pathsToStage = status.Entries
@@ -321,7 +334,7 @@ public sealed class GitIndexManager
 
         if (pathsToStage.Count > 0)
         {
-            await StageAsync(pathsToStage, cancellationToken).ConfigureAwait(false);
+            await StageCoreAsync(pathsToStage, cancellationToken).ConfigureAwait(false);
         }
     }
 
@@ -586,9 +599,20 @@ public sealed class GitIndexManager
         return normalized;
     }
 
-    private async Task<IDisposable> AcquireIndexMutationLockAsync(CancellationToken cancellationToken)
+    internal Task<IDisposable> AcquireIndexMutationLockAsync(CancellationToken cancellationToken)
+        => AcquireIndexMutationLockAsync(null, cancellationToken);
+
+    internal async Task<IDisposable> AcquireIndexMutationLockAsync(string? targetRef, CancellationToken cancellationToken)
     {
-        var refLock = await _repository.LockManager.AcquireReferenceLockAsync("index", cancellationToken).ConfigureAwait(false);
+        var normalizedRef = targetRef != null
+            ? GitReferenceStore.NormalizeReferenceOrHead(targetRef)
+            : null;
+
+        var lockPaths = normalizedRef != null
+            ? new[] { "index", normalizedRef }
+            : new[] { "index" };
+
+        var refLock = await _repository.LockManager.AcquireMultipleReferenceLocksAsync(lockPaths, cancellationToken).ConfigureAwait(false);
         FileStream? lockStream = null;
         var lockFilePath = IndexPath + ".lock";
         try

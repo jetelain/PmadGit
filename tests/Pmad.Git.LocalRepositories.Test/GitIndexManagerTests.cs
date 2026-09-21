@@ -501,6 +501,86 @@ public sealed class GitIndexManagerTests
         }
     }
 
+    [Fact]
+    public async Task UnstageAllAsync_WithStagedChanges_RestoresIndexToHeadAndPreservesWorkingTree()
+    {
+        using var testRepo = GitTestRepository.Create();
+        testRepo.Commit("Initial commit", ("file1.txt", "content 1"), ("file2.txt", "content 2"));
+
+        var repo = GitRepository.Open(testRepo.WorkingDirectory);
+        var manager = repo.IndexManager!;
+
+        // Modify file1.txt and stage it
+        await File.WriteAllTextAsync(Path.Combine(testRepo.WorkingDirectory, "file1.txt"), "modified content 1");
+        await manager.StageAsync("file1.txt");
+
+        // Add file3.txt and stage it
+        await File.WriteAllTextAsync(Path.Combine(testRepo.WorkingDirectory, "file3.txt"), "content 3");
+        await manager.StageAsync("file3.txt");
+
+        // Stage removal of file2.txt
+        File.Delete(Path.Combine(testRepo.WorkingDirectory, "file2.txt"));
+        await manager.StageAsync("file2.txt");
+
+        // Verify status shows staged changes
+        var statusBefore = await manager.GetStatusAsync();
+        Assert.Equal(GitFileStatus.StagedModified, statusBefore.FindEntry("file1.txt")!.StagedStatus);
+        Assert.Equal(GitFileStatus.StagedNew, statusBefore.FindEntry("file3.txt")!.StagedStatus);
+        Assert.Equal(GitFileStatus.StagedDeleted, statusBefore.FindEntry("file2.txt")!.StagedStatus);
+
+        // Act: unstage all
+        await manager.UnstageAllAsync();
+
+        // Assert:
+        // 1. Index matches HEAD
+        var statusAfter = await manager.GetStatusAsync();
+        var f1 = statusAfter.FindEntry("file1.txt")!;
+        Assert.Equal(GitFileStatus.Clean, f1.StagedStatus);
+        Assert.Equal(GitFileStatus.Modified, f1.WorkingTreeStatus);
+
+        var f2 = statusAfter.FindEntry("file2.txt")!;
+        Assert.Equal(GitFileStatus.Clean, f2.StagedStatus);
+        Assert.Equal(GitFileStatus.Deleted, f2.WorkingTreeStatus);
+
+        var f3 = statusAfter.FindEntry("file3.txt")!;
+        Assert.Equal(GitFileStatus.Untracked, f3.WorkingTreeStatus);
+        Assert.Equal(GitFileStatus.Clean, f3.StagedStatus);
+
+        // 2. Working tree file contents are preserved
+        Assert.Equal("modified content 1", await File.ReadAllTextAsync(Path.Combine(testRepo.WorkingDirectory, "file1.txt")));
+        Assert.Equal("content 3", await File.ReadAllTextAsync(Path.Combine(testRepo.WorkingDirectory, "file3.txt")));
+    }
+
+    [Fact]
+    public async Task UnstageAllAsync_NoHeadCommit_ClearsEntireIndex()
+    {
+        using var testRepo = GitTestRepository.Create();
+        // Delete the initial commit from GitTestRepository so HEAD is unborn
+        var repoDir = testRepo.WorkingDirectory;
+        var gitDir = Path.Combine(repoDir, ".git");
+        var headRefFile = Path.Combine(gitDir, "refs", "heads", "main");
+        if (File.Exists(headRefFile)) File.Delete(headRefFile);
+        var headRefMaster = Path.Combine(gitDir, "refs", "heads", "master");
+        if (File.Exists(headRefMaster)) File.Delete(headRefMaster);
+
+        var repo = GitRepository.Open(repoDir);
+        var manager = repo.IndexManager!;
+
+        await File.WriteAllTextAsync(Path.Combine(repoDir, "newfile.txt"), "hello");
+        await manager.StageAsync("newfile.txt");
+
+        var statusBefore = await manager.GetStatusAsync();
+        Assert.Equal(GitFileStatus.StagedNew, statusBefore.FindEntry("newfile.txt")!.StagedStatus);
+
+        // Act: unstage all
+        await manager.UnstageAllAsync();
+
+        // Assert: index is cleared, file is untracked
+        var statusAfter = await manager.GetStatusAsync();
+        Assert.Equal(GitFileStatus.Untracked, statusAfter.FindEntry("newfile.txt")!.WorkingTreeStatus);
+        Assert.Equal(GitFileStatus.Clean, statusAfter.FindEntry("newfile.txt")!.StagedStatus);
+    }
+
     private static bool TryCreateDirectoryLink(string linkPath, string targetPath)
     {
         try

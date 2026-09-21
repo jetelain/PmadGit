@@ -98,26 +98,48 @@ public static class TestHelper
     /// </summary>
     public static string RunGit(string workingDirectory, string arguments)
     {
-        var startInfo = new ProcessStartInfo("git", arguments)
+        const int maxAttempts = 3;
+        for (var attempt = 0; attempt < maxAttempts; attempt++)
         {
-            WorkingDirectory = workingDirectory,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            UseShellExecute = false,
-            CreateNoWindow = true
-        };
+            if (attempt > 0)
+            {
+                Thread.Sleep(100 * attempt);
+            }
 
-        using var process = Process.Start(startInfo) ?? throw new InvalidOperationException("Unable to start git process");
-        var output = process.StandardOutput.ReadToEnd();
-        var error = process.StandardError.ReadToEnd();
-        process.WaitForExit();
+            var startInfo = new ProcessStartInfo("git", arguments)
+            {
+                WorkingDirectory = workingDirectory,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false,
+                CreateNoWindow = true
+            };
 
-        if (process.ExitCode != 0)
-        {
+            using var process = Process.Start(startInfo) ?? throw new InvalidOperationException("Unable to start git process");
+            var output = process.StandardOutput.ReadToEnd();
+            var error = process.StandardError.ReadToEnd();
+            process.WaitForExit();
+
+            if (process.ExitCode == 0)
+            {
+                return string.IsNullOrEmpty(output) ? error : output;
+            }
+
+            var isTransient = error.Contains("Permission denied", StringComparison.OrdinalIgnoreCase) ||
+                              error.Contains("unable to create", StringComparison.OrdinalIgnoreCase) ||
+                              error.Contains("unable to write", StringComparison.OrdinalIgnoreCase) ||
+                              error.Contains("File exists", StringComparison.OrdinalIgnoreCase) ||
+                              error.Contains("locked", StringComparison.OrdinalIgnoreCase);
+
+            if (attempt < maxAttempts - 1 && isTransient)
+            {
+                continue;
+            }
+
             throw new InvalidOperationException(
                 $"git {arguments} failed with exit code {process.ExitCode}:{Environment.NewLine}{error}{Environment.NewLine}{output}");
         }
 
-        return string.IsNullOrEmpty(output) ? error : output;
+        throw new InvalidOperationException($"git {arguments} failed after {maxAttempts} attempts");
     }
 }

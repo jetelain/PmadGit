@@ -69,6 +69,11 @@ public sealed class GitIndexEntry
     public ushort Flags { get; set; }
 
     /// <summary>
+    /// Git index entry extended flags (version 3+).
+    /// </summary>
+    public ushort ExtendedFlags { get; set; }
+
+    /// <summary>
     /// Repository-relative path using '/' separators.
     /// </summary>
     public string Path { get; set; }
@@ -95,6 +100,28 @@ public sealed class GitIndexEntry
         uint uid = 0,
         uint gid = 0,
         ushort flags = 0)
+        : this(path, hash, fileMode, fileSize, mtimeSeconds, mtimeNanoseconds, ctimeSeconds, ctimeNanoseconds, dev, ino, uid, gid, flags, 0)
+    {
+    }
+
+    /// <summary>
+    /// Initializes a new instance of the <see cref="GitIndexEntry"/> class with extended flags.
+    /// </summary>
+    public GitIndexEntry(
+        string path,
+        GitHash hash,
+        int fileMode,
+        uint fileSize,
+        uint mtimeSeconds,
+        uint mtimeNanoseconds,
+        uint ctimeSeconds,
+        uint ctimeNanoseconds,
+        uint dev,
+        uint ino,
+        uint uid,
+        uint gid,
+        ushort flags,
+        ushort extendedFlags)
     {
         Path = path?.Replace('\\', '/') ?? throw new ArgumentNullException(nameof(path));
         Hash = hash;
@@ -109,6 +136,7 @@ public sealed class GitIndexEntry
         Uid = uid;
         Gid = gid;
         Flags = flags;
+        ExtendedFlags = extendedFlags;
     }
 
     /// <summary>

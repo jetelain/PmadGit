@@ -85,26 +85,7 @@ public sealed class GitTestRepository : IDisposable
 
     public string RunGit(string arguments)
     {
-        var startInfo = new ProcessStartInfo("git", arguments)
-        {
-            WorkingDirectory = WorkingDirectory,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            UseShellExecute = false,
-            CreateNoWindow = true
-        };
-
-        using var process = Process.Start(startInfo) ?? throw new InvalidOperationException("Unable to start git process");
-        var output = process.StandardOutput.ReadToEnd();
-        var error = process.StandardError.ReadToEnd();
-        process.WaitForExit();
-
-        if (process.ExitCode != 0)
-        {
-            throw new InvalidOperationException($"git {arguments} failed with exit code {process.ExitCode}:{Environment.NewLine}{error}");
-        }
-
-        return string.IsNullOrEmpty(output) ? error : output;
+        return TestHelper.RunGit(WorkingDirectory, arguments);
     }
 
     public void Dispose()

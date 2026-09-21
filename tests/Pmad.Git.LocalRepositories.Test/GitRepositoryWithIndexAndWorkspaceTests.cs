@@ -306,6 +306,44 @@ public sealed class GitRepositoryWithIndexAndWorkspaceTests
     }
 
     [Fact]
+    public async Task CommitAsync_InDetachedHead_SynchronizesOnHeadLock()
+    {
+        using var testRepo = GitTestRepository.Create();
+        testRepo.Commit("Initial", ("file.txt", "initial"));
+
+        var initialHash = testRepo.RunGit("rev-parse HEAD").Trim();
+        testRepo.RunGit($"checkout {initialHash}");
+
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+        Assert.True(await repo.IsHeadDetachedAsync());
+
+        await File.WriteAllTextAsync(Path.Combine(testRepo.WorkingDirectory, "file.txt"), "detached change");
+        await repo.StageAsync("file.txt");
+
+        // Hold the HEAD reference lock
+        var headLock = await repo.LockManager.AcquireReferenceLockAsync("HEAD");
+
+        // Attempting to commit while HEAD lock is held must block
+        var commitTask = Task.Run(async () =>
+        {
+            return await repo.CommitAsync("Detached commit under lock", new GitCommitMetadata("Detached commit under lock", TestSignature));
+        });
+
+        // Ensure commitTask is waiting on HEAD lock
+        var completed = await Task.WhenAny(commitTask, Task.Delay(100));
+        Assert.NotEqual(commitTask, completed);
+
+        // Release the HEAD lock
+        headLock.Dispose();
+
+        // Commit must now finish successfully
+        var commitHash = await commitTask;
+        var headCommit = await repo.GetCommitAsync("HEAD");
+        Assert.Equal(commitHash, headCommit.Id);
+        Assert.Equal("Detached commit under lock", headCommit.Message);
+    }
+
+    [Fact]
     public async Task RevertAsync_InDirtyWorkspace_ThrowsInvalidOperationException()
     {
         using var testRepo = GitTestRepository.Create();

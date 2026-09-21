@@ -267,6 +267,31 @@ internal sealed class GitReferenceStore : IGitReferenceStore
         Interlocked.Exchange(ref _cache, CreateCache());
     }
 
+    /// <summary>
+    /// Writes a reference directly without acquiring a lock.
+    /// The caller must already hold the reference lock for <paramref name="referencePath"/>.
+    /// </summary>
+    internal async Task WriteReferenceWithoutLockAsync(
+        string referencePath,
+        GitHash targetCommit,
+        CancellationToken cancellationToken)
+    {
+        var trimmed = referencePath?.Replace('\\', '/').Trim();
+        if (string.Equals(trimmed, "HEAD", StringComparison.OrdinalIgnoreCase))
+        {
+            var headPath = Path.Combine(_gitDirectory, "HEAD");
+            var tempPath = Path.Combine(_gitDirectory, $"HEAD.{Guid.NewGuid():N}.tmp");
+            await File.WriteAllTextAsync(tempPath, targetCommit.ToString() + "\n", cancellationToken).ConfigureAwait(false);
+            File.Move(tempPath, headPath, overwrite: true);
+            Interlocked.Exchange(ref _cache, CreateCache());
+            return;
+        }
+
+        var normalized = NormalizeAbsoluteReferencePath(referencePath!);
+        await WriteReferenceAsync(normalized, targetCommit, cancellationToken).ConfigureAwait(false);
+        Interlocked.Exchange(ref _cache, CreateCache());
+    }
+
     private async Task ValidateReferenceOldValueAsync(string normalized, GitHash? expectedOldValue, CancellationToken cancellationToken)
     {
         var currentValue = await TryResolveReferenceAsync(normalized, cancellationToken).ConfigureAwait(false);
@@ -423,6 +448,22 @@ internal sealed class GitReferenceStore : IGitReferenceStore
 
     private Lazy<Task<Dictionary<string, GitHash>>> CreateCache()
         => new(LoadReferencesAsync, LazyThreadSafetyMode.ExecutionAndPublication);
+
+    internal static string NormalizeReferenceOrHead(string referencePath)
+    {
+        if (string.IsNullOrWhiteSpace(referencePath))
+        {
+            throw new ArgumentException("Reference path cannot be empty", nameof(referencePath));
+        }
+
+        var trimmed = referencePath.Replace('\\', '/').Trim();
+        if (string.Equals(trimmed, "HEAD", StringComparison.OrdinalIgnoreCase))
+        {
+            return "HEAD";
+        }
+
+        return NormalizeAbsoluteReferencePath(trimmed);
+    }
 
     internal static string NormalizeAbsoluteReferencePath(string referencePath)
     {

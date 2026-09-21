@@ -7,14 +7,24 @@ using Pmad.Git.LocalRepositories.Utilities;
 namespace Pmad.Git.LocalRepositories;
 
 /// <summary>
-/// Reads and writes the Git index file (.git/index) using the standard DIRC v2 format.
+/// Reads and writes the Git index file (.git/index) using the standard DIRC format (versions 2 and 3).
 /// </summary>
 public sealed class GitIndex
 {
     private static readonly byte[] Magic = [(byte)'D', (byte)'I', (byte)'R', (byte)'C'];
 
     /// <summary>
-    /// The default and supported Git index format version (version 2).
+    /// The minimum supported Git index format version (version 2).
+    /// </summary>
+    public const int MinSupportedVersion = 2;
+
+    /// <summary>
+    /// The maximum supported Git index format version (version 3).
+    /// </summary>
+    public const int MaxSupportedVersion = 3;
+
+    /// <summary>
+    /// The default Git index format version (version 2).
     /// </summary>
     public const int SupportedVersion = 2;
 
@@ -126,9 +136,9 @@ public sealed class GitIndex
         }
 
         var version = (int)BinaryPrimitives.ReadUInt32BigEndian(data.Slice(4, 4));
-        if (version != 2 && version != 3)
+        if (version < MinSupportedVersion || version > MaxSupportedVersion)
         {
-            throw new NotSupportedException($"Index version {version} is not supported. Only versions 2 and 3 are supported.");
+            throw new NotSupportedException($"Index version {version} is not supported. Only versions {MinSupportedVersion} and {MaxSupportedVersion} are supported.");
         }
 
         var entryCount = (int)BinaryPrimitives.ReadUInt32BigEndian(data.Slice(8, 4));
@@ -141,45 +151,69 @@ public sealed class GitIndex
         {
             if (offset + fixedHeaderLength > data.Length - hashLengthBytes)
             {
-                throw new InvalidDataException($"Unexpected end of file while reading entry {i}.");
+                throw new InvalidDataException("Unexpected end of index data while reading entry header.");
             }
 
-            var ctimeSec = BinaryPrimitives.ReadUInt32BigEndian(data.Slice(offset, 4));
-            var ctimeNano = BinaryPrimitives.ReadUInt32BigEndian(data.Slice(offset + 4, 4));
-            var mtimeSec = BinaryPrimitives.ReadUInt32BigEndian(data.Slice(offset + 8, 4));
-            var mtimeNano = BinaryPrimitives.ReadUInt32BigEndian(data.Slice(offset + 12, 4));
-            var dev = BinaryPrimitives.ReadUInt32BigEndian(data.Slice(offset + 16, 4));
-            var ino = BinaryPrimitives.ReadUInt32BigEndian(data.Slice(offset + 20, 4));
-            var fileMode = (int)BinaryPrimitives.ReadUInt32BigEndian(data.Slice(offset + 24, 4));
-            var uid = BinaryPrimitives.ReadUInt32BigEndian(data.Slice(offset + 28, 4));
-            var gid = BinaryPrimitives.ReadUInt32BigEndian(data.Slice(offset + 32, 4));
-            var fileSize = BinaryPrimitives.ReadUInt32BigEndian(data.Slice(offset + 36, 4));
-            var hash = GitHash.FromBytes(data.Slice(offset + 40, hashLengthBytes));
-            var flags = BinaryPrimitives.ReadUInt16BigEndian(data.Slice(offset + 40 + hashLengthBytes, 2));
+            var entrySpan = data.Slice(offset);
+            var ctimeSec = BinaryPrimitives.ReadUInt32BigEndian(entrySpan.Slice(0, 4));
+            var ctimeNano = BinaryPrimitives.ReadUInt32BigEndian(entrySpan.Slice(4, 4));
+            var mtimeSec = BinaryPrimitives.ReadUInt32BigEndian(entrySpan.Slice(8, 4));
+            var mtimeNano = BinaryPrimitives.ReadUInt32BigEndian(entrySpan.Slice(12, 4));
+            var dev = BinaryPrimitives.ReadUInt32BigEndian(entrySpan.Slice(16, 4));
+            var ino = BinaryPrimitives.ReadUInt32BigEndian(entrySpan.Slice(20, 4));
+            var mode = (int)BinaryPrimitives.ReadUInt32BigEndian(entrySpan.Slice(24, 4));
+            var uid = BinaryPrimitives.ReadUInt32BigEndian(entrySpan.Slice(28, 4));
+            var gid = BinaryPrimitives.ReadUInt32BigEndian(entrySpan.Slice(32, 4));
+            var fileSize = BinaryPrimitives.ReadUInt32BigEndian(entrySpan.Slice(36, 4));
 
-            // Path starts immediately after fixed header
-            var pathStart = offset + fixedHeaderLength;
-            var pathEnd = pathStart;
-            while (pathEnd < data.Length - hashLengthBytes && data[pathEnd] != 0)
+            var hash = GitHash.FromBytes(entrySpan.Slice(40, hashLengthBytes));
+            var flags = BinaryPrimitives.ReadUInt16BigEndian(entrySpan.Slice(40 + hashLengthBytes, 2));
+
+            var isExtended = (flags & 0x4000) != 0;
+
+            var currentHeaderLength = fixedHeaderLength;
+            ushort extendedFlags = 0;
+            if (isExtended)
             {
-                pathEnd++;
+                if (version < 3)
+                {
+                    throw new InvalidDataException("Extended flags are only valid in index version 3 or higher.");
+                }
+                if (offset + fixedHeaderLength + 2 > data.Length - hashLengthBytes)
+                {
+                    throw new InvalidDataException("Unexpected end of index data while reading extended flags.");
+                }
+                extendedFlags = BinaryPrimitives.ReadUInt16BigEndian(entrySpan.Slice(fixedHeaderLength, 2));
+                currentHeaderLength += 2;
             }
 
-            if (pathEnd >= data.Length - hashLengthBytes)
+            var pathOffset = offset + currentHeaderLength;
+            var maxPathLength = data.Length - hashLengthBytes - pathOffset;
+            if (maxPathLength < 1)
             {
-                throw new InvalidDataException($"Unterminated path string in index entry {i}.");
+                throw new InvalidDataException("Unexpected end of index data while reading entry path.");
             }
 
-            var pathLength = pathEnd - pathStart;
-            var path = Encoding.UTF8.GetString(data.Slice(pathStart, pathLength));
+            var nulPos = data.Slice(pathOffset, maxPathLength).IndexOf((byte)0);
+            if (nulPos < 0)
+            {
+                throw new InvalidDataException("Index entry path is not null-terminated.");
+            }
 
-            var entrySize = (fixedHeaderLength + pathLength + 8) & ~7;
-            offset += entrySize;
+            var path = Encoding.UTF8.GetString(data.Slice(pathOffset, nulPos));
+            var entryLength = currentHeaderLength + nulPos + 1;
+            // Pad to 8-byte boundary relative to entry start
+            var paddedLength = (entryLength + 7) & ~7;
+            offset += paddedLength;
+            if (offset > data.Length - hashLengthBytes)
+            {
+                throw new InvalidDataException("Unexpected end of index data after entry padding.");
+            }
 
             index.Entries.Add(new GitIndexEntry(
                 path,
                 hash,
-                fileMode,
+                mode,
                 fileSize,
                 mtimeSec,
                 mtimeNano,
@@ -189,14 +223,15 @@ public sealed class GitIndex
                 ino,
                 uid,
                 gid,
-                flags));
+                flags,
+                extendedFlags));
         }
 
         return index;
     }
 
     /// <summary>
-    /// Serializes the index to a byte array using standard DIRC v2 format with trailing checksum.
+    /// Serializes the index to a byte array using standard DIRC format (version 2 or 3) with trailing checksum.
     /// </summary>
     /// <param name="hashLengthBytes">Hash length in bytes (20 for SHA-1, 32 for SHA-256).</param>
     /// <returns>Byte array representing the binary index file.</returns>
@@ -214,16 +249,24 @@ public sealed class GitIndex
         byte[] checksum;
         using (var hashingStream = new HashingWriteStream(ms, algorithmName, leaveOpen: true))
         {
+            // Check if any entry requires extended flags (version 3)
+            var hasExtendedEntries = Entries.Any(e => (e.Flags & 0x4000) != 0 || e.ExtendedFlags != 0);
+            var effectiveVersion = (Version >= 3 || hasExtendedEntries) ? Math.Max(Version, 3) : Version;
+            if (effectiveVersion < MinSupportedVersion || effectiveVersion > MaxSupportedVersion)
+            {
+                throw new NotSupportedException($"Index version {effectiveVersion} is not supported. Only versions {MinSupportedVersion} and {MaxSupportedVersion} are supported.");
+            }
+
             // Write 12-byte header
             Span<byte> header = stackalloc byte[12];
             Magic.CopyTo(header);
-            BinaryPrimitives.WriteUInt32BigEndian(header.Slice(4, 4), (uint)Version);
+            BinaryPrimitives.WriteUInt32BigEndian(header.Slice(4, 4), (uint)effectiveVersion);
             BinaryPrimitives.WriteUInt32BigEndian(header.Slice(8, 4), (uint)Entries.Count);
             hashingStream.Write(header);
 
             // Write entries
             var fixedHeaderLength = 40 + hashLengthBytes + 2;
-            var entryHeader = new byte[fixedHeaderLength];
+            var entryHeader = new byte[fixedHeaderLength + 2];
 
             foreach (var entry in Entries)
             {
@@ -250,15 +293,29 @@ public sealed class GitIndex
 
                 var pathBytes = Encoding.UTF8.GetBytes(entry.Path);
                 var pathLen = (ushort)Math.Min(pathBytes.Length, 0xFFF);
-                var flags = (ushort)((entry.Stage & 0x3) << 12 | pathLen);
+                var isExtended = effectiveVersion >= 3 && ((entry.Flags & 0x4000) != 0 || entry.ExtendedFlags != 0);
+
+                var flags = (ushort)((entry.Flags & 0x8000) | ((entry.Stage & 0x3) << 12) | pathLen);
+                if (isExtended)
+                {
+                    flags |= 0x4000;
+                }
+
                 BinaryPrimitives.WriteUInt16BigEndian(entryHeader.AsSpan(40 + hashLengthBytes, 2), flags);
 
-                hashingStream.Write(entryHeader, 0, entryHeader.Length);
+                var currentHeaderLength = fixedHeaderLength;
+                if (isExtended)
+                {
+                    BinaryPrimitives.WriteUInt16BigEndian(entryHeader.AsSpan(fixedHeaderLength, 2), entry.ExtendedFlags);
+                    currentHeaderLength += 2;
+                }
+
+                hashingStream.Write(entryHeader, 0, currentHeaderLength);
                 hashingStream.Write(pathBytes, 0, pathBytes.Length);
 
-                // Padding to 8-byte boundary
-                var totalLen = (fixedHeaderLength + pathBytes.Length + 8) & ~7;
-                var padLen = totalLen - (fixedHeaderLength + pathBytes.Length);
+                // Padding to 8-byte boundary relative to entry start
+                var totalLen = (currentHeaderLength + pathBytes.Length + 8) & ~7;
+                var padLen = totalLen - (currentHeaderLength + pathBytes.Length);
                 if (padLen > 0)
                 {
                     var pad = new byte[padLen]; // All zeros
@@ -292,7 +349,7 @@ public sealed class GitIndex
     }
 
     /// <summary>
-    /// Writes the index to disk using the standard DIRC v2 format with trailing checksum.
+    /// Writes the index to disk using the standard DIRC format (version 2 or 3) with trailing checksum.
     /// Atomically replaces the file if it already exists.
     /// </summary>
     /// <param name="indexPath">Absolute path to the destination index file.</param>

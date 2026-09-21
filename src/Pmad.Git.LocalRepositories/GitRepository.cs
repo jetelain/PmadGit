@@ -1430,7 +1430,7 @@ public sealed class GitRepository : IGitRepository, IGitRepositoryCacheInvalidat
             entries.Add(new TreeEntryData(name, leaf.Mode, leaf.Hash));
         }
 
-        entries.Sort((left, right) => string.CompareOrdinal(left.Name, right.Name));
+        entries.Sort(CompareTreeEntries);
 
         using var buffer = new MemoryStream();
         foreach (var entry in entries)
@@ -1439,7 +1439,7 @@ public sealed class GitRepository : IGitRepository, IGitRepositoryCacheInvalidat
             var modeBytes = Encoding.ASCII.GetBytes(modeString);
             buffer.Write(modeBytes, 0, modeBytes.Length);
             buffer.WriteByte((byte)' ');
-            var nameBytes = Encoding.UTF8.GetBytes(entry.Name);
+            var nameBytes = entry.EncodedName;
             buffer.Write(nameBytes, 0, nameBytes.Length);
             buffer.WriteByte(0);
             var hashBytes = entry.Hash.ToByteArray();
@@ -1447,6 +1447,30 @@ public sealed class GitRepository : IGitRepository, IGitRepositoryCacheInvalidat
         }
 
         return await _objectStore.WriteObjectAsync(GitObjectType.Tree, buffer.ToArray(), cancellationToken).ConfigureAwait(false);
+    }
+
+    internal static int CompareTreeEntries(TreeEntryData left, TreeEntryData right)
+    {
+        return CompareTreeEntryNames(left.EncodedName, left.Mode == DirectoryMode, right.EncodedName, right.Mode == DirectoryMode);
+    }
+
+    internal static int CompareTreeEntryNames(ReadOnlySpan<byte> name1, bool isDir1, ReadOnlySpan<byte> name2, bool isDir2)
+    {
+        var minLen = Math.Min(name1.Length, name2.Length);
+        for (var i = 0; i < minLen; i++)
+        {
+            var b1 = name1[i];
+            var b2 = name2[i];
+            if (b1 != b2)
+            {
+                return b1.CompareTo(b2);
+            }
+        }
+
+        var c1 = name1.Length > minLen ? name1[minLen] : (isDir1 ? (byte)'/' : (byte)0);
+        var c2 = name2.Length > minLen ? name2[minLen] : (isDir2 ? (byte)'/' : (byte)0);
+
+        return c1.CompareTo(c2);
     }
 
     internal static byte[] BuildCommitPayload(GitHash treeHash, IEnumerable<GitHash> parents, GitCommitMetadata metadata)

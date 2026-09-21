@@ -34,6 +34,11 @@ public sealed class GitRepositoryLockManager : IGitRepositoryLockManager
     /// <param name="referencePath">Fully qualified reference path (e.g., refs/heads/main).</param>
     /// <param name="cancellationToken">Token used to cancel the async operation.</param>
     /// <returns>A disposable lock that must be released after the operation completes.</returns>
+    /// <remarks>
+    /// Reentrant lock acquisition is prohibited. Callers requiring locks on multiple references
+    /// concurrently must use <see cref="AcquireMultipleReferenceLocksAsync"/> to acquire them
+    /// together in a single operation, avoiding deadlocks with <see cref="LockAllAsync"/>.
+    /// </remarks>
     public async Task<IDisposable> AcquireReferenceLockAsync(string referencePath, CancellationToken cancellationToken = default)
     {
         if (referencePath is null)
