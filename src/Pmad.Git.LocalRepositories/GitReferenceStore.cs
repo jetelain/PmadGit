@@ -229,7 +229,7 @@ internal sealed class GitReferenceStore : IGitReferenceStore
         var normalizedOldBranch = oldRef["refs/heads/".Length..];
         var normalizedNewBranch = newRef["refs/heads/".Length..];
 
-        using (await _lockManager.AcquireMultipleReferenceLocksAsync(new[] { oldRef, newRef, "HEAD", "packed-refs" }, cancellationToken).ConfigureAwait(false))
+        using (await _lockManager.LockAllAsync(cancellationToken).ConfigureAwait(false))
         {
             var targetCommit = await TryResolveReferenceAsync(oldRef, cancellationToken).ConfigureAwait(false);
             if (!targetCommit.HasValue)
@@ -279,7 +279,7 @@ internal sealed class GitReferenceStore : IGitReferenceStore
         var refPath = NormalizeBranchRef(branchName);
         var normalizedBranch = refPath["refs/heads/".Length..];
 
-        using (await _lockManager.AcquireMultipleReferenceLocksAsync(new[] { refPath, "HEAD", "packed-refs" }, cancellationToken).ConfigureAwait(false))
+        using (await _lockManager.LockAllAsync(cancellationToken).ConfigureAwait(false))
         {
             var currentBranch = await GetCurrentBranchNameAsync(cancellationToken).ConfigureAwait(false);
             if (string.Equals(currentBranch, normalizedBranch, StringComparison.Ordinal))

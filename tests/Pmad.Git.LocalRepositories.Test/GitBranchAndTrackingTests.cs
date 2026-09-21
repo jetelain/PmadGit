@@ -254,76 +254,210 @@ public sealed class GitBranchAndTrackingTests
         Assert.Equal(0, status.BehindCount);
     }
 
+    private static readonly System.Threading.SemaphoreSlim _environmentLock = new(1, 1);
+
     [Fact]
     public async Task GetConfigAsync_ResolvesEffectiveConfig_LocalOverridesGlobal()
     {
-        using var repo = GitTestRepository.Create();
-        var git = GitRepository.Open(repo.WorkingDirectory);
-
-        var tempGlobal = Path.Combine(Path.GetTempPath(), Path.GetRandomFileName() + ".gitconfig");
-        var prevEnv = Environment.GetEnvironmentVariable("GIT_CONFIG_GLOBAL");
+        await _environmentLock.WaitAsync();
         try
         {
-            await File.WriteAllTextAsync(tempGlobal, "[test]\n\tscope = from-global\n\tglobalonly = true\n");
-            Environment.SetEnvironmentVariable("GIT_CONFIG_GLOBAL", tempGlobal);
+            using var repo = GitTestRepository.Create();
+            var git = GitRepository.Open(repo.WorkingDirectory);
 
-            // 1. Read global value through effective config
-            var globalOnlyVal = await git.GetConfigAsync("test.globalonly");
-            Assert.Equal("true", globalOnlyVal);
+            var tempGlobal = Path.Combine(Path.GetTempPath(), Path.GetRandomFileName() + ".gitconfig");
+            var prevEnv = Environment.GetEnvironmentVariable("GIT_CONFIG_GLOBAL");
+            try
+            {
+                await File.WriteAllTextAsync(tempGlobal, "[test]\n\tscope = from-global\n\tglobalonly = true\n");
+                Environment.SetEnvironmentVariable("GIT_CONFIG_GLOBAL", tempGlobal);
 
-            var scopeVal = await git.GetConfigAsync("test.scope");
-            Assert.Equal("from-global", scopeVal);
+                // 1. Read global value through effective config
+                var globalOnlyVal = await git.GetConfigAsync("test.globalonly");
+                Assert.Equal("true", globalOnlyVal);
 
-            // 2. Set local value in repository - overrides global
-            await git.SetConfigAsync("test.scope", "from-local");
+                var scopeVal = await git.GetConfigAsync("test.scope");
+                Assert.Equal("from-global", scopeVal);
 
-            var effectiveScope = await git.GetConfigAsync("test.scope");
-            Assert.Equal("from-local", effectiveScope);
+                // 2. Set local value in repository - overrides global
+                await git.SetConfigAsync("test.scope", "from-local");
 
-            // 3. Explicit global read still gets global value
-            var explicitGlobalScope = await git.GetConfigAsync("test.scope", global: true);
-            Assert.Equal("from-global", explicitGlobalScope);
+                var effectiveScope = await git.GetConfigAsync("test.scope");
+                Assert.Equal("from-local", effectiveScope);
+
+                // 3. Explicit global read still gets global value
+                var explicitGlobalScope = await git.GetConfigAsync("test.scope", global: true);
+                Assert.Equal("from-global", explicitGlobalScope);
+            }
+            finally
+            {
+                Environment.SetEnvironmentVariable("GIT_CONFIG_GLOBAL", prevEnv);
+                if (File.Exists(tempGlobal))
+                {
+                    File.Delete(tempGlobal);
+                }
+            }
         }
         finally
         {
-            Environment.SetEnvironmentVariable("GIT_CONFIG_GLOBAL", prevEnv);
-            if (File.Exists(tempGlobal))
-            {
-                File.Delete(tempGlobal);
-            }
+            _environmentLock.Release();
         }
     }
 
     [Fact]
     public async Task GetConfigAsync_GlobalRespectsEnvironmentVariable()
     {
-        using var repo = GitTestRepository.Create();
-        var git = GitRepository.Open(repo.WorkingDirectory);
-
-        var tempGlobal = Path.Combine(Path.GetTempPath(), Path.GetRandomFileName() + ".gitconfig");
-        var prevEnv = Environment.GetEnvironmentVariable("GIT_CONFIG_GLOBAL");
+        await _environmentLock.WaitAsync();
         try
         {
-            await File.WriteAllTextAsync(tempGlobal, "[user]\n\tname = CustomGlobalUser\n");
-            Environment.SetEnvironmentVariable("GIT_CONFIG_GLOBAL", tempGlobal);
+            using var repo = GitTestRepository.Create();
+            var git = GitRepository.Open(repo.WorkingDirectory);
 
-            var name = await git.GetConfigAsync("user.name", global: true);
-            Assert.Equal("CustomGlobalUser", name);
+            var tempGlobal = Path.Combine(Path.GetTempPath(), Path.GetRandomFileName() + ".gitconfig");
+            var prevEnv = Environment.GetEnvironmentVariable("GIT_CONFIG_GLOBAL");
+            try
+            {
+                await File.WriteAllTextAsync(tempGlobal, "[user]\n\tname = CustomGlobalUser\n");
+                Environment.SetEnvironmentVariable("GIT_CONFIG_GLOBAL", tempGlobal);
 
-            await git.SetConfigAsync("user.email", "custom@example.com", global: true);
-            var email = await git.GetConfigAsync("user.email", global: true);
-            Assert.Equal("custom@example.com", email);
+                var name = await git.GetConfigAsync("user.name", global: true);
+                Assert.Equal("CustomGlobalUser", name);
 
-            var fileContent = await File.ReadAllTextAsync(tempGlobal);
-            Assert.Contains("email = custom@example.com", fileContent);
+                await git.SetConfigAsync("user.email", "custom@example.com", global: true);
+                var email = await git.GetConfigAsync("user.email", global: true);
+                Assert.Equal("custom@example.com", email);
+
+                var fileContent = await File.ReadAllTextAsync(tempGlobal);
+                Assert.Contains("email = custom@example.com", fileContent);
+            }
+            finally
+            {
+                Environment.SetEnvironmentVariable("GIT_CONFIG_GLOBAL", prevEnv);
+                if (File.Exists(tempGlobal))
+                {
+                    File.Delete(tempGlobal);
+                }
+            }
         }
         finally
         {
-            Environment.SetEnvironmentVariable("GIT_CONFIG_GLOBAL", prevEnv);
-            if (File.Exists(tempGlobal))
+            _environmentLock.Release();
+        }
+    }
+
+    [Fact]
+    public async Task GetConfigAsync_GlobalMergesXdgAndUserGitConfig_WithUserPrecedence()
+    {
+        await _environmentLock.WaitAsync();
+        try
+        {
+            var tempDir = Path.Combine(Path.GetTempPath(), Path.GetRandomFileName());
+            var homeDir = Path.Combine(tempDir, "home");
+            var xdgDir = Path.Combine(tempDir, "xdg");
+            Directory.CreateDirectory(homeDir);
+            Directory.CreateDirectory(Path.Combine(xdgDir, "git"));
+
+            var xdgConfigFile = Path.Combine(xdgDir, "git", "config");
+            var userConfigFile = Path.Combine(homeDir, ".gitconfig");
+
+            await File.WriteAllTextAsync(xdgConfigFile, "[globaltest]\n\tfromxdg = true\n\tcommon = xdg_value\n");
+            await File.WriteAllTextAsync(userConfigFile, "[globaltest]\n\tfromuser = true\n\tcommon = user_value\n");
+
+            var prevGlobal = Environment.GetEnvironmentVariable("GIT_CONFIG_GLOBAL");
+            var prevXdg = Environment.GetEnvironmentVariable("XDG_CONFIG_HOME");
+            var prevHome = Environment.GetEnvironmentVariable("HOME");
+
+            try
             {
-                File.Delete(tempGlobal);
+                Environment.SetEnvironmentVariable("GIT_CONFIG_GLOBAL", null);
+                Environment.SetEnvironmentVariable("XDG_CONFIG_HOME", xdgDir);
+                Environment.SetEnvironmentVariable("HOME", homeDir);
+
+                using var repo = GitTestRepository.Create();
+                var git = GitRepository.Open(repo.WorkingDirectory);
+
+                // Both files are read in global scope
+                var xdgVal = await git.GetConfigAsync("globaltest.fromxdg", global: true);
+                Assert.Equal("true", xdgVal);
+
+                var userVal = await git.GetConfigAsync("globaltest.fromuser", global: true);
+                Assert.Equal("true", userVal);
+
+                // ~/.gitconfig takes precedence over XDG config file
+                var commonVal = await git.GetConfigAsync("globaltest.common", global: true);
+                Assert.Equal("user_value", commonVal);
+
+                // Effective config also sees both
+                Assert.Equal("true", await git.GetConfigAsync("globaltest.fromxdg"));
+                Assert.Equal("user_value", await git.GetConfigAsync("globaltest.common"));
             }
+            finally
+            {
+                Environment.SetEnvironmentVariable("GIT_CONFIG_GLOBAL", prevGlobal);
+                Environment.SetEnvironmentVariable("XDG_CONFIG_HOME", prevXdg);
+                Environment.SetEnvironmentVariable("HOME", prevHome);
+
+                if (Directory.Exists(tempDir))
+                {
+                    Directory.Delete(tempDir, true);
+                }
+            }
+        }
+        finally
+        {
+            _environmentLock.Release();
+        }
+    }
+
+    [Fact]
+    public async Task SetConfigAsync_GlobalConcurrentWrites_DoNotOverwriteEachOther()
+    {
+        await _environmentLock.WaitAsync();
+        try
+        {
+            var tempGlobal = Path.Combine(Path.GetTempPath(), Path.GetRandomFileName() + ".gitconfig");
+            var prevGlobal = Environment.GetEnvironmentVariable("GIT_CONFIG_GLOBAL");
+            try
+            {
+                await File.WriteAllTextAsync(tempGlobal, "[initial]\n\tkey = val\n");
+                Environment.SetEnvironmentVariable("GIT_CONFIG_GLOBAL", tempGlobal);
+
+                using var repo1 = GitTestRepository.Create();
+                using var repo2 = GitTestRepository.Create();
+                var git1 = GitRepository.Open(repo1.WorkingDirectory);
+                var git2 = GitRepository.Open(repo2.WorkingDirectory);
+
+                // Perform 10 concurrent writes to global config across different repo instances
+                var tasks = new Task[10];
+                for (var i = 0; i < 10; i++)
+                {
+                    var index = i;
+                    var repo = (index % 2 == 0) ? git1 : git2;
+                    tasks[i] = Task.Run(async () =>
+                    {
+                        await repo.SetConfigAsync($"concurrent.key{index}", $"value{index}", global: true);
+                    });
+                }
+                await Task.WhenAll(tasks);
+
+                for (var i = 0; i < 10; i++)
+                {
+                    var val = await git1.GetConfigAsync($"concurrent.key{i}", global: true);
+                    Assert.Equal($"value{i}", val);
+                }
+            }
+            finally
+            {
+                Environment.SetEnvironmentVariable("GIT_CONFIG_GLOBAL", prevGlobal);
+                if (File.Exists(tempGlobal))
+                {
+                    File.Delete(tempGlobal);
+                }
+            }
+        }
+        finally
+        {
+            _environmentLock.Release();
         }
     }
 }

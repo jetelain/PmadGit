@@ -1853,17 +1853,22 @@ public sealed class GitRepository : IGitRepository, IGitRepositoryCacheInvalidat
     {
         if (global)
         {
-            var globalPath = GitConfigEnvironment.GetGlobalConfigPath();
-            if (!File.Exists(globalPath))
+            foreach (var globalPath in GitConfigEnvironment.GetGlobalConfigPaths())
             {
-                return null;
+                if (File.Exists(globalPath))
+                {
+                    var globalConfig = await GitConfigFile.ReadWithIncludesAsync(globalPath, cancellationToken).ConfigureAwait(false);
+                    var val = globalConfig.GetValue(key);
+                    if (val != null)
+                    {
+                        return val;
+                    }
+                }
             }
-
-            var globalConfig = await GitConfigFile.ReadWithIncludesAsync(globalPath, cancellationToken).ConfigureAwait(false);
-            return globalConfig.GetValue(key);
+            return null;
         }
 
-        // Effective repository configuration: local -> global -> system
+        // Effective repository configuration: local -> global files -> system
         var localPath = Path.Combine(GitDirectory, "config");
         if (File.Exists(localPath))
         {
@@ -1875,14 +1880,16 @@ public sealed class GitRepository : IGitRepository, IGitRepositoryCacheInvalidat
             }
         }
 
-        var envGlobalPath = GitConfigEnvironment.GetGlobalConfigPath();
-        if (File.Exists(envGlobalPath))
+        foreach (var globalPath in GitConfigEnvironment.GetGlobalConfigPaths())
         {
-            var globalConfig = await GitConfigFile.ReadWithIncludesAsync(envGlobalPath, cancellationToken).ConfigureAwait(false);
-            var globalValue = globalConfig.GetValue(key);
-            if (globalValue != null)
+            if (File.Exists(globalPath))
             {
-                return globalValue;
+                var globalConfig = await GitConfigFile.ReadWithIncludesAsync(globalPath, cancellationToken).ConfigureAwait(false);
+                var globalValue = globalConfig.GetValue(key);
+                if (globalValue != null)
+                {
+                    return globalValue;
+                }
             }
         }
 
@@ -1904,11 +1911,9 @@ public sealed class GitRepository : IGitRepository, IGitRepositoryCacheInvalidat
     public async Task SetConfigAsync(string key, string value, bool global = false, CancellationToken cancellationToken = default)
     {
         var configPath = GetConfigFilePath(global);
-        IDisposable? writeLock = null;
-        if (!global)
-        {
-            writeLock = await _referenceStore.LockManager.LockAllAsync(cancellationToken).ConfigureAwait(false);
-        }
+        var writeLock = global
+            ? await GitConfigEnvironment.LockGlobalConfigAsync(cancellationToken).ConfigureAwait(false)
+            : await _referenceStore.LockManager.LockAllAsync(cancellationToken).ConfigureAwait(false);
 
         try
         {
@@ -1923,7 +1928,7 @@ public sealed class GitRepository : IGitRepository, IGitRepositoryCacheInvalidat
         }
         finally
         {
-            writeLock?.Dispose();
+            writeLock.Dispose();
         }
     }
 
@@ -1931,19 +1936,17 @@ public sealed class GitRepository : IGitRepository, IGitRepositoryCacheInvalidat
     public async Task UnsetConfigAsync(string key, bool global = false, CancellationToken cancellationToken = default)
     {
         var configPath = GetConfigFilePath(global);
-        if (!File.Exists(configPath))
-        {
-            return;
-        }
-
-        IDisposable? writeLock = null;
-        if (!global)
-        {
-            writeLock = await _referenceStore.LockManager.LockAllAsync(cancellationToken).ConfigureAwait(false);
-        }
+        var writeLock = global
+            ? await GitConfigEnvironment.LockGlobalConfigAsync(cancellationToken).ConfigureAwait(false)
+            : await _referenceStore.LockManager.LockAllAsync(cancellationToken).ConfigureAwait(false);
 
         try
         {
+            if (!File.Exists(configPath))
+            {
+                return;
+            }
+
             var config = await GitConfigFile.ReadFromFileAsync(configPath, cancellationToken).ConfigureAwait(false);
             if (config.UnsetValue(key))
             {
@@ -1956,7 +1959,7 @@ public sealed class GitRepository : IGitRepository, IGitRepositoryCacheInvalidat
         }
         finally
         {
-            writeLock?.Dispose();
+            writeLock.Dispose();
         }
     }
 
@@ -1964,7 +1967,7 @@ public sealed class GitRepository : IGitRepository, IGitRepositoryCacheInvalidat
     {
         if (global)
         {
-            return GitConfigEnvironment.GetGlobalConfigPath();
+            return GitConfigEnvironment.GetGlobalConfigWritePath();
         }
 
         return Path.Combine(GitDirectory, "config");
