@@ -615,6 +615,85 @@ public sealed class GitSmartHttpEndToEndTest : IDisposable
         Assert.Equal(expectedHash, mainRefAtLastChanged.ToString(), StringComparer.OrdinalIgnoreCase);
     }
 
+    [Fact]
+    public async Task GitClone_AndPush_EmptyRepository_ShouldSucceed()
+    {
+        // Arrange: create an empty bare repository on the server
+        var bareRepoPath = Path.Combine(_serverRepoRoot, "empty-repo.git");
+        Directory.CreateDirectory(bareRepoPath);
+        RunGit(bareRepoPath, "init --bare --quiet --initial-branch=main");
+
+        await StartServerAsync(enableUploadPack: true, enableReceivePack: true);
+
+        // Act 1: Clone the empty repository
+        var cloneDir = Path.Combine(_clientWorkingDir, "cloned-empty");
+        RunGit(_clientWorkingDir, $"clone {_serverUrl}/empty-repo.git {cloneDir}");
+        Assert.True(Directory.Exists(cloneDir));
+
+        // Act 2: Create initial commit in the clone and push to the server
+        RunGit(cloneDir, "config user.name \"Test User\"");
+        RunGit(cloneDir, "config user.email test@example.com");
+        File.WriteAllText(Path.Combine(cloneDir, "README.md"), "# Empty Repo Initialized");
+        RunGit(cloneDir, "add README.md");
+        RunGit(cloneDir, "commit -m \"Initial commit\" --quiet");
+        RunGit(cloneDir, "branch -M main");
+        var pushOutput = RunGit(cloneDir, "push -u origin main");
+
+        // Assert: Push succeeded
+        Assert.True(pushOutput.Contains("main") || pushOutput.Contains("set up to track"));
+
+        // Verify content exists on server by cloning into a fresh directory
+        var verifyDir = Path.Combine(_clientWorkingDir, "verify-empty-cloned");
+        RunGit(_clientWorkingDir, $"clone {_serverUrl}/empty-repo.git {verifyDir}");
+        Assert.True(File.Exists(Path.Combine(verifyDir, "README.md")));
+        Assert.Equal("# Empty Repo Initialized", File.ReadAllText(Path.Combine(verifyDir, "README.md")));
+    }
+
+    [Fact]
+    public async Task GitFetch_Sha256Repository_ShouldSucceed()
+    {
+        // Arrange: create a SHA-256 bare repository on the server
+        var bareRepoPath = Path.Combine(_serverRepoRoot, "sha256-repo.git");
+        Directory.CreateDirectory(bareRepoPath);
+        RunGit(bareRepoPath, "init --bare --quiet --object-format=sha256 --initial-branch=main");
+
+        // Populate it with a commit
+        var workDir = Path.Combine(Path.GetTempPath(), "temp-sha256-source", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(workDir);
+        try
+        {
+            RunGit(workDir, "init --quiet --object-format=sha256 --initial-branch=main");
+            RunGit(workDir, "config user.name \"Test User\"");
+            RunGit(workDir, "config user.email test@example.com");
+            File.WriteAllText(Path.Combine(workDir, "sha256.txt"), "sha256 content");
+            RunGit(workDir, "add sha256.txt");
+            RunGit(workDir, "commit -m \"SHA-256 commit\" --quiet");
+            RunGit(workDir, $"remote add origin \"{bareRepoPath}\"");
+            RunGit(workDir, "push -u origin main --quiet");
+        }
+        finally
+        {
+            TestHelper.TryDeleteDirectory(workDir);
+        }
+
+        await StartServerAsync(enableUploadPack: true);
+
+        // Act: In Git protocol v0/v1, client repository must be initialized with SHA-256 before fetch
+        var clientDir = Path.Combine(_clientWorkingDir, "fetched-sha256");
+        Directory.CreateDirectory(clientDir);
+        RunGit(clientDir, "init --quiet --object-format=sha256 --initial-branch=main");
+        RunGit(clientDir, $"remote add origin {_serverUrl}/sha256-repo.git");
+        RunGit(clientDir, "fetch origin main");
+        RunGit(clientDir, "checkout -b main origin/main --quiet");
+
+        // Assert
+        Assert.True(File.Exists(Path.Combine(clientDir, "sha256.txt")));
+        Assert.Equal("sha256 content", File.ReadAllText(Path.Combine(clientDir, "sha256.txt")));
+
+        var format = RunGit(clientDir, "rev-parse --show-object-format").Trim();
+        Assert.Equal("sha256", format);
+    }
+
     private GitRepository CreateSourceRepository(string name, (string path, string content)[] files)
     {
         var bareRepoPath = Path.Combine(_serverRepoRoot, $"{name}.git");
@@ -699,29 +778,9 @@ public sealed class GitSmartHttpEndToEndTest : IDisposable
         _serverUrl = addresses.First() + $"/{routePrefix}";
     }
 
-    private string RunGit(string workingDirectory, string arguments)
+    private static string RunGit(string workingDirectory, string arguments)
     {
-        var startInfo = new ProcessStartInfo("git", arguments)
-        {
-            WorkingDirectory = workingDirectory,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            UseShellExecute = false,
-            CreateNoWindow = true
-        };
-
-        using var process = Process.Start(startInfo) ?? throw new InvalidOperationException("Unable to start git process");
-        var output = process.StandardOutput.ReadToEnd();
-        var error = process.StandardError.ReadToEnd();
-        process.WaitForExit();
-
-        if (process.ExitCode != 0)
-        {
-            throw new InvalidOperationException(
-                $"git {arguments} failed with exit code {process.ExitCode}:{Environment.NewLine}{error}{Environment.NewLine}{output}");
-        }
-
-        return string.IsNullOrEmpty(output) ? error : output;
+        return TestHelper.RunGit(workingDirectory, arguments);
     }
 
     public void Dispose()

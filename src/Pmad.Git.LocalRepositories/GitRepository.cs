@@ -1430,7 +1430,7 @@ public sealed class GitRepository : IGitRepository, IGitRepositoryCacheInvalidat
             entries.Add(new TreeEntryData(name, leaf.Mode, leaf.Hash));
         }
 
-        entries.Sort((left, right) => string.CompareOrdinal(left.Name, right.Name));
+        entries.Sort(CompareTreeEntries);
 
         using var buffer = new MemoryStream();
         foreach (var entry in entries)
@@ -1447,6 +1447,32 @@ public sealed class GitRepository : IGitRepository, IGitRepositoryCacheInvalidat
         }
 
         return await _objectStore.WriteObjectAsync(GitObjectType.Tree, buffer.ToArray(), cancellationToken).ConfigureAwait(false);
+    }
+
+    internal static int CompareTreeEntries(TreeEntryData left, TreeEntryData right)
+    {
+        var bytes1 = Encoding.UTF8.GetBytes(left.Name);
+        var bytes2 = Encoding.UTF8.GetBytes(right.Name);
+        return CompareTreeEntryNames(bytes1, left.Mode == DirectoryMode, bytes2, right.Mode == DirectoryMode);
+    }
+
+    internal static int CompareTreeEntryNames(ReadOnlySpan<byte> name1, bool isDir1, ReadOnlySpan<byte> name2, bool isDir2)
+    {
+        var minLen = Math.Min(name1.Length, name2.Length);
+        for (var i = 0; i < minLen; i++)
+        {
+            var b1 = name1[i];
+            var b2 = name2[i];
+            if (b1 != b2)
+            {
+                return b1.CompareTo(b2);
+            }
+        }
+
+        var c1 = name1.Length > minLen ? name1[minLen] : (isDir1 ? (byte)'/' : (byte)0);
+        var c2 = name2.Length > minLen ? name2[minLen] : (isDir2 ? (byte)'/' : (byte)0);
+
+        return c1.CompareTo(c2);
     }
 
     internal static byte[] BuildCommitPayload(GitHash treeHash, IEnumerable<GitHash> parents, GitCommitMetadata metadata)

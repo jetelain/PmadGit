@@ -282,34 +282,37 @@ public sealed class GitRepositoryWithIndexAndWorkspace : IGitWorkspaceRepository
         bool stageAll = false,
         CancellationToken cancellationToken = default)
     {
-        if (stageAll)
+        using (await _indexManager.AcquireIndexMutationLockAsync(cancellationToken).ConfigureAwait(false))
         {
-            await StageAllAsync(cancellationToken).ConfigureAwait(false);
+            if (stageAll)
+            {
+                await _indexManager.StageAllCoreAsync(cancellationToken).ConfigureAwait(false);
+            }
+
+            var index = await GitIndex.ReadAsync(_indexManager.IndexPath, HashLengthBytes, cancellationToken).ConfigureAwait(false);
+            if (index.Entries.Any(e => e.Stage > 0))
+            {
+                throw new InvalidOperationException("Cannot commit with unmerged (conflicted) entries in the index.");
+            }
+
+            var treeHash = await _repo.WriteTreeAsync(index, cancellationToken).ConfigureAwait(false);
+
+            var headHash = await ReferenceStore.TryResolveReferenceAsync("HEAD", cancellationToken).ConfigureAwait(false);
+            var parents = headHash.HasValue ? new[] { headHash.Value } : Array.Empty<GitHash>();
+
+            var commitMetadata = metadata ?? GetDefaultMetadata(message);
+            var payload = GitRepository.BuildCommitPayload(treeHash, parents, commitMetadata);
+            var commitHash = await ObjectStore.WriteObjectAsync(GitObjectType.Commit, payload, cancellationToken).ConfigureAwait(false);
+
+            await UpdateHeadOrBranchAsync(commitHash, cancellationToken).ConfigureAwait(false);
+
+            // Update index stat cache for committed files
+            UpdateIndexStatCache(index);
+            await index.WriteAsync(_indexManager.IndexPath, HashLengthBytes, cancellationToken).ConfigureAwait(false);
+
+            InvalidateCaches();
+            return commitHash;
         }
-
-        var index = await GitIndex.ReadAsync(_indexManager.IndexPath, HashLengthBytes, cancellationToken).ConfigureAwait(false);
-        if (index.Entries.Any(e => e.Stage > 0))
-        {
-            throw new InvalidOperationException("Cannot commit with unmerged (conflicted) entries in the index.");
-        }
-
-        var treeHash = await _repo.WriteTreeAsync(index, cancellationToken).ConfigureAwait(false);
-
-        var headHash = await ReferenceStore.TryResolveReferenceAsync("HEAD", cancellationToken).ConfigureAwait(false);
-        var parents = headHash.HasValue ? new[] { headHash.Value } : Array.Empty<GitHash>();
-
-        var commitMetadata = metadata ?? GetDefaultMetadata(message);
-        var payload = GitRepository.BuildCommitPayload(treeHash, parents, commitMetadata);
-        var commitHash = await ObjectStore.WriteObjectAsync(GitObjectType.Commit, payload, cancellationToken).ConfigureAwait(false);
-
-        await UpdateHeadOrBranchAsync(commitHash, cancellationToken).ConfigureAwait(false);
-
-        // Update index stat cache for committed files
-        UpdateIndexStatCache(index);
-        await index.WriteAsync(_indexManager.IndexPath, HashLengthBytes, cancellationToken).ConfigureAwait(false);
-
-        InvalidateCaches();
-        return commitHash;
     }
 
     /// <inheritdoc />
@@ -319,38 +322,41 @@ public sealed class GitRepositoryWithIndexAndWorkspace : IGitWorkspaceRepository
         bool stageAll = false,
         CancellationToken cancellationToken = default)
     {
-        if (stageAll)
+        using (await _indexManager.AcquireIndexMutationLockAsync(cancellationToken).ConfigureAwait(false))
         {
-            await StageAllAsync(cancellationToken).ConfigureAwait(false);
+            if (stageAll)
+            {
+                await _indexManager.StageAllCoreAsync(cancellationToken).ConfigureAwait(false);
+            }
+
+            var headHash = await ReferenceStore.ResolveHeadAsync(cancellationToken).ConfigureAwait(false);
+            var headCommit = await GetCommitAsync(headHash.Value, cancellationToken).ConfigureAwait(false);
+
+            var index = await GitIndex.ReadAsync(_indexManager.IndexPath, HashLengthBytes, cancellationToken).ConfigureAwait(false);
+            if (index.Entries.Any(e => e.Stage > 0))
+            {
+                throw new InvalidOperationException("Cannot amend commit with unmerged (conflicted) entries in the index.");
+            }
+
+            var treeHash = await _repo.WriteTreeAsync(index, cancellationToken).ConfigureAwait(false);
+
+            var commitMessage = (message ?? metadata?.Message ?? headCommit.Message).TrimEnd('\r', '\n');
+            var commitMetadata = metadata ?? new GitCommitMetadata(
+                commitMessage,
+                headCommit.Metadata.Author,
+                new GitCommitSignature(headCommit.Metadata.Committer.Name, headCommit.Metadata.Committer.Email, DateTimeOffset.UtcNow));
+
+            var payload = GitRepository.BuildCommitPayload(treeHash, headCommit.Parents, commitMetadata);
+            var commitHash = await ObjectStore.WriteObjectAsync(GitObjectType.Commit, payload, cancellationToken).ConfigureAwait(false);
+
+            await UpdateHeadOrBranchAsync(commitHash, cancellationToken).ConfigureAwait(false);
+
+            UpdateIndexStatCache(index);
+            await index.WriteAsync(_indexManager.IndexPath, HashLengthBytes, cancellationToken).ConfigureAwait(false);
+
+            InvalidateCaches();
+            return commitHash;
         }
-
-        var headHash = await ReferenceStore.ResolveHeadAsync(cancellationToken).ConfigureAwait(false);
-        var headCommit = await GetCommitAsync(headHash.Value, cancellationToken).ConfigureAwait(false);
-
-        var index = await GitIndex.ReadAsync(_indexManager.IndexPath, HashLengthBytes, cancellationToken).ConfigureAwait(false);
-        if (index.Entries.Any(e => e.Stage > 0))
-        {
-            throw new InvalidOperationException("Cannot amend commit with unmerged (conflicted) entries in the index.");
-        }
-
-        var treeHash = await _repo.WriteTreeAsync(index, cancellationToken).ConfigureAwait(false);
-
-        var commitMessage = (message ?? metadata?.Message ?? headCommit.Message).TrimEnd('\r', '\n');
-        var commitMetadata = metadata ?? new GitCommitMetadata(
-            commitMessage,
-            headCommit.Metadata.Author,
-            new GitCommitSignature(headCommit.Metadata.Committer.Name, headCommit.Metadata.Committer.Email, DateTimeOffset.UtcNow));
-
-        var payload = GitRepository.BuildCommitPayload(treeHash, headCommit.Parents, commitMetadata);
-        var commitHash = await ObjectStore.WriteObjectAsync(GitObjectType.Commit, payload, cancellationToken).ConfigureAwait(false);
-
-        await UpdateHeadOrBranchAsync(commitHash, cancellationToken).ConfigureAwait(false);
-
-        UpdateIndexStatCache(index);
-        await index.WriteAsync(_indexManager.IndexPath, HashLengthBytes, cancellationToken).ConfigureAwait(false);
-
-        InvalidateCaches();
-        return commitHash;
     }
 
     /// <inheritdoc />
@@ -359,32 +365,35 @@ public sealed class GitRepositoryWithIndexAndWorkspace : IGitWorkspaceRepository
         GitResetMode mode = GitResetMode.Mixed,
         CancellationToken cancellationToken = default)
     {
-        var targetCommit = await GetCommitAsync(targetCommitHash.Value, cancellationToken).ConfigureAwait(false);
-
-        await UpdateHeadOrBranchAsync(targetCommitHash, cancellationToken).ConfigureAwait(false);
-        InvalidateCaches();
-
-        if (mode == GitResetMode.Soft)
+        using (await _indexManager.AcquireIndexMutationLockAsync(cancellationToken).ConfigureAwait(false))
         {
-            return;
-        }
+            var targetCommit = await GetCommitAsync(targetCommitHash.Value, cancellationToken).ConfigureAwait(false);
 
-        if (mode == GitResetMode.Hard)
-        {
-            await SyncWorkspaceToCommitAsync(targetCommit, cancellationToken).ConfigureAwait(false);
-        }
-        else // Mixed
-        {
-            var newIndex = new GitIndex();
-            await foreach (var item in EnumerateCommitTreeAsync(targetCommit.Id.Value, null, SearchOption.AllDirectories, cancellationToken).ConfigureAwait(false))
+            await UpdateHeadOrBranchAsync(targetCommitHash, cancellationToken).ConfigureAwait(false);
+            InvalidateCaches();
+
+            if (mode == GitResetMode.Soft)
             {
-                if (item.Entry.Kind == GitTreeEntryKind.Blob)
-                {
-                    var entry = new GitIndexEntry(item.Path, item.Entry.Hash, item.Entry.Mode);
-                    newIndex.AddOrUpdate(entry);
-                }
+                return;
             }
-            await newIndex.WriteAsync(_indexManager.IndexPath, HashLengthBytes, cancellationToken).ConfigureAwait(false);
+
+            if (mode == GitResetMode.Hard)
+            {
+                await SyncWorkspaceToCommitAsync(targetCommit, cancellationToken).ConfigureAwait(false);
+            }
+            else // Mixed
+            {
+                var newIndex = new GitIndex();
+                await foreach (var item in EnumerateCommitTreeAsync(targetCommit.Id.Value, null, SearchOption.AllDirectories, cancellationToken).ConfigureAwait(false))
+                {
+                    if (item.Entry.Kind == GitTreeEntryKind.Blob)
+                    {
+                        var entry = new GitIndexEntry(item.Path, item.Entry.Hash, item.Entry.Mode);
+                        newIndex.AddOrUpdate(entry);
+                    }
+                }
+                await newIndex.WriteAsync(_indexManager.IndexPath, HashLengthBytes, cancellationToken).ConfigureAwait(false);
+            }
         }
     }
 
@@ -395,30 +404,33 @@ public sealed class GitRepositoryWithIndexAndWorkspace : IGitWorkspaceRepository
         GitCommitMetadata? metadata = null,
         CancellationToken cancellationToken = default)
     {
-        var currentBranch = await ReferenceStore.GetCurrentBranchNameAsync(cancellationToken).ConfigureAwait(false)
-            ?? throw new InvalidOperationException("Cannot squash on detached HEAD.");
-
-        var headHash = await ReferenceStore.ResolveHeadAsync(cancellationToken).ConfigureAwait(false);
-        if (headHash.Equals(baseCommitHash))
+        using (await _indexManager.AcquireIndexMutationLockAsync(cancellationToken).ConfigureAwait(false))
         {
-            throw new InvalidOperationException("Cannot squash commits: branch HEAD is already at base commit.");
+            var currentBranch = await ReferenceStore.GetCurrentBranchNameAsync(cancellationToken).ConfigureAwait(false)
+                ?? throw new InvalidOperationException("Cannot squash on detached HEAD.");
+
+            var headHash = await ReferenceStore.ResolveHeadAsync(cancellationToken).ConfigureAwait(false);
+            if (headHash.Equals(baseCommitHash))
+            {
+                throw new InvalidOperationException("Cannot squash commits: branch HEAD is already at base commit.");
+            }
+
+            var isReachable = await IsCommitReachableAsync(headHash, baseCommitHash, cancellationToken).ConfigureAwait(false);
+            if (!isReachable)
+            {
+                throw new ArgumentException($"Base commit '{baseCommitHash.Value}' is not an ancestor of branch HEAD '{headHash.Value}'.", nameof(baseCommitHash));
+            }
+
+            var headCommit = await GetCommitAsync(headHash.Value, cancellationToken).ConfigureAwait(false);
+
+            var finalMetadata = metadata ?? GetDefaultMetadata(message, headCommit.Metadata);
+            var payload = GitRepository.BuildCommitPayload(headCommit.Tree, new[] { baseCommitHash }, finalMetadata);
+            var squashedHash = await ObjectStore.WriteObjectAsync(GitObjectType.Commit, payload, cancellationToken).ConfigureAwait(false);
+
+            await ReferenceStore.CreateReferenceAsync($"refs/heads/{currentBranch}", squashedHash, overwrite: true, cancellationToken).ConfigureAwait(false);
+            InvalidateCaches();
+            return squashedHash;
         }
-
-        var isReachable = await IsCommitReachableAsync(headHash, baseCommitHash, cancellationToken).ConfigureAwait(false);
-        if (!isReachable)
-        {
-            throw new ArgumentException($"Base commit '{baseCommitHash.Value}' is not an ancestor of branch HEAD '{headHash.Value}'.", nameof(baseCommitHash));
-        }
-
-        var headCommit = await GetCommitAsync(headHash.Value, cancellationToken).ConfigureAwait(false);
-
-        var finalMetadata = metadata ?? GetDefaultMetadata(message, headCommit.Metadata);
-        var payload = GitRepository.BuildCommitPayload(headCommit.Tree, new[] { baseCommitHash }, finalMetadata);
-        var squashedHash = await ObjectStore.WriteObjectAsync(GitObjectType.Commit, payload, cancellationToken).ConfigureAwait(false);
-
-        await ReferenceStore.CreateReferenceAsync($"refs/heads/{currentBranch}", squashedHash, overwrite: true, cancellationToken).ConfigureAwait(false);
-        InvalidateCaches();
-        return squashedHash;
     }
 
     /// <inheritdoc />

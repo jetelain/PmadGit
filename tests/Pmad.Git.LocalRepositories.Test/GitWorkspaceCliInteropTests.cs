@@ -251,5 +251,135 @@ public sealed class GitWorkspaceCliInteropTests
         var showOutput = testRepo.RunGit("show HEAD:generated.txt");
         Assert.Equal("auto-generated content\n", showOutput);
     }
+
+    [Fact]
+    public async Task GitFsck_TreeWithDirectoryAndSimilarPrefixedFiles_ReportsNoCorruption()
+    {
+        // Tests the critical Git tree sorting rule where directory names compare with trailing '/'
+        using var testRepo = GitTestRepository.Create();
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+
+        // In ASCII: '-' (45) < '.' (46) < '/' (47) < '0' (48) < '_' (95)
+        // With directory "dir", Git compares "dir/" against "dir.txt", "dir-other.txt", etc.
+        // Canonical order must be:
+        // 1. "dir-other.txt"
+        // 2. "dir.txt"
+        // 3. "dir/" (directory)
+        // 4. "dir0.txt"
+        // 5. "dir_other.txt"
+        await File.WriteAllTextAsync(Path.Combine(testRepo.WorkingDirectory, "dir-other.txt"), "content -");
+        await File.WriteAllTextAsync(Path.Combine(testRepo.WorkingDirectory, "dir.txt"), "content .");
+        Directory.CreateDirectory(Path.Combine(testRepo.WorkingDirectory, "dir"));
+        await File.WriteAllTextAsync(Path.Combine(testRepo.WorkingDirectory, "dir", "child.txt"), "child content");
+        await File.WriteAllTextAsync(Path.Combine(testRepo.WorkingDirectory, "dir0.txt"), "content 0");
+        await File.WriteAllTextAsync(Path.Combine(testRepo.WorkingDirectory, "dir_other.txt"), "content _");
+
+        await repo.StageAllAsync();
+        var commit = await repo.CommitAsync("Tree sorting test", new GitCommitMetadata("Tree sorting test", TestSignature));
+        Assert.NotEqual(GitHash.Zero, commit);
+
+        // Native git fsck --full --strict MUST pass cleanly without "contains unsorted entries" error
+        var fsckOutput = testRepo.RunGit("fsck --full --strict");
+        Assert.DoesNotContain("error in tree", fsckOutput, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("unsorted", fsckOutput, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("broken link", fsckOutput, StringComparison.OrdinalIgnoreCase);
+
+        // Verify git ls-tree outputs the entries in exact order
+        var lsTree = testRepo.RunGit("ls-tree HEAD");
+        var lines = lsTree.Split('\n', StringSplitOptions.RemoveEmptyEntries)
+            .Select(line => line.Split('\t')[1].Trim())
+            .ToList();
+
+        Assert.Contains("dir-other.txt", lines);
+        Assert.Contains("dir.txt", lines);
+        Assert.Contains("dir", lines);
+        Assert.Contains("dir0.txt", lines);
+        Assert.Contains("dir_other.txt", lines);
+
+        var idxDash = lines.IndexOf("dir-other.txt");
+        var idxDot = lines.IndexOf("dir.txt");
+        var idxDir = lines.IndexOf("dir");
+        var idxZero = lines.IndexOf("dir0.txt");
+        var idxUnder = lines.IndexOf("dir_other.txt");
+
+        Assert.True(idxDash < idxDot, "dir-other.txt must come before dir.txt");
+        Assert.True(idxDot < idxDir, "dir.txt must come before directory dir");
+        Assert.True(idxDir < idxZero, "directory dir must come before dir0.txt");
+        Assert.True(idxZero < idxUnder, "dir0.txt must come before dir_other.txt");
+    }
+
+    [Fact]
+    public async Task GitMerge_MultiParentCommit_VerifiedByGitCli()
+    {
+        using var testRepo = GitTestRepository.Create();
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+
+        var c1 = await repo.GetCommitAsync("HEAD");
+
+        // Branch 1: commit file_a
+        await File.WriteAllTextAsync(Path.Combine(testRepo.WorkingDirectory, "file_a.txt"), "content A");
+        await repo.StageAsync("file_a.txt");
+        var commitA = await repo.CommitAsync("Feature A", new GitCommitMetadata("Feature A", TestSignature));
+
+        // Switch to separate branch ref for Feature B
+        await File.WriteAllTextAsync(Path.Combine(testRepo.WorkingDirectory, "file_b.txt"), "content B");
+        await repo.StageAsync("file_b.txt");
+        var treeB = await repo.IndexManager.Repository.WriteTreeAsync(await GitIndex.ReadAsync(repo.IndexManager.IndexPath));
+        var payloadB = GitRepository.BuildCommitPayload(treeB, new[] { c1.Id }, new GitCommitMetadata("Feature B", TestSignature));
+        var commitB = await repo.ObjectStore.WriteObjectAsync(GitObjectType.Commit, payloadB);
+        await repo.ReferenceStore.CreateReferenceAsync("refs/heads/feature-b", commitB, overwrite: true);
+
+        // Create merge commit with parents commitA and commitB
+        await File.WriteAllTextAsync(Path.Combine(testRepo.WorkingDirectory, "file_b.txt"), "content B");
+        await repo.StageAsync("file_b.txt");
+        var mergeTree = await repo.IndexManager.Repository.WriteTreeAsync(await GitIndex.ReadAsync(repo.IndexManager.IndexPath));
+        var mergePayload = GitRepository.BuildCommitPayload(mergeTree, new[] { commitA, commitB }, new GitCommitMetadata("Merge branch feature-b", TestSignature));
+        var mergeCommit = await repo.ObjectStore.WriteObjectAsync(GitObjectType.Commit, mergePayload);
+
+        var currentBranch = await repo.ReferenceStore.GetCurrentBranchNameAsync();
+        await repo.ReferenceStore.CreateReferenceAsync($"refs/heads/{currentBranch}", mergeCommit, overwrite: true);
+        repo.InvalidateCaches();
+
+        // Native git fsck must pass
+        var fsck = testRepo.RunGit("fsck --full --strict");
+        Assert.DoesNotContain("error:", fsck, StringComparison.OrdinalIgnoreCase);
+
+        // Native git rev-list --parents must show 2 parents for merge commit
+        var revList = testRepo.RunGit("rev-list --parents -n 1 HEAD").Trim();
+        var parts = revList.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        Assert.Equal(3, parts.Length); // HEAD commitA commitB
+        Assert.Equal(mergeCommit.ToString(), parts[0]);
+        Assert.Equal(commitA.ToString(), parts[1]);
+        Assert.Equal(commitB.ToString(), parts[2]);
+
+        // Native git log --graph must succeed
+        var logGraph = testRepo.RunGit("log --graph --oneline -n 4");
+        Assert.Contains("Merge branch feature-b", logGraph);
+    }
+
+    [Fact]
+    public async Task GitTag_CreateAndVerifyWithGitCli()
+    {
+        using var testRepo = GitTestRepository.Create();
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+
+        var head = await repo.ReferenceStore.ResolveHeadAsync();
+
+        // Create a lightweight tag
+        await repo.ReferenceStore.CreateReferenceAsync("refs/tags/v1.0.0", head);
+        repo.InvalidateCaches();
+
+        // Native git tag -l must list v1.0.0
+        var tagList = testRepo.RunGit("tag -l").Trim();
+        Assert.Contains("v1.0.0", tagList);
+
+        // Native git rev-parse v1.0.0 must match head
+        var parsedTag = testRepo.RunGit("rev-parse v1.0.0").Trim();
+        Assert.Equal(head.ToString(), parsedTag);
+
+        // Native git describe --tags must report v1.0.0
+        var describe = testRepo.RunGit("describe --tags").Trim();
+        Assert.Equal("v1.0.0", describe);
+    }
 }
 

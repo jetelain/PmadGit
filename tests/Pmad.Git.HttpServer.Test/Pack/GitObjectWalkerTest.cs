@@ -496,26 +496,14 @@ public sealed class GitObjectWalkerTest : IDisposable
 
     private string RunGitInDirectory(string workingDirectory, string arguments)
     {
-        var startInfo = new ProcessStartInfo("git", arguments)
+        try
         {
-            WorkingDirectory = workingDirectory,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            UseShellExecute = false,
-            CreateNoWindow = true
-        };
-
-        using var process = Process.Start(startInfo) ?? throw new InvalidOperationException("Unable to start git process");
-        var output = process.StandardOutput.ReadToEnd();
-        var error = process.StandardError.ReadToEnd();
-        process.WaitForExit();
-
-        if (process.ExitCode != 0 && !arguments.Contains("merge"))
-        {
-            throw new InvalidOperationException($"git {arguments} failed with exit code {process.ExitCode}:{Environment.NewLine}{error}");
+            return TestHelper.RunGit(workingDirectory, arguments);
         }
-
-        return string.IsNullOrEmpty(output) ? error : output;
+        catch (InvalidOperationException) when (arguments.Contains("merge"))
+        {
+            return string.Empty;
+        }
     }
 
     public void Dispose()

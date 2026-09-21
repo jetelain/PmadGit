@@ -157,8 +157,20 @@ public sealed class GitIndex
             var hash = GitHash.FromBytes(data.Slice(offset + 40, hashLengthBytes));
             var flags = BinaryPrimitives.ReadUInt16BigEndian(data.Slice(offset + 40 + hashLengthBytes, 2));
 
-            // Path starts immediately after fixed header
-            var pathStart = offset + fixedHeaderLength;
+            ushort extendedFlags = 0;
+            var currentHeaderLength = fixedHeaderLength;
+            if (version >= 3 && (flags & 0x4000) != 0)
+            {
+                if (offset + fixedHeaderLength + 2 > data.Length - hashLengthBytes)
+                {
+                    throw new InvalidDataException($"Unexpected end of file while reading extended flags for entry {i}.");
+                }
+                extendedFlags = BinaryPrimitives.ReadUInt16BigEndian(data.Slice(offset + fixedHeaderLength, 2));
+                currentHeaderLength += 2;
+            }
+
+            // Path starts immediately after header
+            var pathStart = offset + currentHeaderLength;
             var pathEnd = pathStart;
             while (pathEnd < data.Length - hashLengthBytes && data[pathEnd] != 0)
             {
@@ -173,7 +185,7 @@ public sealed class GitIndex
             var pathLength = pathEnd - pathStart;
             var path = Encoding.UTF8.GetString(data.Slice(pathStart, pathLength));
 
-            var entrySize = (fixedHeaderLength + pathLength + 8) & ~7;
+            var entrySize = (currentHeaderLength + pathLength + 8) & ~7;
             offset += entrySize;
 
             index.Entries.Add(new GitIndexEntry(
@@ -189,7 +201,8 @@ public sealed class GitIndex
                 ino,
                 uid,
                 gid,
-                flags));
+                flags,
+                extendedFlags));
         }
 
         return index;
@@ -214,16 +227,20 @@ public sealed class GitIndex
         byte[] checksum;
         using (var hashingStream = new HashingWriteStream(ms, algorithmName, leaveOpen: true))
         {
+            // Check if any entry requires extended flags (version 3)
+            var hasExtendedEntries = Entries.Any(e => (e.Flags & 0x4000) != 0 || e.ExtendedFlags != 0);
+            var effectiveVersion = (Version >= 3 || hasExtendedEntries) ? Math.Max(Version, 3) : Version;
+
             // Write 12-byte header
             Span<byte> header = stackalloc byte[12];
             Magic.CopyTo(header);
-            BinaryPrimitives.WriteUInt32BigEndian(header.Slice(4, 4), (uint)Version);
+            BinaryPrimitives.WriteUInt32BigEndian(header.Slice(4, 4), (uint)effectiveVersion);
             BinaryPrimitives.WriteUInt32BigEndian(header.Slice(8, 4), (uint)Entries.Count);
             hashingStream.Write(header);
 
             // Write entries
             var fixedHeaderLength = 40 + hashLengthBytes + 2;
-            var entryHeader = new byte[fixedHeaderLength];
+            var entryHeader = new byte[fixedHeaderLength + 2];
 
             foreach (var entry in Entries)
             {
@@ -250,15 +267,29 @@ public sealed class GitIndex
 
                 var pathBytes = Encoding.UTF8.GetBytes(entry.Path);
                 var pathLen = (ushort)Math.Min(pathBytes.Length, 0xFFF);
-                var flags = (ushort)((entry.Stage & 0x3) << 12 | pathLen);
+                var isExtended = effectiveVersion >= 3 && ((entry.Flags & 0x4000) != 0 || entry.ExtendedFlags != 0);
+
+                var flags = (ushort)((entry.Flags & 0x8000) | ((entry.Stage & 0x3) << 12) | pathLen);
+                if (isExtended)
+                {
+                    flags |= 0x4000;
+                }
+
                 BinaryPrimitives.WriteUInt16BigEndian(entryHeader.AsSpan(40 + hashLengthBytes, 2), flags);
 
-                hashingStream.Write(entryHeader, 0, entryHeader.Length);
+                var currentHeaderLength = fixedHeaderLength;
+                if (isExtended)
+                {
+                    BinaryPrimitives.WriteUInt16BigEndian(entryHeader.AsSpan(fixedHeaderLength, 2), entry.ExtendedFlags);
+                    currentHeaderLength += 2;
+                }
+
+                hashingStream.Write(entryHeader, 0, currentHeaderLength);
                 hashingStream.Write(pathBytes, 0, pathBytes.Length);
 
-                // Padding to 8-byte boundary
-                var totalLen = (fixedHeaderLength + pathBytes.Length + 8) & ~7;
-                var padLen = totalLen - (fixedHeaderLength + pathBytes.Length);
+                // Padding to 8-byte boundary relative to entry start
+                var totalLen = (currentHeaderLength + pathBytes.Length + 8) & ~7;
+                var padLen = totalLen - (currentHeaderLength + pathBytes.Length);
                 if (padLen > 0)
                 {
                     var pad = new byte[padLen]; // All zeros

@@ -392,10 +392,11 @@ internal sealed class GitSmartHttpService
             entries.Add(new ReferenceLine(entry.Key, entry.Value));
         }
 
-        var capabilities = BuildCapabilities(service, headInfo.SymrefTarget);
+        var capabilities = BuildCapabilities(service, headInfo.SymrefTarget, repository);
         if (entries.Count == 0)
         {
-            var emptyLine = $"0000000000000000000000000000000000000000 capabilities^{{}}\0{capabilities}\n";
+            var zeroId = new string('0', repository.HashLengthBytes * 2);
+            var emptyLine = $"{zeroId} capabilities^{{}}\0{capabilities}\n";
             await PktLineWriter.WriteStringAsync(destination, emptyLine, cancellationToken).ConfigureAwait(false);
             return;
         }
@@ -511,8 +512,9 @@ internal sealed class GitSmartHttpService
     /// </summary>
     /// <param name="service">The type of service being advertised.</param>
     /// <param name="headSymref">The symbolic reference target of HEAD, if any.</param>
+    /// <param name="repository">The repository being accessed.</param>
     /// <returns>A space-separated string of capabilities.</returns>
-    private string BuildCapabilities(GitServiceKind service, string? headSymref)
+    private string BuildCapabilities(GitServiceKind service, string? headSymref, IGitRepository repository)
     {
         var capabilities = new List<string>();
         if (!string.IsNullOrEmpty(headSymref))
@@ -521,6 +523,15 @@ internal sealed class GitSmartHttpService
         }
 
         capabilities.Add($"agent={_options.Agent}");
+
+        if (repository.HashLengthBytes == 32)
+        {
+            capabilities.Add("object-format=sha256");
+        }
+        else
+        {
+            capabilities.Add("object-format=sha1");
+        }
 
         if (service == GitServiceKind.ReceivePack)
         {
