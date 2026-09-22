@@ -65,3 +65,4 @@ public class GitDiffStatTests
         Assert.Equal(0, stat2.FilesChanged);
     }
 }
+

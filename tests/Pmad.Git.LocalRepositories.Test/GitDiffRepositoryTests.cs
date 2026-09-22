@@ -139,4 +139,147 @@ public sealed class GitDiffRepositoryTests
         var unstagedDiff = await workspaceRepo.GetUnstagedDiffAsync();
         Assert.Empty(unstagedDiff);
     }
+
+    [Fact]
+    public async Task GetCommitDiffAsync_MatchesGitCliOutput()
+    {
+        using var testRepo = GitTestRepository.Create();
+        testRepo.RunGit("config core.autocrlf false");
+        var commit1 = testRepo.Commit("Base commit",
+            ("modified.txt", "line1\nline2\nline3\n"),
+            ("deleted.txt", "to be deleted\n"));
+
+        var commit2 = testRepo.Commit("Second commit",
+            ("modified.txt", "line1\nline2 changed\nline3\nline4\n"),
+            ("added.txt", "new file content\n"));
+        testRepo.RunGit("rm deleted.txt");
+        testRepo.RunGit("commit --amend -m \"Second commit with delete\" --quiet");
+        var headCommit = testRepo.RunGit("rev-parse HEAD").Trim();
+
+        var repo = GitRepository.Open(testRepo.WorkingDirectory);
+        var managedDiff = await repo.GetCommitDiffAsync(headCommit);
+        var cliDiff = testRepo.RunGit($"-c core.abbrev=7 diff HEAD~1 HEAD");
+
+        Assert.Equal(Normalize(cliDiff), Normalize(managedDiff));
+    }
+
+    [Fact]
+    public async Task GetCommitStatAsync_MatchesGitCliShortStat()
+    {
+        using var testRepo = GitTestRepository.Create();
+        testRepo.RunGit("config core.autocrlf false");
+        testRepo.Commit("Base",
+            ("a.txt", "alpha\n"),
+            ("b.txt", "beta\nline2\n"));
+
+        var commit2 = testRepo.Commit("Changes",
+            ("a.txt", "alpha\nalpha2\nalpha3\n"),
+            ("b.txt", "beta changed\n"),
+            ("c.txt", "gamma\n"));
+
+        var repo = GitRepository.Open(testRepo.WorkingDirectory);
+        var stat = await repo.GetCommitStatAsync(commit2.Value);
+        var cliShortStat = testRepo.RunGit("diff --shortstat HEAD~1 HEAD").Trim();
+
+        Assert.Equal(cliShortStat, stat.ToShortStat());
+    }
+
+    [Fact]
+    public async Task GetDiffAsync_WithSubpathFilter_MatchesGitCli()
+    {
+        using var testRepo = GitTestRepository.Create();
+        testRepo.RunGit("config core.autocrlf false");
+        var commit1 = testRepo.Commit("Base",
+            ("src/module1/file1.txt", "m1 original\n"),
+            ("src/module2/file2.txt", "m2 original\n"),
+            ("docs/readme.txt", "readme\n"));
+
+        var commit2 = testRepo.Commit("Update all",
+            ("src/module1/file1.txt", "m1 updated\n"),
+            ("src/module2/file2.txt", "m2 updated\n"),
+            ("docs/readme.txt", "readme updated\n"));
+
+        var repo = GitRepository.Open(testRepo.WorkingDirectory);
+
+        // Path filter to src/module1
+        var managedDiff = await repo.GetDiffAsync(commit1.Value, commit2.Value, path: "src/module1");
+        var cliDiff = testRepo.RunGit($"-c core.abbrev=7 diff {commit1.Value} {commit2.Value} -- src/module1");
+
+        Assert.Equal(Normalize(cliDiff), Normalize(managedDiff));
+    }
+
+    [Fact]
+    public async Task GetUnstagedDiffAsync_MatchesGitCliOutput()
+    {
+        using var testRepo = GitTestRepository.Create();
+        testRepo.RunGit("config core.autocrlf false");
+        testRepo.Commit("Base",
+            ("file1.txt", "first\nsecond\nthird\n"),
+            ("file2.txt", "delete me\n"));
+
+        // Make modifications in working tree
+        var file1Path = Path.Combine(testRepo.WorkingDirectory, "file1.txt");
+        var file2Path = Path.Combine(testRepo.WorkingDirectory, "file2.txt");
+        await File.WriteAllTextAsync(file1Path, "first\nsecond modified\nthird\nfourth\n");
+        File.Delete(file2Path);
+
+        using var workspaceRepo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+        var managedDiff = await workspaceRepo.GetUnstagedDiffAsync();
+        var cliDiff = testRepo.RunGit("-c core.abbrev=7 diff");
+
+        Assert.Equal(Normalize(cliDiff), Normalize(managedDiff));
+    }
+
+    [Fact]
+    public async Task GetStagedDiffAsync_MatchesGitCliOutput()
+    {
+        using var testRepo = GitTestRepository.Create();
+        testRepo.RunGit("config core.autocrlf false");
+        testRepo.Commit("Base",
+            ("file1.txt", "initial line\n"));
+
+        using var workspaceRepo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+
+        var file1Path = Path.Combine(testRepo.WorkingDirectory, "file1.txt");
+        var newFilePath = Path.Combine(testRepo.WorkingDirectory, "newfile.txt");
+        await File.WriteAllTextAsync(file1Path, "initial line modified\n");
+        await File.WriteAllTextAsync(newFilePath, "staged new file\n");
+
+        await workspaceRepo.StageAsync("file1.txt");
+        await workspaceRepo.StageAsync("newfile.txt");
+
+        var managedDiff = await workspaceRepo.GetStagedDiffAsync();
+        var cliDiff = testRepo.RunGit("-c core.abbrev=7 diff --cached");
+
+        Assert.Equal(Normalize(cliDiff), Normalize(managedDiff));
+    }
+
+    [Fact]
+    public async Task GetCommitDiffAsync_BinaryFiles_MatchesGitCliOutput()
+    {
+        using var testRepo = GitTestRepository.Create();
+        var bin1 = new byte[] { 0x00, 0x01, 0x02, 0x03 };
+        var bin2 = new byte[] { 0x00, 0x01, 0x04, 0x05 };
+
+        var binPath = Path.Combine(testRepo.WorkingDirectory, "data.bin");
+        await File.WriteAllBytesAsync(binPath, bin1);
+        testRepo.RunGit("add data.bin");
+        testRepo.RunGit("commit -m \"Add binary\"");
+
+        await File.WriteAllBytesAsync(binPath, bin2);
+        testRepo.RunGit("add data.bin");
+        testRepo.RunGit("commit -m \"Update binary\"");
+
+        var headCommit = testRepo.RunGit("rev-parse HEAD").Trim();
+
+        var repo = GitRepository.Open(testRepo.WorkingDirectory);
+        var managedDiff = await repo.GetCommitDiffAsync(headCommit);
+        var cliDiff = testRepo.RunGit("-c core.abbrev=7 diff HEAD~1 HEAD");
+
+        Assert.Equal(Normalize(cliDiff), Normalize(managedDiff));
+    }
+
+    private static string Normalize(string text) =>
+        text.Replace("\r\n", "\n").Trim();
 }
+

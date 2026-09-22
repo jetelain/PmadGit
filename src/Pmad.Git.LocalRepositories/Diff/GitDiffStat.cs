@@ -61,3 +61,4 @@ public sealed record GitDiffStat(int FilesChanged, int Insertions, int Deletions
         return new GitDiffStat(files, insertions, deletions);
     }
 }
+

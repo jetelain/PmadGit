@@ -209,3 +209,4 @@ public class UnifiedDiffFormatterTests
         Assert.Equal(0, del);
     }
 }
+

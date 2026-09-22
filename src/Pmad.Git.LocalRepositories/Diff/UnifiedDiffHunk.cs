@@ -35,3 +35,4 @@ public sealed record UnifiedDiffHunk(
         return $"@@ {oldPart} {newPart} @@";
     }
 }
+

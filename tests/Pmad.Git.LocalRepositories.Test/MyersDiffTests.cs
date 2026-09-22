@@ -116,3 +116,4 @@ public class MyersDiffTests
         Assert.All(result, c => Assert.Equal(DiffChangeType.Keep, c.Type));
     }
 }
+
