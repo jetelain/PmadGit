@@ -151,4 +151,24 @@ public interface IGitWorkspaceRepository : IGitRepository, IDisposable
         GitHash commitHash,
         GitCommitMetadata? metadata = null,
         CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Computes the unified diff of unstaged changes (working tree vs index).
+    /// </summary>
+    /// <param name="path">Optional path filter.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>The unified diff text.</returns>
+    Task<string> GetUnstagedDiffAsync(
+        string? path = null,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Computes the unified diff of staged changes (index vs HEAD).
+    /// </summary>
+    /// <param name="path">Optional path filter.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>The unified diff text.</returns>
+    Task<string> GetStagedDiffAsync(
+        string? path = null,
+        CancellationToken cancellationToken = default);
 }

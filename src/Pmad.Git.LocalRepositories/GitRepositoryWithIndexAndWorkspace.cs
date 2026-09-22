@@ -1,5 +1,6 @@
 using System.IO;
 using System.Text;
+using Pmad.Git.LocalRepositories.Diff;
 
 namespace Pmad.Git.LocalRepositories;
 
@@ -263,6 +264,18 @@ public sealed class GitRepositoryWithIndexAndWorkspace : IGitWorkspaceRepository
     public Task<GitHash> WriteTreeAsync(GitIndex index, CancellationToken cancellationToken = default) =>
         _repo.WriteTreeAsync(index, cancellationToken);
 
+    /// <inheritdoc />
+    public Task<string> GetDiffAsync(string? fromCommit = null, string? toCommit = null, string? path = null, CancellationToken cancellationToken = default) =>
+        _repo.GetDiffAsync(fromCommit, toCommit, path, cancellationToken);
+
+    /// <inheritdoc />
+    public Task<string> GetCommitDiffAsync(string commitIsh, string? path = null, CancellationToken cancellationToken = default) =>
+        _repo.GetCommitDiffAsync(commitIsh, path, cancellationToken);
+
+    /// <inheritdoc />
+    public Task<GitDiffStat> GetCommitStatAsync(string commitIsh, CancellationToken cancellationToken = default) =>
+        _repo.GetCommitStatAsync(commitIsh, cancellationToken);
+
     #endregion
 
     #region Workspace & Staging Operations
@@ -306,6 +319,113 @@ public sealed class GitRepositoryWithIndexAndWorkspace : IGitWorkspaceRepository
     /// <inheritdoc />
     public Task RestoreAllAsync(bool removeUntracked = false, CancellationToken cancellationToken = default) =>
         _indexManager.RestoreAllAsync(removeUntracked, cancellationToken);
+
+    /// <inheritdoc />
+    public async Task<string> GetUnstagedDiffAsync(string? path = null, CancellationToken cancellationToken = default)
+    {
+        var index = await GitIndex.ReadAsync(_indexManager.IndexPath, HashLengthBytes, cancellationToken).ConfigureAwait(false);
+        var entries = index.Entries.Where(e => e.Stage == 0)
+            .OrderBy(e => e.Path, StringComparer.Ordinal)
+            .ToList();
+
+        var sb = new StringBuilder();
+
+        foreach (var entry in entries)
+        {
+            if (!GitRepository.MatchesPathFilter(entry.Path, path))
+            {
+                continue;
+            }
+
+            var fullPath = Path.Combine(RootPath, entry.Path.Replace('/', Path.DirectorySeparatorChar));
+
+            if (!File.Exists(fullPath))
+            {
+                // Deleted in working tree
+                var oldBlob = await _repo.ObjectStore.ReadObjectAsync(entry.Hash, cancellationToken).ConfigureAwait(false);
+                var (diffText, _, _) = UnifiedDiffFormatter.FormatFileDiff(
+                    oldPath: entry.Path,
+                    newPath: null,
+                    oldHash: entry.Hash,
+                    newHash: null,
+                    oldContent: oldBlob.Content,
+                    newContent: null,
+                    oldMode: GitRepository.FormatFileMode(entry.FileMode),
+                    newMode: null);
+
+                sb.Append(diffText);
+            }
+            else
+            {
+                var workingBytes = await File.ReadAllBytesAsync(fullPath, cancellationToken).ConfigureAwait(false);
+                var workingHash = GitHashHelper.ComputeBlobHash(workingBytes, HashLengthBytes);
+
+                int currentMode = entry.FileMode;
+                if (!OperatingSystem.IsWindows())
+                {
+                    try
+                    {
+                        var unixMode = File.GetUnixFileMode(fullPath);
+                        if ((unixMode & (UnixFileMode.UserExecute | UnixFileMode.GroupExecute | UnixFileMode.OtherExecute)) != 0)
+                        {
+                            currentMode = 33261; // 100755
+                        }
+                        else
+                        {
+                            currentMode = 33188; // 100644
+                        }
+                    }
+                    catch
+                    {
+                        // Ignore file mode inspection error
+                    }
+                }
+
+                if (workingHash == entry.Hash && currentMode == entry.FileMode)
+                {
+                    continue;
+                }
+
+                var oldBlob = await _repo.ObjectStore.ReadObjectAsync(entry.Hash, cancellationToken).ConfigureAwait(false);
+                var (diffText, _, _) = UnifiedDiffFormatter.FormatFileDiff(
+                    oldPath: entry.Path,
+                    newPath: entry.Path,
+                    oldHash: entry.Hash,
+                    newHash: workingHash,
+                    oldContent: oldBlob.Content,
+                    newContent: workingBytes,
+                    oldMode: GitRepository.FormatFileMode(entry.FileMode),
+                    newMode: GitRepository.FormatFileMode(currentMode));
+
+                sb.Append(diffText);
+            }
+        }
+
+        return sb.ToString();
+    }
+
+    /// <inheritdoc />
+    public async Task<string> GetStagedDiffAsync(string? path = null, CancellationToken cancellationToken = default)
+    {
+        var index = await GitIndex.ReadAsync(_indexManager.IndexPath, HashLengthBytes, cancellationToken).ConfigureAwait(false);
+        var indexLeaves = index.Entries.Where(e => e.Stage == 0)
+            .ToDictionary(e => e.Path, e => new TreeLeaf(e.FileMode, e.Hash), StringComparer.Ordinal);
+
+        Dictionary<string, TreeLeaf> headLeaves;
+        try
+        {
+            var headCommit = await _repo.GetCommitAsync(null, cancellationToken).ConfigureAwait(false);
+            headLeaves = await _repo.LoadLeafEntriesAsync(headCommit.Tree, cancellationToken).ConfigureAwait(false);
+        }
+        catch
+        {
+            // Initial commit does not exist yet; diff against empty tree
+            headLeaves = new Dictionary<string, TreeLeaf>(StringComparer.Ordinal);
+        }
+
+        var (diffText, _) = await _repo.ComputeLeavesDiffAsync(headLeaves, indexLeaves, path, cancellationToken).ConfigureAwait(false);
+        return diffText;
+    }
 
     #endregion
 
