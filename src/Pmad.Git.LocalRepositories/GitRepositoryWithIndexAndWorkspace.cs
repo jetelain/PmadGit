@@ -1,5 +1,6 @@
 using System.IO;
 using System.Text;
+using Pmad.Git.LocalRepositories.Diff;
 
 namespace Pmad.Git.LocalRepositories;
 
@@ -263,6 +264,18 @@ public sealed class GitRepositoryWithIndexAndWorkspace : IGitWorkspaceRepository
     public Task<GitHash> WriteTreeAsync(GitIndex index, CancellationToken cancellationToken = default) =>
         _repo.WriteTreeAsync(index, cancellationToken);
 
+    /// <inheritdoc />
+    public Task<string> GetDiffAsync(string? fromCommit = null, string? toCommit = null, string? path = null, CancellationToken cancellationToken = default) =>
+        _repo.GetDiffAsync(fromCommit, toCommit, path, cancellationToken);
+
+    /// <inheritdoc />
+    public Task<string> GetCommitDiffAsync(string commitIsh, string? path = null, CancellationToken cancellationToken = default) =>
+        _repo.GetCommitDiffAsync(commitIsh, path, cancellationToken);
+
+    /// <inheritdoc />
+    public Task<GitDiffStat> GetCommitStatAsync(string commitIsh, CancellationToken cancellationToken = default) =>
+        _repo.GetCommitStatAsync(commitIsh, cancellationToken);
+
     #endregion
 
     #region Workspace & Staging Operations
@@ -306,6 +319,133 @@ public sealed class GitRepositoryWithIndexAndWorkspace : IGitWorkspaceRepository
     /// <inheritdoc />
     public Task RestoreAllAsync(bool removeUntracked = false, CancellationToken cancellationToken = default) =>
         _indexManager.RestoreAllAsync(removeUntracked, cancellationToken);
+
+    /// <inheritdoc />
+    public async Task<string> GetUnstagedDiffAsync(string? path = null, CancellationToken cancellationToken = default)
+    {
+        var index = await GitIndex.ReadAsync(_indexManager.IndexPath, HashLengthBytes, cancellationToken).ConfigureAwait(false);
+        var entries = index.Entries.Where(e => e.Stage == 0)
+            .OrderBy(e => e.Path, StringComparer.Ordinal)
+            .ToList();
+
+        var sb = new StringBuilder();
+
+        foreach (var entry in entries)
+        {
+            if (!GitRepository.MatchesPathFilter(entry.Path, path))
+            {
+                continue;
+            }
+
+            var fullPath = Path.Combine(RootPath, entry.Path.Replace('/', Path.DirectorySeparatorChar));
+
+            if (entry.FileMode == GitRepository.SubmoduleMode)
+            {
+                if (!Directory.Exists(fullPath))
+                {
+                    // Deleted submodule
+                    var oldContent = Encoding.UTF8.GetBytes($"Subproject commit {entry.Hash.Value}\n");
+                    var (diffText, _, _) = UnifiedDiffFormatter.FormatFileDiff(
+                        oldPath: entry.Path,
+                        newPath: null,
+                        oldHash: entry.Hash,
+                        newHash: null,
+                        oldContent: oldContent,
+                        newContent: null,
+                        oldMode: GitRepository.FormatFileMode(entry.FileMode),
+                        newMode: null);
+                    sb.Append(diffText);
+                }
+                else
+                {
+                    var workingHead = await TryGetSubmoduleHeadAsync(fullPath, cancellationToken).ConfigureAwait(false);
+                    if (workingHead.HasValue && !workingHead.Value.Equals(entry.Hash))
+                    {
+                        var oldContent = Encoding.UTF8.GetBytes($"Subproject commit {entry.Hash.Value}\n");
+                        var newContent = Encoding.UTF8.GetBytes($"Subproject commit {workingHead.Value.Value}\n");
+                        var (diffText, _, _) = UnifiedDiffFormatter.FormatFileDiff(
+                            oldPath: entry.Path,
+                            newPath: entry.Path,
+                            oldHash: entry.Hash,
+                            newHash: workingHead.Value,
+                            oldContent: oldContent,
+                            newContent: newContent,
+                            oldMode: GitRepository.FormatFileMode(entry.FileMode),
+                            newMode: GitRepository.FormatFileMode(entry.FileMode));
+                        sb.Append(diffText);
+                    }
+                }
+                continue;
+            }
+
+            if (!File.Exists(fullPath))
+            {
+                // Deleted in working tree
+                var oldBlob = await _repo.ObjectStore.ReadObjectAsync(entry.Hash, cancellationToken).ConfigureAwait(false);
+                var (diffText, _, _) = UnifiedDiffFormatter.FormatFileDiff(
+                    oldPath: entry.Path,
+                    newPath: null,
+                    oldHash: entry.Hash,
+                    newHash: null,
+                    oldContent: oldBlob.Content,
+                    newContent: null,
+                    oldMode: GitRepository.FormatFileMode(entry.FileMode),
+                    newMode: null);
+
+                sb.Append(diffText);
+            }
+            else
+            {
+                var fileInfo = new FileInfo(fullPath);
+                var workingBytes = await File.ReadAllBytesAsync(fullPath, cancellationToken).ConfigureAwait(false);
+                var workingHash = GitHashHelper.ComputeBlobHash(workingBytes, HashLengthBytes);
+                int currentMode = GitIndexEntry.GetFileMode(fileInfo);
+
+                if (workingHash == entry.Hash && currentMode == entry.FileMode)
+                {
+                    continue;
+                }
+
+                var oldBlob = await _repo.ObjectStore.ReadObjectAsync(entry.Hash, cancellationToken).ConfigureAwait(false);
+                var (diffText, _, _) = UnifiedDiffFormatter.FormatFileDiff(
+                    oldPath: entry.Path,
+                    newPath: entry.Path,
+                    oldHash: entry.Hash,
+                    newHash: workingHash,
+                    oldContent: oldBlob.Content,
+                    newContent: workingBytes,
+                    oldMode: GitRepository.FormatFileMode(entry.FileMode),
+                    newMode: GitRepository.FormatFileMode(currentMode));
+
+                sb.Append(diffText);
+            }
+        }
+
+        return sb.ToString();
+    }
+
+    /// <inheritdoc />
+    public async Task<string> GetStagedDiffAsync(string? path = null, CancellationToken cancellationToken = default)
+    {
+        var index = await GitIndex.ReadAsync(_indexManager.IndexPath, HashLengthBytes, cancellationToken).ConfigureAwait(false);
+        var indexLeaves = index.Entries.Where(e => e.Stage == 0)
+            .ToDictionary(e => e.Path, e => new TreeLeaf(e.FileMode, e.Hash), StringComparer.Ordinal);
+
+        Dictionary<string, TreeLeaf> headLeaves;
+        try
+        {
+            var headCommit = await _repo.GetCommitAsync(null, cancellationToken).ConfigureAwait(false);
+            headLeaves = await _repo.LoadLeafEntriesAsync(headCommit.Tree, cancellationToken).ConfigureAwait(false);
+        }
+        catch
+        {
+            // Initial commit does not exist yet; diff against empty tree
+            headLeaves = new Dictionary<string, TreeLeaf>(StringComparer.Ordinal);
+        }
+
+        var (diffText, _) = await _repo.ComputeLeavesDiffAsync(headLeaves, indexLeaves, path, cancellationToken).ConfigureAwait(false);
+        return diffText;
+    }
 
     #endregion
 
@@ -801,6 +941,45 @@ public sealed class GitRepositoryWithIndexAndWorkspace : IGitWorkspaceRepository
         }
 
         return null;
+    }
+
+    private static async Task<GitHash?> TryGetSubmoduleHeadAsync(string fullPath, CancellationToken cancellationToken)
+    {
+        try
+        {
+            string? gitDir = null;
+            var gitItemPath = Path.Combine(fullPath, ".git");
+
+            if (Directory.Exists(gitItemPath))
+            {
+                gitDir = gitItemPath;
+            }
+            else if (File.Exists(gitItemPath))
+            {
+                var content = (await File.ReadAllTextAsync(gitItemPath, cancellationToken).ConfigureAwait(false)).Trim();
+                if (content.StartsWith("gitdir:", StringComparison.OrdinalIgnoreCase))
+                {
+                    var target = content.Substring(7).Trim();
+                    gitDir = Path.GetFullPath(Path.Combine(fullPath, target));
+                }
+            }
+            else if (File.Exists(Path.Combine(fullPath, "HEAD")))
+            {
+                gitDir = fullPath;
+            }
+
+            if (gitDir == null || !Directory.Exists(gitDir))
+            {
+                return null;
+            }
+
+            var refStore = new GitReferenceStore(gitDir);
+            return await refStore.ResolveHeadAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch
+        {
+            return null;
+        }
     }
 
     #endregion

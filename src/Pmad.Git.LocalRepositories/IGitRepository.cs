@@ -423,5 +423,41 @@ public interface IGitRepository : IGitRepositoryCacheInvalidator
         string key,
         bool global = false,
         CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Computes the unified diff between two commits, or between a commit and its first parent, optionally filtered to a sub-path.
+    /// </summary>
+    /// <param name="fromCommit">The base commit hash or reference; if null, defaults to the first parent of <paramref name="toCommit"/> (or empty tree if root commit).</param>
+    /// <param name="toCommit">The target commit hash or reference; defaults to HEAD if null.</param>
+    /// <param name="path">Optional path filter within the repository.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>The unified diff text.</returns>
+    Task<string> GetDiffAsync(
+        string? fromCommit = null,
+        string? toCommit = null,
+        string? path = null,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Computes the unified diff introduced by a commit compared to its first parent (or empty tree if root commit).
+    /// </summary>
+    /// <param name="commitIsh">The commit hash or reference to inspect.</param>
+    /// <param name="path">Optional path filter within the repository.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>The unified diff text.</returns>
+    Task<string> GetCommitDiffAsync(
+        string commitIsh,
+        string? path = null,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Computes the diff statistics (files changed, insertions, deletions) introduced by a commit.
+    /// </summary>
+    /// <param name="commitIsh">The commit hash or reference to inspect.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>The <see cref="Diff.GitDiffStat"/> summary.</returns>
+    Task<Diff.GitDiffStat> GetCommitStatAsync(
+        string commitIsh,
+        CancellationToken cancellationToken = default);
 }
 

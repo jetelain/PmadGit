@@ -2,6 +2,7 @@ using System.Runtime.CompilerServices;
 using System.Text;
 using Pmad.Git.LocalRepositories.Caching;
 using Pmad.Git.LocalRepositories.Config;
+using Pmad.Git.LocalRepositories.Diff;
 using Pmad.Git.LocalRepositories.Helpers;
 
 namespace Pmad.Git.LocalRepositories;
@@ -20,6 +21,7 @@ public sealed class GitRepository : IGitRepository, IGitRepositoryCacheInvalidat
     private readonly GitLastChangeCache _lastChangeCache;
     private const int RegularFileMode = 33188; // 100644 in octal
     private const int DirectoryMode = 16384;   // 040000 in octal
+    internal const int SubmoduleMode = 57344; // 160000 in octal
 
     private GitRepository(string rootPath, string gitDirectory, IGitRepositoryLockManager lockManager)
     {
@@ -1213,7 +1215,7 @@ public sealed class GitRepository : IGitRepository, IGitRepositoryCacheInvalidat
         return $"refs/heads/{trimmed}";
     }
 
-    private async Task<Dictionary<string, TreeLeaf>> LoadLeafEntriesAsync(GitHash treeHash, CancellationToken cancellationToken)
+    internal async Task<Dictionary<string, TreeLeaf>> LoadLeafEntriesAsync(GitHash treeHash, CancellationToken cancellationToken)
     {
         var entries = new Dictionary<string, TreeLeaf>(StringComparer.Ordinal);
         await foreach (var item in EnumerateTreeAsync(treeHash, string.Empty, SearchOption.AllDirectories, cancellationToken).ConfigureAwait(false))
@@ -1971,5 +1973,232 @@ public sealed class GitRepository : IGitRepository, IGitRepositoryCacheInvalidat
         }
 
         return Path.Combine(GitDirectory, "config");
+    }
+
+    internal static string FormatFileMode(int mode)
+    {
+        if (mode == 0)
+        {
+            return "100644";
+        }
+        return Convert.ToString(mode, 8).PadLeft(6, '0');
+    }
+
+    internal static bool MatchesPathFilter(string filePath, string? pathFilter)
+    {
+        if (string.IsNullOrEmpty(pathFilter))
+        {
+            return true;
+        }
+        var normalizedFilter = pathFilter.Replace('\\', '/').Trim('/');
+        var normalizedPath = filePath.Replace('\\', '/');
+        return normalizedPath == normalizedFilter ||
+               normalizedPath.StartsWith(normalizedFilter + "/", StringComparison.Ordinal);
+    }
+
+    private async Task<byte[]> GetEntryDiffContentAsync(TreeLeaf leaf, CancellationToken cancellationToken)
+    {
+        if (leaf.Mode == SubmoduleMode)
+        {
+            return Encoding.UTF8.GetBytes($"Subproject commit {leaf.Hash.Value}\n");
+        }
+
+        var blob = await _objectStore.ReadObjectAsync(leaf.Hash, cancellationToken).ConfigureAwait(false);
+        return blob.Content;
+    }
+
+    internal async Task<(string DiffText, GitDiffStat Stat)> ComputeLeavesDiffAsync(
+        IReadOnlyDictionary<string, TreeLeaf> oldLeaves,
+        IReadOnlyDictionary<string, TreeLeaf> newLeaves,
+        string? pathFilter,
+        CancellationToken cancellationToken)
+    {
+        var allPaths = new SortedSet<string>(oldLeaves.Keys.Concat(newLeaves.Keys), StringComparer.Ordinal);
+
+        var sb = new StringBuilder();
+        var filesChanged = 0;
+        var totalInsertions = 0;
+        var totalDeletions = 0;
+
+        foreach (var path in allPaths)
+        {
+            if (!MatchesPathFilter(path, pathFilter))
+            {
+                continue;
+            }
+
+            var inOld = oldLeaves.TryGetValue(path, out var oldLeaf);
+            var inNew = newLeaves.TryGetValue(path, out var newLeaf);
+
+            if (inOld && !inNew)
+            {
+                // Deleted file
+                var oldContent = await GetEntryDiffContentAsync(oldLeaf, cancellationToken).ConfigureAwait(false);
+                var (diffText, ins, del) = UnifiedDiffFormatter.FormatFileDiff(
+                    oldPath: path,
+                    newPath: null,
+                    oldHash: oldLeaf.Hash,
+                    newHash: null,
+                    oldContent: oldContent,
+                    newContent: null,
+                    oldMode: FormatFileMode(oldLeaf.Mode),
+                    newMode: null);
+
+                if (!string.IsNullOrEmpty(diffText))
+                {
+                    sb.Append(diffText);
+                    filesChanged++;
+                    totalInsertions += ins;
+                    totalDeletions += del;
+                }
+            }
+            else if (!inOld && inNew)
+            {
+                // Created file
+                var newContent = await GetEntryDiffContentAsync(newLeaf, cancellationToken).ConfigureAwait(false);
+                var (diffText, ins, del) = UnifiedDiffFormatter.FormatFileDiff(
+                    oldPath: null,
+                    newPath: path,
+                    oldHash: null,
+                    newHash: newLeaf.Hash,
+                    oldContent: null,
+                    newContent: newContent,
+                    oldMode: null,
+                    newMode: FormatFileMode(newLeaf.Mode));
+
+                if (!string.IsNullOrEmpty(diffText))
+                {
+                    sb.Append(diffText);
+                    filesChanged++;
+                    totalInsertions += ins;
+                    totalDeletions += del;
+                }
+            }
+            else if (inOld && inNew)
+            {
+                if (oldLeaf.Hash == newLeaf.Hash && oldLeaf.Mode == newLeaf.Mode)
+                {
+                    continue;
+                }
+
+                if (oldLeaf.Hash == newLeaf.Hash && oldLeaf.Mode != newLeaf.Mode)
+                {
+                    // Mode change only
+                    var (diffText, ins, del) = UnifiedDiffFormatter.FormatFileDiff(
+                        oldPath: path,
+                        newPath: path,
+                        oldHash: oldLeaf.Hash,
+                        newHash: newLeaf.Hash,
+                        oldContent: null,
+                        newContent: null,
+                        oldMode: FormatFileMode(oldLeaf.Mode),
+                        newMode: FormatFileMode(newLeaf.Mode));
+
+                    if (!string.IsNullOrEmpty(diffText))
+                    {
+                        sb.Append(diffText);
+                        filesChanged++;
+                        totalInsertions += ins;
+                        totalDeletions += del;
+                    }
+                }
+                else
+                {
+                    // Content changed (and possibly mode changed)
+                    var oldContent = await GetEntryDiffContentAsync(oldLeaf, cancellationToken).ConfigureAwait(false);
+                    var newContent = await GetEntryDiffContentAsync(newLeaf, cancellationToken).ConfigureAwait(false);
+                    var (diffText, ins, del) = UnifiedDiffFormatter.FormatFileDiff(
+                        oldPath: path,
+                        newPath: path,
+                        oldHash: oldLeaf.Hash,
+                        newHash: newLeaf.Hash,
+                        oldContent: oldContent,
+                        newContent: newContent,
+                        oldMode: FormatFileMode(oldLeaf.Mode),
+                        newMode: FormatFileMode(newLeaf.Mode));
+
+                    if (!string.IsNullOrEmpty(diffText))
+                    {
+                        sb.Append(diffText);
+                        filesChanged++;
+                        totalInsertions += ins;
+                        totalDeletions += del;
+                    }
+                }
+            }
+        }
+
+        return (sb.ToString(), new GitDiffStat(filesChanged, totalInsertions, totalDeletions));
+    }
+
+    internal async Task<(string DiffText, GitDiffStat Stat)> ComputeTreeDiffAsync(
+        GitHash? oldTreeHash,
+        GitHash? newTreeHash,
+        string? pathFilter,
+        CancellationToken cancellationToken)
+    {
+        var oldLeaves = oldTreeHash != null
+            ? await LoadLeafEntriesAsync(oldTreeHash.Value, cancellationToken).ConfigureAwait(false)
+            : new Dictionary<string, TreeLeaf>(StringComparer.Ordinal);
+
+        var newLeaves = newTreeHash != null
+            ? await LoadLeafEntriesAsync(newTreeHash.Value, cancellationToken).ConfigureAwait(false)
+            : new Dictionary<string, TreeLeaf>(StringComparer.Ordinal);
+
+        return await ComputeLeavesDiffAsync(oldLeaves, newLeaves, pathFilter, cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <inheritdoc/>
+    public async Task<string> GetDiffAsync(
+        string? fromCommit = null,
+        string? toCommit = null,
+        string? path = null,
+        CancellationToken cancellationToken = default)
+    {
+        var to = await GetCommitAsync(toCommit, cancellationToken).ConfigureAwait(false);
+
+        GitHash? oldTreeHash = null;
+        if (fromCommit != null)
+        {
+            var from = await GetCommitAsync(fromCommit, cancellationToken).ConfigureAwait(false);
+            oldTreeHash = from.Tree;
+        }
+        else if (to.Parents.Count > 0)
+        {
+            var parent = await GetCommitAsync(to.Parents[0].Value, cancellationToken).ConfigureAwait(false);
+            oldTreeHash = parent.Tree;
+        }
+
+        var (diffText, _) = await ComputeTreeDiffAsync(oldTreeHash, to.Tree, path, cancellationToken).ConfigureAwait(false);
+        return diffText;
+    }
+
+    /// <inheritdoc/>
+    public async Task<string> GetCommitDiffAsync(
+        string commitIsh,
+        string? path = null,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(commitIsh);
+        return await GetDiffAsync(fromCommit: null, toCommit: commitIsh, path: path, cancellationToken: cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <inheritdoc/>
+    public async Task<GitDiffStat> GetCommitStatAsync(
+        string commitIsh,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(commitIsh);
+        var to = await GetCommitAsync(commitIsh, cancellationToken).ConfigureAwait(false);
+
+        GitHash? oldTreeHash = null;
+        if (to.Parents.Count > 0)
+        {
+            var parent = await GetCommitAsync(to.Parents[0].Value, cancellationToken).ConfigureAwait(false);
+            oldTreeHash = parent.Tree;
+        }
+
+        var (_, stat) = await ComputeTreeDiffAsync(oldTreeHash, to.Tree, pathFilter: null, cancellationToken).ConfigureAwait(false);
+        return stat;
     }
 }
