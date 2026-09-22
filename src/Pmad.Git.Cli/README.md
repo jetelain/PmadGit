@@ -110,7 +110,7 @@ using Pmad.Git.Cli;
 var repository = GitRepository.Open("/path/to/repo");
 
 // Creates the synchronizer and begins background monitoring
-await using var synchronizer = repository.CreateSynchronizer(new GitSyncOptions
+await using var synchronizer = repository.CreateSynchronizer(new GitCliSyncOptions
 {
     Remote = "origin",
     Branch = "main",

@@ -1,4 +1,4 @@
-namespace Pmad.Git.Cli;
+namespace Pmad.Git.LocalRepositories;
 
 /// <summary>
 /// Represents the current synchronization state of a <see cref="GitRepositorySynchronizer"/>.

@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using Pmad.Git.Cli;
+using Pmad.Git.LocalRepositories;
 
 namespace Pmad.Git.HttpServer;
 
@@ -25,7 +26,7 @@ internal sealed class GitRepositorySynchronizerService : IGitRepositorySynchroni
         return _synchronizers.TryGetValue(normalizedPath, out var synchronizer) ? synchronizer : null;
     }
 
-    public GitRepositorySynchronizer SetupSynchronizer(string repositoryPath, GitSyncOptions options)
+    public GitRepositorySynchronizer SetupCliSynchronizer(string repositoryPath, GitCliSyncOptions options)
     {
         if (options is null)
         {
@@ -51,7 +52,7 @@ internal sealed class GitRepositorySynchronizerService : IGitRepositorySynchroni
         return synchronizer;
     }
 
-    public async Task<GitRepositorySynchronizer> SetupSynchronizerAsync(string repositoryPath, string remoteUrl, GitSyncOptions options, CancellationToken cancellationToken = default)
+    public async Task<GitRepositorySynchronizer> SetupCliSynchronizerAsync(string repositoryPath, string remoteUrl, GitCliSyncOptions options, CancellationToken cancellationToken = default)
     {
         if (options is null)
         {
@@ -74,7 +75,7 @@ internal sealed class GitRepositorySynchronizerService : IGitRepositorySynchroni
             await GitCliRepository.CloneAsync(remoteUrl, normalizedPath, options.Branch, options.Remote, options.GitCliPath, cancellationToken).ConfigureAwait(false);
         }
 
-        return SetupSynchronizer(normalizedPath, options);
+        return SetupCliSynchronizer(normalizedPath, options);
     }
 
     public void InvalidateSynchronizer(string repositoryPath)

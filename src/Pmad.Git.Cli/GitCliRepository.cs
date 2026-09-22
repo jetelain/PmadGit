@@ -8,7 +8,7 @@ namespace Pmad.Git.Cli;
 /// supported by <see cref="GitRepository"/>, such as pushing/pulling from a remote, managing
 /// branches, and merging (including manual conflict resolution).
 /// </summary>
-public class GitCliRepository
+public class GitCliRepository : IGitRepositoryWithRemote
 {
     /// <summary>
     /// Absolute path to the repository working tree root.
