@@ -322,5 +322,106 @@ public interface IGitRepository : IGitRepositoryCacheInvalidator
     Task<GitHash> WriteTreeAsync(
         GitIndex index,
         CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Lists the branch names of the repository.
+    /// </summary>
+    /// <param name="includeRemote">When <see langword="true"/>, includes remote-tracking branches.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>A list of branch names.</returns>
+    Task<IReadOnlyList<string>> GetBranchesAsync(
+        bool includeRemote = false,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Creates a new branch pointing to the specified start point (or HEAD).
+    /// </summary>
+    /// <param name="branchName">The name of the branch to create.</param>
+    /// <param name="startPoint">Optional commit hash or reference to start from (defaults to HEAD).</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    Task CreateBranchAsync(
+        string branchName,
+        string? startPoint = null,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Renames a local branch.
+    /// </summary>
+    /// <param name="oldName">Current branch name.</param>
+    /// <param name="newName">New branch name.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    Task RenameBranchAsync(
+        string oldName,
+        string newName,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Deletes a local branch.
+    /// </summary>
+    /// <param name="branchName">Name of the branch to delete.</param>
+    /// <param name="force">When <see langword="true"/>, deletes the branch even if not merged into HEAD.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    Task DeleteBranchAsync(
+        string branchName,
+        bool force = false,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Gets the upstream tracking status (ahead/behind commit counts) for the specified branch (or current branch).
+    /// </summary>
+    /// <param name="branch">Branch name, or <see langword="null"/> for current branch.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>A <see cref="GitTrackingStatus"/> record.</returns>
+    Task<GitTrackingStatus> GetTrackingStatusAsync(
+        string? branch = null,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Checks whether the specified commit is reachable from a remote tracking branch.
+    /// </summary>
+    /// <param name="commitHash">The commit hash to check.</param>
+    /// <param name="remoteBranch">Specific remote branch (e.g. "origin/main"), or <see langword="null"/> for any remote branch.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns><see langword="true"/> if reachable from a remote branch; otherwise, <see langword="false"/>.</returns>
+    Task<bool> IsCommitPushedAsync(
+        GitHash commitHash,
+        string? remoteBranch = null,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Gets the value of a Git configuration key.
+    /// </summary>
+    /// <param name="key">The configuration key name (e.g. "user.name", "core.bare").</param>
+    /// <param name="global">When <see langword="true"/>, reads from global config; otherwise reads effective repository config.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>The configuration value, or <see langword="null"/> if unset.</returns>
+    Task<string?> GetConfigAsync(
+        string key,
+        bool global = false,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Sets the value of a Git configuration key.
+    /// </summary>
+    /// <param name="key">The configuration key name.</param>
+    /// <param name="value">The value to set.</param>
+    /// <param name="global">When <see langword="true"/>, writes to global config; otherwise writes to repository config.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    Task SetConfigAsync(
+        string key,
+        string value,
+        bool global = false,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Removes a Git configuration key.
+    /// </summary>
+    /// <param name="key">The configuration key name.</param>
+    /// <param name="global">When <see langword="true"/>, unsets from global config; otherwise unsets from repository config.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    Task UnsetConfigAsync(
+        string key,
+        bool global = false,
+        CancellationToken cancellationToken = default);
 }
 

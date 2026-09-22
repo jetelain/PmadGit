@@ -1,6 +1,7 @@
 using System.Runtime.CompilerServices;
 using System.Text;
 using Pmad.Git.LocalRepositories.Caching;
+using Pmad.Git.LocalRepositories.Config;
 using Pmad.Git.LocalRepositories.Helpers;
 
 namespace Pmad.Git.LocalRepositories;
@@ -1576,5 +1577,399 @@ public sealed class GitRepository : IGitRepository, IGitRepositoryCacheInvalidat
         }
 
         return null;
+    }
+
+    /// <inheritdoc/>
+    public async Task<IReadOnlyList<string>> GetBranchesAsync(bool includeRemote = false, CancellationToken cancellationToken = default)
+    {
+        var localRefs = await _referenceStore.GetReferencesByPrefixAsync("refs/heads/", cancellationToken).ConfigureAwait(false);
+        var result = new List<string>(localRefs.Keys.Select(k => k["refs/heads/".Length..]));
+
+        if (includeRemote)
+        {
+            var remoteRefs = await _referenceStore.GetReferencesByPrefixAsync("refs/remotes/", cancellationToken).ConfigureAwait(false);
+            result.AddRange(remoteRefs.Keys.Select(k => k["refs/remotes/".Length..]));
+        }
+
+        result.Sort(StringComparer.Ordinal);
+        return result;
+    }
+
+    /// <inheritdoc/>
+    public async Task CreateBranchAsync(string branchName, string? startPoint = null, CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(branchName);
+
+        GitHash targetCommit;
+        if (startPoint == null)
+        {
+            var head = await GetCommitAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
+            targetCommit = head.Id;
+        }
+        else
+        {
+            var commit = await GetCommitAsync(startPoint, cancellationToken).ConfigureAwait(false);
+            targetCommit = commit.Id;
+        }
+
+        var refPath = branchName.StartsWith("refs/heads/", StringComparison.Ordinal)
+            ? branchName
+            : $"refs/heads/{branchName}";
+
+        await _referenceStore.CreateReferenceAsync(refPath, targetCommit, overwrite: false, cancellationToken).ConfigureAwait(false);
+        InvalidateCaches(raiseChanged: true);
+    }
+
+    /// <inheritdoc/>
+    public async Task RenameBranchAsync(string oldName, string newName, CancellationToken cancellationToken = default)
+    {
+        await _referenceStore.RenameBranchAsync(oldName, newName, cancellationToken).ConfigureAwait(false);
+        InvalidateCaches(raiseChanged: true);
+    }
+
+    /// <inheritdoc/>
+    public async Task DeleteBranchAsync(string branchName, bool force = false, CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(branchName);
+        var normalizedBranch = branchName.Replace('\\', '/').Trim();
+        if (normalizedBranch.StartsWith("refs/heads/", StringComparison.Ordinal))
+        {
+            normalizedBranch = normalizedBranch["refs/heads/".Length..];
+        }
+
+        if (!force)
+        {
+            var branchCommit = await _referenceStore.TryResolveReferenceAsync($"refs/heads/{normalizedBranch}", cancellationToken).ConfigureAwait(false);
+            if (branchCommit.HasValue)
+            {
+                var headCommit = await _referenceStore.ResolveHeadAsync(cancellationToken).ConfigureAwait(false);
+                var isMerged = await IsCommitReachableAsync(from: headCommit, to: branchCommit.Value, cancellationToken).ConfigureAwait(false);
+                if (!isMerged)
+                {
+                    throw new InvalidOperationException($"The branch '{normalizedBranch}' is not fully merged.");
+                }
+            }
+        }
+
+        await _referenceStore.DeleteBranchAsync(normalizedBranch, cancellationToken).ConfigureAwait(false);
+        InvalidateCaches(raiseChanged: true);
+    }
+
+    /// <inheritdoc/>
+    public async Task<GitTrackingStatus> GetTrackingStatusAsync(string? branch = null, CancellationToken cancellationToken = default)
+    {
+        var localBranch = branch ?? await _referenceStore.GetCurrentBranchNameAsync(cancellationToken).ConfigureAwait(false);
+        if (string.IsNullOrEmpty(localBranch))
+        {
+            if (branch != null)
+            {
+                throw new ArgumentException($"Branch '{branch}' does not exist.", nameof(branch));
+            }
+            throw new InvalidOperationException("No current branch is checked out (HEAD is detached).");
+        }
+
+        if (localBranch.StartsWith("refs/heads/", StringComparison.Ordinal))
+        {
+            localBranch = localBranch["refs/heads/".Length..];
+        }
+
+        var localRef = $"refs/heads/{localBranch}";
+        var localCommitHash = await _referenceStore.TryResolveReferenceAsync(localRef, cancellationToken).ConfigureAwait(false);
+        if (!localCommitHash.HasValue)
+        {
+            throw new ArgumentException($"Branch '{localBranch}' does not exist.", nameof(branch));
+        }
+
+        var configPath = Path.Combine(GitDirectory, "config");
+        var config = await GitConfigFile.ReadWithIncludesAsync(configPath, cancellationToken).ConfigureAwait(false);
+
+        var remoteName = config.GetValue("branch", localBranch, "remote");
+        var mergeRef = config.GetValue("branch", localBranch, "merge");
+
+        if (string.IsNullOrEmpty(remoteName) || string.IsNullOrEmpty(mergeRef))
+        {
+            return new GitTrackingStatus(localBranch, null, 0, 0);
+        }
+
+        string upstreamRef;
+        string userFacingUpstreamName;
+        if (string.Equals(remoteName, ".", StringComparison.Ordinal))
+        {
+            // Upstream is another local branch in the same repository
+            if (mergeRef.StartsWith("refs/heads/", StringComparison.Ordinal))
+            {
+                upstreamRef = mergeRef;
+                userFacingUpstreamName = mergeRef["refs/heads/".Length..];
+            }
+            else
+            {
+                upstreamRef = $"refs/heads/{mergeRef}";
+                userFacingUpstreamName = mergeRef;
+            }
+        }
+        else
+        {
+            // Upstream is a remote tracking branch
+            if (mergeRef.StartsWith("refs/heads/", StringComparison.Ordinal))
+            {
+                var remoteBranchName = mergeRef["refs/heads/".Length..];
+                upstreamRef = $"refs/remotes/{remoteName}/{remoteBranchName}";
+                userFacingUpstreamName = $"{remoteName}/{remoteBranchName}";
+            }
+            else
+            {
+                upstreamRef = $"refs/remotes/{remoteName}/{mergeRef}";
+                userFacingUpstreamName = $"{remoteName}/{mergeRef}";
+            }
+        }
+
+        var upstreamCommitHash = await _referenceStore.TryResolveReferenceAsync(upstreamRef, cancellationToken).ConfigureAwait(false);
+        if (!upstreamCommitHash.HasValue)
+        {
+            // Upstream reference is unresolvable (does not exist or tracking branch disappeared).
+            // Return no upstream, matching CLI behavior (rev-parse @{upstream} failure).
+            return new GitTrackingStatus(localBranch, null, 0, 0);
+        }
+
+        if (localCommitHash.Value.Equals(upstreamCommitHash.Value))
+        {
+            return new GitTrackingStatus(localBranch, userFacingUpstreamName, 0, 0);
+        }
+
+        var (ahead, behind) = await CountAheadBehindAsync(localCommitHash.Value, upstreamCommitHash.Value, cancellationToken).ConfigureAwait(false);
+        return new GitTrackingStatus(localBranch, userFacingUpstreamName, ahead, behind);
+    }
+
+    private async Task<(int Ahead, int Behind)> CountAheadBehindAsync(GitHash local, GitHash upstream, CancellationToken cancellationToken)
+    {
+        if (local.Equals(upstream))
+        {
+            return (0, 0);
+        }
+
+        var localReachable = new HashSet<GitHash>();
+        var upstreamReachable = new HashSet<GitHash>();
+
+        var localQueue = new Queue<GitHash>();
+        var upstreamQueue = new Queue<GitHash>();
+
+        localQueue.Enqueue(local);
+        localReachable.Add(local);
+
+        upstreamQueue.Enqueue(upstream);
+        upstreamReachable.Add(upstream);
+
+        while (localQueue.Count > 0 || upstreamQueue.Count > 0)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            if (localQueue.Count > 0)
+            {
+                var curLocal = localQueue.Dequeue();
+                if (!upstreamReachable.Contains(curLocal))
+                {
+                    var c = await GetCommitAsync(curLocal, cancellationToken).ConfigureAwait(false);
+                    foreach (var p in c.Parents)
+                    {
+                        if (localReachable.Add(p))
+                        {
+                            localQueue.Enqueue(p);
+                        }
+                    }
+                }
+            }
+
+            if (upstreamQueue.Count > 0)
+            {
+                var curUpstream = upstreamQueue.Dequeue();
+                if (!localReachable.Contains(curUpstream))
+                {
+                    var c = await GetCommitAsync(curUpstream, cancellationToken).ConfigureAwait(false);
+                    foreach (var p in c.Parents)
+                    {
+                        if (upstreamReachable.Add(p))
+                        {
+                            upstreamQueue.Enqueue(p);
+                        }
+                    }
+                }
+            }
+        }
+
+        var ahead = 0;
+        foreach (var h in localReachable)
+        {
+            if (!upstreamReachable.Contains(h))
+            {
+                ahead++;
+            }
+        }
+
+        var behind = 0;
+        foreach (var h in upstreamReachable)
+        {
+            if (!localReachable.Contains(h))
+            {
+                behind++;
+            }
+        }
+
+        return (ahead, behind);
+    }
+
+    /// <inheritdoc/>
+    public async Task<bool> IsCommitPushedAsync(GitHash commitHash, string? remoteBranch = null, CancellationToken cancellationToken = default)
+    {
+        if (remoteBranch != null)
+        {
+            var refPath = remoteBranch.StartsWith("refs/remotes/", StringComparison.Ordinal)
+                ? remoteBranch
+                : $"refs/remotes/{remoteBranch}";
+
+            var targetCommit = await _referenceStore.TryResolveReferenceAsync(refPath, cancellationToken).ConfigureAwait(false);
+            if (!targetCommit.HasValue)
+            {
+                return false;
+            }
+
+            return await IsCommitReachableAsync(from: targetCommit.Value, to: commitHash, cancellationToken).ConfigureAwait(false);
+        }
+        else
+        {
+            var remoteRefs = await _referenceStore.GetReferencesByPrefixAsync("refs/remotes/", cancellationToken).ConfigureAwait(false);
+            foreach (var remoteRef in remoteRefs.Values)
+            {
+                if (await IsCommitReachableAsync(from: remoteRef, to: commitHash, cancellationToken).ConfigureAwait(false))
+                {
+                    return true;
+                }
+            }
+            return false;
+        }
+    }
+
+    /// <inheritdoc/>
+    public async Task<string?> GetConfigAsync(string key, bool global = false, CancellationToken cancellationToken = default)
+    {
+        if (global)
+        {
+            foreach (var globalPath in GitConfigEnvironment.GetGlobalConfigPaths())
+            {
+                if (File.Exists(globalPath))
+                {
+                    var globalConfig = await GitConfigFile.ReadWithIncludesAsync(globalPath, cancellationToken).ConfigureAwait(false);
+                    var val = globalConfig.GetValue(key);
+                    if (val != null)
+                    {
+                        return val;
+                    }
+                }
+            }
+            return null;
+        }
+
+        // Effective repository configuration: local -> global files -> system
+        var localPath = Path.Combine(GitDirectory, "config");
+        if (File.Exists(localPath))
+        {
+            var localConfig = await GitConfigFile.ReadWithIncludesAsync(localPath, cancellationToken).ConfigureAwait(false);
+            var localValue = localConfig.GetValue(key);
+            if (localValue != null)
+            {
+                return localValue;
+            }
+        }
+
+        foreach (var globalPath in GitConfigEnvironment.GetGlobalConfigPaths())
+        {
+            if (File.Exists(globalPath))
+            {
+                var globalConfig = await GitConfigFile.ReadWithIncludesAsync(globalPath, cancellationToken).ConfigureAwait(false);
+                var globalValue = globalConfig.GetValue(key);
+                if (globalValue != null)
+                {
+                    return globalValue;
+                }
+            }
+        }
+
+        var systemPath = GitConfigEnvironment.GetSystemConfigPath();
+        if (systemPath != null && File.Exists(systemPath))
+        {
+            var systemConfig = await GitConfigFile.ReadWithIncludesAsync(systemPath, cancellationToken).ConfigureAwait(false);
+            var systemValue = systemConfig.GetValue(key);
+            if (systemValue != null)
+            {
+                return systemValue;
+            }
+        }
+
+        return null;
+    }
+
+    /// <inheritdoc/>
+    public async Task SetConfigAsync(string key, string value, bool global = false, CancellationToken cancellationToken = default)
+    {
+        var configPath = GetConfigFilePath(global);
+        var writeLock = global
+            ? await GitConfigEnvironment.LockGlobalConfigAsync(cancellationToken).ConfigureAwait(false)
+            : await _referenceStore.LockManager.LockAllAsync(cancellationToken).ConfigureAwait(false);
+
+        try
+        {
+            var config = await GitConfigFile.ReadFromFileAsync(configPath, cancellationToken).ConfigureAwait(false);
+            config.SetValue(key, value);
+            await config.WriteToFileAsync(configPath, cancellationToken).ConfigureAwait(false);
+
+            if (!global)
+            {
+                InvalidateCaches(raiseChanged: false);
+            }
+        }
+        finally
+        {
+            writeLock.Dispose();
+        }
+    }
+
+    /// <inheritdoc/>
+    public async Task UnsetConfigAsync(string key, bool global = false, CancellationToken cancellationToken = default)
+    {
+        var configPath = GetConfigFilePath(global);
+        var writeLock = global
+            ? await GitConfigEnvironment.LockGlobalConfigAsync(cancellationToken).ConfigureAwait(false)
+            : await _referenceStore.LockManager.LockAllAsync(cancellationToken).ConfigureAwait(false);
+
+        try
+        {
+            if (!File.Exists(configPath))
+            {
+                return;
+            }
+
+            var config = await GitConfigFile.ReadFromFileAsync(configPath, cancellationToken).ConfigureAwait(false);
+            if (config.UnsetValue(key))
+            {
+                await config.WriteToFileAsync(configPath, cancellationToken).ConfigureAwait(false);
+                if (!global)
+                {
+                    InvalidateCaches(raiseChanged: false);
+                }
+            }
+        }
+        finally
+        {
+            writeLock.Dispose();
+        }
+    }
+
+    private string GetConfigFilePath(bool global)
+    {
+        if (global)
+        {
+            return GitConfigEnvironment.GetGlobalConfigWritePath();
+        }
+
+        return Path.Combine(GitDirectory, "config");
     }
 }

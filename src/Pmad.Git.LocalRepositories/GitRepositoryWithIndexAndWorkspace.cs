@@ -176,6 +176,42 @@ public sealed class GitRepositoryWithIndexAndWorkspace : IGitWorkspaceRepository
         _repo.DeleteReferenceAsync(referencePath, cancellationToken);
 
     /// <inheritdoc />
+    public Task<IReadOnlyList<string>> GetBranchesAsync(bool includeRemote = false, CancellationToken cancellationToken = default) =>
+        _repo.GetBranchesAsync(includeRemote, cancellationToken);
+
+    /// <inheritdoc />
+    public Task CreateBranchAsync(string branchName, string? startPoint = null, CancellationToken cancellationToken = default) =>
+        _repo.CreateBranchAsync(branchName, startPoint, cancellationToken);
+
+    /// <inheritdoc />
+    public Task RenameBranchAsync(string oldName, string newName, CancellationToken cancellationToken = default) =>
+        _repo.RenameBranchAsync(oldName, newName, cancellationToken);
+
+    /// <inheritdoc />
+    public Task DeleteBranchAsync(string branchName, bool force = false, CancellationToken cancellationToken = default) =>
+        _repo.DeleteBranchAsync(branchName, force, cancellationToken);
+
+    /// <inheritdoc />
+    public Task<GitTrackingStatus> GetTrackingStatusAsync(string? branch = null, CancellationToken cancellationToken = default) =>
+        _repo.GetTrackingStatusAsync(branch, cancellationToken);
+
+    /// <inheritdoc />
+    public Task<bool> IsCommitPushedAsync(GitHash commitHash, string? remoteBranch = null, CancellationToken cancellationToken = default) =>
+        _repo.IsCommitPushedAsync(commitHash, remoteBranch, cancellationToken);
+
+    /// <inheritdoc />
+    public Task<string?> GetConfigAsync(string key, bool global = false, CancellationToken cancellationToken = default) =>
+        _repo.GetConfigAsync(key, global, cancellationToken);
+
+    /// <inheritdoc />
+    public Task SetConfigAsync(string key, string value, bool global = false, CancellationToken cancellationToken = default) =>
+        _repo.SetConfigAsync(key, value, global, cancellationToken);
+
+    /// <inheritdoc />
+    public Task UnsetConfigAsync(string key, bool global = false, CancellationToken cancellationToken = default) =>
+        _repo.UnsetConfigAsync(key, global, cancellationToken);
+
+    /// <inheritdoc />
     public Task<IReadOnlyList<GitTreeChange>> CompareTreesAsync(GitHash oldTreeHash, GitHash newTreeHash, CancellationToken cancellationToken = default) =>
         _repo.CompareTreesAsync(oldTreeHash, newTreeHash, cancellationToken);
 
