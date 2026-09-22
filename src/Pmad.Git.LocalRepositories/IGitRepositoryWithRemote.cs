@@ -3,7 +3,7 @@ namespace Pmad.Git.LocalRepositories;
 /// <summary>
 /// Defines remote and merge synchronization operations for a Git repository.
 /// </summary>
-public interface IGitRemoteRepository
+public interface IGitRepositoryWithRemote
 {
     /// <summary>
     /// Absolute path to the repository working tree root.

@@ -1,7 +1,7 @@
 namespace Pmad.Git.LocalRepositories;
 
 /// <summary>
-/// Synchronizes a local repository with a remote <see cref="IGitRemoteRepository"/>.
+/// Synchronizes a local repository with a remote using an <see cref="IGitRepositoryWithRemote"/>.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -33,7 +33,7 @@ namespace Pmad.Git.LocalRepositories;
 /// </remarks>
 public sealed class GitRepositorySynchronizer : IAsyncDisposable
 {
-    private readonly IGitRemoteRepository _remoteRepo;
+    private readonly IGitRepositoryWithRemote _remoteRepo;
     private readonly GitSyncOptions _options;
     private readonly SemaphoreSlim _gate = new(1, 1);
     private readonly CancellationTokenSource _lifetimeCts = new();
@@ -58,18 +58,18 @@ public sealed class GitRepositorySynchronizer : IAsyncDisposable
     public event EventHandler<Exception>? SyncError;
 
     /// <summary>
-    /// Creates a synchronizer wrapping an <see cref="IGitRemoteRepository"/> with no automatic local-change detection.
+    /// Creates a synchronizer wrapping an <see cref="IGitRepositoryWithRemote"/> with no automatic local-change detection.
     /// </summary>
-    public GitRepositorySynchronizer(IGitRemoteRepository remoteRepository, GitSyncOptions? options = null) : this(remoteRepository, null, options)
+    public GitRepositorySynchronizer(IGitRepositoryWithRemote remoteRepository, GitSyncOptions? options = null)
+        : this(remoteRepository, null, options)
     {
-
     }
 
     /// <summary>
-    /// Creates a synchronizer wrapping an <see cref="IGitRemoteRepository"/> and an optional
+    /// Creates a synchronizer wrapping an <see cref="IGitRepositoryWithRemote"/> and an optional
     /// <see cref="IGitRepositoryCacheInvalidator"/> change source to automatically detect local changes.
     /// </summary>
-    public GitRepositorySynchronizer(IGitRemoteRepository remoteRepository, IGitRepositoryCacheInvalidator? changeSource, GitSyncOptions? options = null)
+    public GitRepositorySynchronizer(IGitRepositoryWithRemote remoteRepository, IGitRepositoryCacheInvalidator? changeSource, GitSyncOptions? options = null)
     {
         _remoteRepo = remoteRepository ?? throw new ArgumentNullException(nameof(remoteRepository));
         _options = options ?? new GitSyncOptions();

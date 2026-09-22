@@ -2,7 +2,7 @@ namespace Pmad.Git.LocalRepositories.Test;
 
 public sealed class GitRepositorySynchronizerTests
 {
-    private sealed class FakeRemoteRepository : IGitRemoteRepository
+    private sealed class FakeRemoteRepository : IGitRepositoryWithRemote
     {
         public string RootPath { get; set; } = "C:\\fake\\repo";
 
@@ -90,7 +90,7 @@ public sealed class GitRepositorySynchronizerTests
     }
 
     [Fact]
-    public async Task Synchronizer_Targets_IGitRemoteRepository_For_Push()
+    public async Task Synchronizer_Targets_IGitRepositoryWithRemote_For_Push()
     {
         var fake = new FakeRemoteRepository();
         var options = new GitSyncOptions
@@ -113,7 +113,7 @@ public sealed class GitRepositorySynchronizerTests
     }
 
     [Fact]
-    public async Task Synchronizer_Targets_IGitRemoteRepository_For_Pull()
+    public async Task Synchronizer_Targets_IGitRepositoryWithRemote_For_Pull()
     {
         var fake = new FakeRemoteRepository();
         var options = new GitSyncOptions
@@ -134,7 +134,7 @@ public sealed class GitRepositorySynchronizerTests
     }
 
     [Fact]
-    public async Task Synchronizer_Handles_Conflict_And_Resolution_Via_IGitRemoteRepository()
+    public async Task Synchronizer_Handles_Conflict_And_Resolution_Via_IGitRepositoryWithRemote()
     {
         var fake = new FakeRemoteRepository
         {
@@ -165,7 +165,7 @@ public sealed class GitRepositorySynchronizerTests
     }
 
     [Fact]
-    public async Task Synchronizer_Handles_AbortConflict_Via_IGitRemoteRepository()
+    public async Task Synchronizer_Handles_AbortConflict_Via_IGitRepositoryWithRemote()
     {
         var fake = new FakeRemoteRepository
         {
