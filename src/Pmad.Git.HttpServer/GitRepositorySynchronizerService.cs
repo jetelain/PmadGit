@@ -72,8 +72,7 @@ internal sealed class GitRepositorySynchronizerService : IGitRepositorySynchroni
                 throw new InvalidOperationException($"Directory '{normalizedPath}' already exists, is not empty, but does not contain a git repository.");
             }
 
-            var gitCliPath = options.GitCliPath ?? "git";
-            await GitCliRepository.CloneAsync(remoteUrl, normalizedPath, options.Branch, options.Remote, gitCliPath, cancellationToken).ConfigureAwait(false);
+            await GitCliRepository.CloneAsync(remoteUrl, normalizedPath, options.Branch, options.Remote, options.GitCliPath, cancellationToken).ConfigureAwait(false);
         }
 
         return SetupCliSynchronizer(normalizedPath, options);
