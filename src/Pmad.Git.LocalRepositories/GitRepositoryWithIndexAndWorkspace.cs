@@ -154,6 +154,10 @@ public sealed class GitRepositoryWithIndexAndWorkspace : IGitWorkspaceRepository
     public Task<GitHash?> FindMergeBaseAsync(GitHash commit1, GitHash commit2, CancellationToken cancellationToken = default) =>
         _repo.FindMergeBaseAsync(commit1, commit2, cancellationToken);
 
+    /// <inheritdoc />
+    public Task<IReadOnlyList<GitHash>> FindMergeBasesAsync(GitHash commit1, GitHash commit2, CancellationToken cancellationToken = default) =>
+        _repo.FindMergeBasesAsync(commit1, commit2, cancellationToken);
+
     /// <summary>
     /// Resolves the HEAD reference to the target commit hash.
     /// </summary>
