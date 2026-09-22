@@ -1008,6 +1008,277 @@ public sealed class GitRepository : IGitRepository, IGitRepositoryCacheInvalidat
     }
 
     /// <inheritdoc />
+    public Task<GitHash?> FindMergeBaseAsync(GitHash commit1, GitHash commit2, CancellationToken cancellationToken = default)
+    {
+        return FindMergeBaseCoreAsync(commit1, commit2, 0, cancellationToken);
+    }
+
+    private async Task<GitHash?> FindMergeBaseCoreAsync(GitHash commit1, GitHash commit2, int depth, CancellationToken cancellationToken)
+    {
+        var bestCandidates = await FindMergeBasesAsync(commit1, commit2, cancellationToken).ConfigureAwait(false);
+        if (bestCandidates.Count == 0)
+        {
+            return null;
+        }
+
+        if (bestCandidates.Count == 1 || depth >= 10)
+        {
+            return bestCandidates[0];
+        }
+
+        // Multiple incomparable best merge bases (criss-cross history):
+        // Recursively merge the merge bases to construct a virtual merge base commit.
+        var currentMergedBase = bestCandidates[0];
+        for (var i = 1; i < bestCandidates.Count; i++)
+        {
+            currentMergedBase = await CreateVirtualMergeBaseCommitAsync(currentMergedBase, bestCandidates[i], depth + 1, cancellationToken).ConfigureAwait(false);
+        }
+
+        return currentMergedBase;
+    }
+
+    /// <inheritdoc />
+    public async Task<IReadOnlyList<GitHash>> FindMergeBasesAsync(GitHash commit1, GitHash commit2, CancellationToken cancellationToken = default)
+    {
+        if (commit1.Equals(commit2))
+        {
+            return new[] { commit1 };
+        }
+
+        // Quick check: is one commit an ancestor of the other?
+        if (await IsCommitReachableAsync(from: commit2, to: commit1, cancellationToken).ConfigureAwait(false))
+        {
+            return new[] { commit1 };
+        }
+
+        if (await IsCommitReachableAsync(from: commit1, to: commit2, cancellationToken).ConfigureAwait(false))
+        {
+            return new[] { commit2 };
+        }
+
+        // Collect all reachable ancestors of commit1
+        var ancestors1 = new HashSet<GitHash>();
+        var queue1 = new Queue<GitHash>();
+        queue1.Enqueue(commit1);
+
+        while (queue1.Count > 0)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var current = queue1.Dequeue();
+            if (!ancestors1.Add(current))
+            {
+                continue;
+            }
+
+            var commit = await GetCommitAsync(current, cancellationToken).ConfigureAwait(false);
+            foreach (var parent in commit.Parents)
+            {
+                queue1.Enqueue(parent);
+            }
+        }
+
+        // Walk ancestors of commit2 to find common ancestors
+        var visited2 = new HashSet<GitHash>();
+        var queue2 = new Queue<GitHash>();
+        queue2.Enqueue(commit2);
+        var commonCandidates = new HashSet<GitHash>();
+
+        while (queue2.Count > 0)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var current = queue2.Dequeue();
+            if (!visited2.Add(current))
+            {
+                continue;
+            }
+
+            if (ancestors1.Contains(current))
+            {
+                commonCandidates.Add(current);
+                // Deeper ancestors are redundant since they are reachable from current
+                continue;
+            }
+
+            var commit = await GetCommitAsync(current, cancellationToken).ConfigureAwait(false);
+            foreach (var parent in commit.Parents)
+            {
+                queue2.Enqueue(parent);
+            }
+        }
+
+        if (commonCandidates.Count == 0)
+        {
+            return Array.Empty<GitHash>();
+        }
+
+        if (commonCandidates.Count == 1)
+        {
+            return new[] { commonCandidates.First() };
+        }
+
+        // In case of multiple candidates, eliminate any candidate reachable from another candidate
+        var bestCandidates = new List<GitHash>(commonCandidates);
+        for (var i = bestCandidates.Count - 1; i >= 0; i--)
+        {
+            var candidate = bestCandidates[i];
+            var isRedundant = false;
+            for (var j = 0; j < bestCandidates.Count; j++)
+            {
+                if (i != j && await IsCommitReachableAsync(from: bestCandidates[j], to: candidate, cancellationToken).ConfigureAwait(false))
+                {
+                    isRedundant = true;
+                    break;
+                }
+            }
+            if (isRedundant)
+            {
+                bestCandidates.RemoveAt(i);
+            }
+        }
+
+        return bestCandidates;
+    }
+
+    private async Task<GitHash> CreateVirtualMergeBaseCommitAsync(
+        GitHash base1,
+        GitHash base2,
+        int depth,
+        CancellationToken cancellationToken)
+    {
+        var subBaseHash = await FindMergeBaseCoreAsync(base1, base2, depth, cancellationToken).ConfigureAwait(false);
+
+        var subBaseLeaves = subBaseHash.HasValue
+            ? await LoadLeafEntriesAsync((await GetCommitAsync(subBaseHash.Value.Value, cancellationToken).ConfigureAwait(false)).Tree, cancellationToken).ConfigureAwait(false)
+            : new Dictionary<string, TreeLeaf>(StringComparer.Ordinal);
+
+        var leaves1 = await LoadLeafEntriesAsync((await GetCommitAsync(base1.Value, cancellationToken).ConfigureAwait(false)).Tree, cancellationToken).ConfigureAwait(false);
+        var leaves2 = await LoadLeafEntriesAsync((await GetCommitAsync(base2.Value, cancellationToken).ConfigureAwait(false)).Tree, cancellationToken).ConfigureAwait(false);
+
+        var allPaths = subBaseLeaves.Keys
+            .Concat(leaves1.Keys)
+            .Concat(leaves2.Keys)
+            .Distinct(StringComparer.Ordinal)
+            .OrderBy(p => p, StringComparer.Ordinal);
+
+        var mergedLeaves = new Dictionary<string, TreeLeaf>(StringComparer.Ordinal);
+
+        foreach (var path in allPaths)
+        {
+            var leafBase = subBaseLeaves.TryGetValue(path, out var bl) ? bl : (TreeLeaf?)null;
+            var leaf1 = leaves1.TryGetValue(path, out var l1) ? l1 : (TreeLeaf?)null;
+            var leaf2 = leaves2.TryGetValue(path, out var l2) ? l2 : (TreeLeaf?)null;
+
+            // Both have identical state
+            if (leaf1.HasValue && leaf2.HasValue && leaf1.Value.Hash.Equals(leaf2.Value.Hash) && leaf1.Value.Mode == leaf2.Value.Mode)
+            {
+                mergedLeaves[path] = leaf1.Value;
+                continue;
+            }
+
+            // Added in 1 only
+            if (leaf1.HasValue && !leafBase.HasValue && !leaf2.HasValue)
+            {
+                mergedLeaves[path] = leaf1.Value;
+                continue;
+            }
+
+            // Added in 2 only
+            if (!leaf1.HasValue && !leafBase.HasValue && leaf2.HasValue)
+            {
+                mergedLeaves[path] = leaf2.Value;
+                continue;
+            }
+
+            // Deleted in 2, unchanged in 1
+            if (leafBase.HasValue && leaf1.HasValue && !leaf2.HasValue && leafBase.Value.Hash.Equals(leaf1.Value.Hash) && leafBase.Value.Mode == leaf1.Value.Mode)
+            {
+                continue;
+            }
+
+            // Deleted in 1, unchanged in 2
+            if (leafBase.HasValue && !leaf1.HasValue && leaf2.HasValue && leafBase.Value.Hash.Equals(leaf2.Value.Hash) && leafBase.Value.Mode == leaf2.Value.Mode)
+            {
+                continue;
+            }
+
+            // Both deleted
+            if (leafBase.HasValue && !leaf1.HasValue && !leaf2.HasValue)
+            {
+                continue;
+            }
+
+            // Modified in 2, unchanged in 1
+            if (leafBase.HasValue && leaf1.HasValue && leaf2.HasValue && leafBase.Value.Hash.Equals(leaf1.Value.Hash) && leafBase.Value.Mode == leaf1.Value.Mode)
+            {
+                mergedLeaves[path] = leaf2.Value;
+                continue;
+            }
+
+            // Modified in 1, unchanged in 2
+            if (leafBase.HasValue && leaf1.HasValue && leaf2.HasValue && leafBase.Value.Hash.Equals(leaf2.Value.Hash) && leafBase.Value.Mode == leaf2.Value.Mode)
+            {
+                mergedLeaves[path] = leaf1.Value;
+                continue;
+            }
+
+            // Both modified or added with different content
+            if (leaf1.HasValue && leaf2.HasValue)
+            {
+                var isSubmodule = leaf1.Value.Mode == SubmoduleMode || leaf2.Value.Mode == SubmoduleMode;
+                if (!isSubmodule && leaf1.Value.Mode == leaf2.Value.Mode)
+                {
+                    var baseBlob = leafBase.HasValue ? await ObjectStore.ReadObjectAsync(leafBase.Value.Hash, cancellationToken).ConfigureAwait(false) : null;
+                    var blob1 = await ObjectStore.ReadObjectAsync(leaf1.Value.Hash, cancellationToken).ConfigureAwait(false);
+                    var blob2 = await ObjectStore.ReadObjectAsync(leaf2.Value.Hash, cancellationToken).ConfigureAwait(false);
+
+                    var isBinary = UnifiedDiffFormatter.IsBinary(blob1.Content) ||
+                                   UnifiedDiffFormatter.IsBinary(blob2.Content) ||
+                                   (baseBlob != null && UnifiedDiffFormatter.IsBinary(baseBlob.Content)) ||
+                                   !System.Text.Unicode.Utf8.IsValid(blob1.Content) ||
+                                   !System.Text.Unicode.Utf8.IsValid(blob2.Content) ||
+                                   (baseBlob != null && !System.Text.Unicode.Utf8.IsValid(baseBlob.Content));
+
+                    if (!isBinary)
+                    {
+                        var mergeResult = Diff3Merge.Merge(
+                            baseBlob?.Content,
+                            blob1.Content,
+                            blob2.Content,
+                            base1.ToString()[..7],
+                            base2.ToString()[..7]);
+
+                        var mergedBlobHash = await ObjectStore.WriteObjectAsync(GitObjectType.Blob, mergeResult.MergedBytes, cancellationToken).ConfigureAwait(false);
+                        mergedLeaves[path] = new TreeLeaf(leaf1.Value.Mode, mergedBlobHash);
+                        continue;
+                    }
+                }
+
+                // Conflict on binary, submodule, or mode: preserve side 1 in virtual base
+                mergedLeaves[path] = leaf1.Value;
+                continue;
+            }
+
+            // Modify/delete conflict: keep whichever exists
+            if (leaf1.HasValue)
+            {
+                mergedLeaves[path] = leaf1.Value;
+            }
+            else if (leaf2.HasValue)
+            {
+                mergedLeaves[path] = leaf2.Value;
+            }
+        }
+
+        var virtualTreeHash = await BuildTreeAsync(mergedLeaves, cancellationToken).ConfigureAwait(false);
+        var virtualMetadata = new GitCommitMetadata(
+            $"Virtual merge base of {base1} and {base2}",
+            new GitCommitSignature("Git", "git@pmad.local", DateTimeOffset.UtcNow),
+            new GitCommitSignature("Git", "git@pmad.local", DateTimeOffset.UtcNow));
+        var payload = BuildCommitPayload(virtualTreeHash, new[] { base1, base2 }, virtualMetadata);
+        return await ObjectStore.WriteObjectAsync(GitObjectType.Commit, payload, cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <inheritdoc />
     public async Task<IReadOnlyList<GitTreeChange>> CompareTreesAsync(
         GitHash oldTreeHash,
         GitHash newTreeHash,

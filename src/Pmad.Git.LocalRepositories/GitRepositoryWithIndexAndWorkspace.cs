@@ -150,6 +150,14 @@ public sealed class GitRepositoryWithIndexAndWorkspace : IGitWorkspaceRepository
     public Task<bool> IsCommitReachableAsync(GitHash from, GitHash to, CancellationToken cancellationToken = default) =>
         _repo.IsCommitReachableAsync(from, to, cancellationToken);
 
+    /// <inheritdoc />
+    public Task<GitHash?> FindMergeBaseAsync(GitHash commit1, GitHash commit2, CancellationToken cancellationToken = default) =>
+        _repo.FindMergeBaseAsync(commit1, commit2, cancellationToken);
+
+    /// <inheritdoc />
+    public Task<IReadOnlyList<GitHash>> FindMergeBasesAsync(GitHash commit1, GitHash commit2, CancellationToken cancellationToken = default) =>
+        _repo.FindMergeBasesAsync(commit1, commit2, cancellationToken);
+
     /// <summary>
     /// Resolves the HEAD reference to the target commit hash.
     /// </summary>
@@ -725,10 +733,516 @@ public sealed class GitRepositoryWithIndexAndWorkspace : IGitWorkspaceRepository
         return await CommitAsync(revertMessage, metadata, stageAll: false, cancellationToken).ConfigureAwait(false);
     }
 
+    #endregion
+
+    #region Merge and Conflict Resolution
+
+    /// <inheritdoc />
+    public Task<bool> IsMergeInProgressAsync(CancellationToken cancellationToken = default)
+    {
+        var mergeHeadPath = Path.Combine(GitDirectory, "MERGE_HEAD");
+        return Task.FromResult(File.Exists(mergeHeadPath));
+    }
+
+    /// <inheritdoc />
+    public async Task<IReadOnlyList<string>> GetConflictedFilesAsync(CancellationToken cancellationToken = default)
+    {
+        var index = await GitIndex.ReadAsync(_indexManager.IndexPath, HashLengthBytes, cancellationToken).ConfigureAwait(false);
+        return index.Entries.Where(e => e.Stage > 0)
+            .Select(e => e.Path)
+            .Distinct(StringComparer.Ordinal)
+            .OrderBy(p => p, StringComparer.Ordinal)
+            .ToList();
+    }
+
+    /// <inheritdoc />
+    public Task ResolveConflictAsync(string relativeFilePath, CancellationToken cancellationToken = default)
+    {
+        return StageAsync(relativeFilePath, cancellationToken);
+    }
+
+    /// <inheritdoc />
+    public async Task AbortMergeAsync(CancellationToken cancellationToken = default)
+    {
+        var targetRef = await GetTargetReferenceAsync(cancellationToken).ConfigureAwait(false);
+        using (await _indexManager.AcquireIndexMutationLockAsync(targetRef, cancellationToken).ConfigureAwait(false))
+        {
+            if (!await IsMergeInProgressAsync(cancellationToken).ConfigureAwait(false))
+            {
+                throw new InvalidOperationException("No merge in progress to abort.");
+            }
+
+            RemoveMergeStateFiles();
+
+            var headHash = await ReferenceStore.ResolveHeadAsync(cancellationToken).ConfigureAwait(false);
+            var headCommit = await GetCommitAsync(headHash.Value, cancellationToken).ConfigureAwait(false);
+            await SyncWorkspaceToCommitAsync(headCommit, cancellationToken).ConfigureAwait(false);
+            InvalidateCaches();
+        }
+    }
+
+    /// <inheritdoc />
+    public async Task<GitHash> ContinueMergeAsync(
+        string? commitMessage = null,
+        GitCommitMetadata? metadata = null,
+        CancellationToken cancellationToken = default)
+    {
+        var targetRef = await GetTargetReferenceAsync(cancellationToken).ConfigureAwait(false);
+        using (await _indexManager.AcquireIndexMutationLockAsync(targetRef, cancellationToken).ConfigureAwait(false))
+        {
+            var mergeHeadPath = Path.Combine(GitDirectory, "MERGE_HEAD");
+            if (!File.Exists(mergeHeadPath))
+            {
+                throw new InvalidOperationException("No merge in progress to continue.");
+            }
+
+            var conflicted = await GetConflictedFilesAsync(cancellationToken).ConfigureAwait(false);
+            if (conflicted.Count > 0)
+            {
+                throw new InvalidOperationException($"Cannot continue merge: {conflicted.Count} files still have conflicts.");
+            }
+
+            var mergeHeadRaw = (await File.ReadAllTextAsync(mergeHeadPath, cancellationToken).ConfigureAwait(false)).Trim();
+            var mergeHead = new GitHash(mergeHeadRaw);
+
+            var message = commitMessage;
+            if (string.IsNullOrWhiteSpace(message))
+            {
+                var mergeMsgPath = Path.Combine(GitDirectory, "MERGE_MSG");
+                if (File.Exists(mergeMsgPath))
+                {
+                    var lines = (await File.ReadAllLinesAsync(mergeMsgPath, cancellationToken).ConfigureAwait(false))
+                        .Where(l => !l.TrimStart().StartsWith('#'))
+                        .ToList();
+                    message = string.Join("\n", lines).Trim();
+                }
+
+                if (string.IsNullOrWhiteSpace(message))
+                {
+                    message = $"Merge commit '{mergeHead.Value}'";
+                }
+            }
+
+            var headHash = await ReferenceStore.ResolveHeadAsync(cancellationToken).ConfigureAwait(false);
+            var parents = new[] { headHash, mergeHead };
+
+            var index = await GitIndex.ReadAsync(_indexManager.IndexPath, HashLengthBytes, cancellationToken).ConfigureAwait(false);
+            var treeHash = await _repo.WriteTreeAsync(index, cancellationToken).ConfigureAwait(false);
+
+            var commitMetadata = metadata ?? GetDefaultMetadata(message);
+            var payload = GitRepository.BuildCommitPayload(treeHash, parents, commitMetadata);
+            var commitHash = await ObjectStore.WriteObjectAsync(GitObjectType.Commit, payload, cancellationToken).ConfigureAwait(false);
+
+            await UpdateHeadOrBranchAsync(commitHash, targetRef, cancellationToken).ConfigureAwait(false);
+
+            UpdateIndexStatCache(index);
+            await index.WriteAsync(_indexManager.IndexPath, HashLengthBytes, cancellationToken).ConfigureAwait(false);
+
+            RemoveMergeStateFiles();
+            InvalidateCaches();
+            return commitHash;
+        }
+    }
+
+    /// <inheritdoc />
+    public async Task<GitMergeResult> MergeAsync(
+        string branchOrCommit,
+        GitMergeOptions? options = null,
+        CancellationToken cancellationToken = default)
+    {
+        var targetRef = await GetTargetReferenceAsync(cancellationToken).ConfigureAwait(false);
+        using (await _indexManager.AcquireIndexMutationLockAsync(targetRef, cancellationToken).ConfigureAwait(false))
+        {
+            if (await IsMergeInProgressAsync(cancellationToken).ConfigureAwait(false))
+            {
+                throw new InvalidOperationException("A merge is already in progress.");
+            }
+
+            var status = await GetStatusAsync(includeUntracked: false, includeClean: false, cancellationToken).ConfigureAwait(false);
+            if (status.Entries.Any(e => e.IsStaged || e.HasWorkingTreeChanges || e.IsConflicted))
+            {
+                throw new InvalidOperationException("Cannot merge with uncommitted changes in the working directory.");
+            }
+
+            var theirCommit = await _repo.GetCommitAsync(branchOrCommit, cancellationToken).ConfigureAwait(false);
+            var theirHash = theirCommit.Id;
+            var theirLabel = branchOrCommit.StartsWith("refs/heads/", StringComparison.Ordinal)
+                ? branchOrCommit[11..]
+                : branchOrCommit;
+
+            var headHash = await ReferenceStore.ResolveHeadAsync(cancellationToken).ConfigureAwait(false);
+            if (headHash.Equals(theirHash))
+            {
+                return new GitMergeResult(true, Array.Empty<string>(), headHash, GitMergeStatus.AlreadyUpToDate, "Already up to date.");
+            }
+
+            var headCommit = await _repo.GetCommitAsync(headHash.Value, cancellationToken).ConfigureAwait(false);
+            var ourLeaves = await _repo.LoadLeafEntriesAsync(headCommit.Tree, cancellationToken).ConfigureAwait(false);
+            var theirLeaves = await _repo.LoadLeafEntriesAsync(theirCommit.Tree, cancellationToken).ConfigureAwait(false);
+
+            var mergeBaseHash = await _repo.FindMergeBaseAsync(headHash, theirHash, cancellationToken).ConfigureAwait(false);
+
+            if (mergeBaseHash.HasValue && mergeBaseHash.Value.Equals(theirHash))
+            {
+                return new GitMergeResult(true, Array.Empty<string>(), headHash, GitMergeStatus.AlreadyUpToDate, "Already up to date.");
+            }
+
+            if (mergeBaseHash.HasValue && mergeBaseHash.Value.Equals(headHash))
+            {
+                // Fast forward
+                if (options?.NoFastForward != true)
+                {
+                    // Preflight target tree paths and prevent overwriting untracked working tree files
+                    foreach (var (path, _) in theirLeaves)
+                    {
+                        var normalizedPath = _indexManager.NormalizeAndValidateRelativePath(path);
+                        if (!ourLeaves.ContainsKey(normalizedPath))
+                        {
+                            var fullPath = Path.Combine(RootPath, normalizedPath.Replace('/', Path.DirectorySeparatorChar));
+                            if (File.Exists(fullPath) || Directory.Exists(fullPath))
+                            {
+                                throw new InvalidOperationException($"The untracked working tree file '{normalizedPath}' would be overwritten by merge.");
+                            }
+                        }
+                    }
+
+                    await SyncWorkspaceToCommitAsync(theirCommit, cancellationToken).ConfigureAwait(false);
+                    await UpdateHeadOrBranchAsync(theirHash, targetRef, cancellationToken).ConfigureAwait(false);
+                    InvalidateCaches();
+                    return new GitMergeResult(true, Array.Empty<string>(), theirHash, GitMergeStatus.FastForward, "Fast-forward");
+                }
+            }
+
+            if (options?.FastForwardOnly == true)
+            {
+                throw new InvalidOperationException("Not possible to fast-forward, aborting.");
+            }
+
+            // 3-way merge
+            var baseLeaves = mergeBaseHash.HasValue
+                ? await _repo.LoadLeafEntriesAsync((await _repo.GetCommitAsync(mergeBaseHash.Value.Value, cancellationToken).ConfigureAwait(false)).Tree, cancellationToken).ConfigureAwait(false)
+                : new Dictionary<string, TreeLeaf>(StringComparer.Ordinal);
+
+            var allPaths = baseLeaves.Keys
+                .Concat(ourLeaves.Keys)
+                .Concat(theirLeaves.Keys)
+                .Distinct(StringComparer.Ordinal)
+                .Select(p => _indexManager.NormalizeAndValidateRelativePath(p))
+                .Distinct(StringComparer.Ordinal)
+                .OrderBy(p => p, StringComparer.Ordinal)
+                .ToList();
+
+            // Check if untracked files in working tree would be overwritten
+            foreach (var path in allPaths)
+            {
+                var ourLeaf = ourLeaves.TryGetValue(path, out var ol) ? ol : (TreeLeaf?)null;
+                var theirLeaf = theirLeaves.TryGetValue(path, out var tl) ? tl : (TreeLeaf?)null;
+                if (!ourLeaf.HasValue && theirLeaf.HasValue)
+                {
+                    var fullPath = Path.Combine(RootPath, path.Replace('/', Path.DirectorySeparatorChar));
+                    if (File.Exists(fullPath) || Directory.Exists(fullPath))
+                    {
+                        throw new InvalidOperationException($"The untracked working tree file '{path}' would be overwritten by merge.");
+                    }
+                }
+            }
+
+            var newIndex = new GitIndex();
+            var conflictedFiles = new List<string>();
+
+            foreach (var path in allPaths)
+            {
+                var baseLeaf = baseLeaves.TryGetValue(path, out var bl) ? bl : (TreeLeaf?)null;
+                var ourLeaf = ourLeaves.TryGetValue(path, out var ol) ? ol : (TreeLeaf?)null;
+                var theirLeaf = theirLeaves.TryGetValue(path, out var tl) ? tl : (TreeLeaf?)null;
+
+                // Both sides have identical state
+                if (ourLeaf.HasValue && theirLeaf.HasValue && ourLeaf.Value.Hash.Equals(theirLeaf.Value.Hash) && ourLeaf.Value.Mode == theirLeaf.Value.Mode)
+                {
+                    newIndex.AddOrUpdate(new GitIndexEntry(path, ourLeaf.Value.Hash, ourLeaf.Value.Mode, 0));
+                    continue;
+                }
+
+                // Added in their branch only
+                if (!ourLeaf.HasValue && !baseLeaf.HasValue && theirLeaf.HasValue)
+                {
+                    await WriteLeafToWorkspaceAsync(path, theirLeaf.Value, cancellationToken).ConfigureAwait(false);
+                    newIndex.AddOrUpdate(new GitIndexEntry(path, theirLeaf.Value.Hash, theirLeaf.Value.Mode, 0));
+                    continue;
+                }
+
+                // Added in our branch only
+                if (ourLeaf.HasValue && !baseLeaf.HasValue && !theirLeaf.HasValue)
+                {
+                    newIndex.AddOrUpdate(new GitIndexEntry(path, ourLeaf.Value.Hash, ourLeaf.Value.Mode, 0));
+                    continue;
+                }
+
+                // Deleted in their branch, unchanged in ours
+                if (baseLeaf.HasValue && ourLeaf.HasValue && !theirLeaf.HasValue && baseLeaf.Value.Hash.Equals(ourLeaf.Value.Hash) && baseLeaf.Value.Mode == ourLeaf.Value.Mode)
+                {
+                    DeleteFileFromWorkspace(path);
+                    continue;
+                }
+
+                // Deleted in our branch, unchanged in theirs
+                if (baseLeaf.HasValue && !ourLeaf.HasValue && theirLeaf.HasValue && baseLeaf.Value.Hash.Equals(theirLeaf.Value.Hash) && baseLeaf.Value.Mode == theirLeaf.Value.Mode)
+                {
+                    continue;
+                }
+
+                // Both branches deleted the file
+                if (baseLeaf.HasValue && !ourLeaf.HasValue && !theirLeaf.HasValue)
+                {
+                    continue;
+                }
+
+                // Modified in their branch, unchanged in ours
+                if (baseLeaf.HasValue && ourLeaf.HasValue && theirLeaf.HasValue && baseLeaf.Value.Hash.Equals(ourLeaf.Value.Hash) && baseLeaf.Value.Mode == ourLeaf.Value.Mode)
+                {
+                    await WriteLeafToWorkspaceAsync(path, theirLeaf.Value, cancellationToken).ConfigureAwait(false);
+                    newIndex.AddOrUpdate(new GitIndexEntry(path, theirLeaf.Value.Hash, theirLeaf.Value.Mode, 0));
+                    continue;
+                }
+
+                // Modified in our branch, unchanged in theirs
+                if (baseLeaf.HasValue && ourLeaf.HasValue && theirLeaf.HasValue && baseLeaf.Value.Hash.Equals(theirLeaf.Value.Hash) && baseLeaf.Value.Mode == theirLeaf.Value.Mode)
+                {
+                    newIndex.AddOrUpdate(new GitIndexEntry(path, ourLeaf.Value.Hash, ourLeaf.Value.Mode, 0));
+                    continue;
+                }
+
+                // Delete/Modify conflict: ours modified, theirs deleted
+                if (baseLeaf.HasValue && ourLeaf.HasValue && !theirLeaf.HasValue)
+                {
+                    newIndex.AddOrUpdate(new GitIndexEntry(path, baseLeaf.Value.Hash, baseLeaf.Value.Mode, 1));
+                    newIndex.AddOrUpdate(new GitIndexEntry(path, ourLeaf.Value.Hash, ourLeaf.Value.Mode, 2));
+                    conflictedFiles.Add(path);
+                    continue;
+                }
+
+                // Modify/Delete conflict: theirs modified, ours deleted
+                if (baseLeaf.HasValue && !ourLeaf.HasValue && theirLeaf.HasValue)
+                {
+                    await WriteLeafToWorkspaceAsync(path, theirLeaf.Value, cancellationToken).ConfigureAwait(false);
+                    newIndex.AddOrUpdate(new GitIndexEntry(path, baseLeaf.Value.Hash, baseLeaf.Value.Mode, 1));
+                    newIndex.AddOrUpdate(new GitIndexEntry(path, theirLeaf.Value.Hash, theirLeaf.Value.Mode, 3));
+                    conflictedFiles.Add(path);
+                    continue;
+                }
+
+                // Both modified (or added with different content)
+                if (ourLeaf.HasValue && theirLeaf.HasValue)
+                {
+                    var isSubmodule = ourLeaf.Value.Mode == GitRepository.SubmoduleMode || theirLeaf.Value.Mode == GitRepository.SubmoduleMode;
+                    if (!isSubmodule && ourLeaf.Value.Mode == theirLeaf.Value.Mode)
+                    {
+                        var baseBlob = baseLeaf.HasValue ? await ObjectStore.ReadObjectAsync(baseLeaf.Value.Hash, cancellationToken).ConfigureAwait(false) : null;
+                        var ourBlob = await ObjectStore.ReadObjectAsync(ourLeaf.Value.Hash, cancellationToken).ConfigureAwait(false);
+                        var theirBlob = await ObjectStore.ReadObjectAsync(theirLeaf.Value.Hash, cancellationToken).ConfigureAwait(false);
+
+                        var isBinary = UnifiedDiffFormatter.IsBinary(ourBlob.Content) ||
+                                       UnifiedDiffFormatter.IsBinary(theirBlob.Content) ||
+                                       (baseBlob != null && UnifiedDiffFormatter.IsBinary(baseBlob.Content)) ||
+                                       !System.Text.Unicode.Utf8.IsValid(ourBlob.Content) ||
+                                       !System.Text.Unicode.Utf8.IsValid(theirBlob.Content) ||
+                                       (baseBlob != null && !System.Text.Unicode.Utf8.IsValid(baseBlob.Content));
+
+                        if (!isBinary)
+                        {
+                            var mergeResult = Diff3Merge.Merge(
+                                baseBlob?.Content,
+                                ourBlob.Content,
+                                theirBlob.Content,
+                                "HEAD",
+                                theirLabel);
+
+                            if (!mergeResult.HasConflict)
+                            {
+                                await WriteContentToWorkspaceAsync(path, mergeResult.MergedBytes, ourLeaf.Value.Mode, cancellationToken).ConfigureAwait(false);
+                                var mergedHash = await ObjectStore.WriteObjectAsync(GitObjectType.Blob, mergeResult.MergedBytes, cancellationToken).ConfigureAwait(false);
+                                newIndex.AddOrUpdate(new GitIndexEntry(path, mergedHash, ourLeaf.Value.Mode, 0));
+                                continue;
+                            }
+
+                            // Text merge conflict with markers
+                            await WriteContentToWorkspaceAsync(path, mergeResult.MergedBytes, ourLeaf.Value.Mode, cancellationToken).ConfigureAwait(false);
+                            if (baseLeaf.HasValue)
+                            {
+                                newIndex.AddOrUpdate(new GitIndexEntry(path, baseLeaf.Value.Hash, baseLeaf.Value.Mode, 1));
+                            }
+                            newIndex.AddOrUpdate(new GitIndexEntry(path, ourLeaf.Value.Hash, ourLeaf.Value.Mode, 2));
+                            newIndex.AddOrUpdate(new GitIndexEntry(path, theirLeaf.Value.Hash, theirLeaf.Value.Mode, 3));
+                            conflictedFiles.Add(path);
+                            continue;
+                        }
+                    }
+
+                    // Binary, submodule, or mode conflict
+                    if (baseLeaf.HasValue)
+                    {
+                        newIndex.AddOrUpdate(new GitIndexEntry(path, baseLeaf.Value.Hash, baseLeaf.Value.Mode, 1));
+                    }
+                    newIndex.AddOrUpdate(new GitIndexEntry(path, ourLeaf.Value.Hash, ourLeaf.Value.Mode, 2));
+                    newIndex.AddOrUpdate(new GitIndexEntry(path, theirLeaf.Value.Hash, theirLeaf.Value.Mode, 3));
+                    conflictedFiles.Add(path);
+                }
+            }
+
+            await newIndex.WriteAsync(_indexManager.IndexPath, HashLengthBytes, cancellationToken).ConfigureAwait(false);
+
+            if (conflictedFiles.Count > 0)
+            {
+                var mergeHeadPath = Path.Combine(GitDirectory, "MERGE_HEAD");
+                await File.WriteAllTextAsync(mergeHeadPath, theirHash.Value + "\n", cancellationToken).ConfigureAwait(false);
+
+                var mergeMsgPath = Path.Combine(GitDirectory, "MERGE_MSG");
+                var msgBuilder = new StringBuilder();
+                msgBuilder.AppendLine($"Merge branch '{theirLabel}'");
+                msgBuilder.AppendLine();
+                msgBuilder.AppendLine("# Conflicts:");
+                foreach (var cf in conflictedFiles)
+                {
+                    msgBuilder.AppendLine($"#\t{cf}");
+                }
+                await File.WriteAllTextAsync(mergeMsgPath, msgBuilder.ToString(), cancellationToken).ConfigureAwait(false);
+
+                InvalidateCaches();
+                return new GitMergeResult(false, conflictedFiles, null, GitMergeStatus.Conflicted, "Automatic merge failed; fix conflicts and then commit the result.");
+            }
+
+            // All merged cleanly! Create merge commit with two parents
+            var treeHash = await _repo.WriteTreeAsync(newIndex, cancellationToken).ConfigureAwait(false);
+            var defaultMsg = options?.CommitMessage ?? $"Merge branch '{theirLabel}'";
+            var commitMetadata = options?.Metadata ?? GetDefaultMetadata(defaultMsg);
+            var payload = GitRepository.BuildCommitPayload(treeHash, new[] { headHash, theirHash }, commitMetadata);
+            var commitHash = await ObjectStore.WriteObjectAsync(GitObjectType.Commit, payload, cancellationToken).ConfigureAwait(false);
+
+            await UpdateHeadOrBranchAsync(commitHash, targetRef, cancellationToken).ConfigureAwait(false);
+
+            UpdateIndexStatCache(newIndex);
+            await newIndex.WriteAsync(_indexManager.IndexPath, HashLengthBytes, cancellationToken).ConfigureAwait(false);
+
+            InvalidateCaches();
+            return new GitMergeResult(true, Array.Empty<string>(), commitHash, GitMergeStatus.Merged, "Merge made by 3-way merge.");
+        }
+    }
 
     #endregion
 
     #region Helpers
+
+    private void RemoveMergeStateFiles()
+    {
+        var mergeHead = Path.Combine(GitDirectory, "MERGE_HEAD");
+        var mergeMsg = Path.Combine(GitDirectory, "MERGE_MSG");
+        var mergeMode = Path.Combine(GitDirectory, "MERGE_MODE");
+
+        if (File.Exists(mergeHead)) File.Delete(mergeHead);
+        if (File.Exists(mergeMsg)) File.Delete(mergeMsg);
+        if (File.Exists(mergeMode)) File.Delete(mergeMode);
+    }
+
+    private async Task WriteLeafToWorkspaceAsync(string path, TreeLeaf leaf, CancellationToken cancellationToken)
+    {
+        var normalizedPath = _indexManager.NormalizeAndValidateRelativePath(path);
+        var fullPath = Path.Combine(RootPath, normalizedPath.Replace('/', Path.DirectorySeparatorChar));
+        var dir = Path.GetDirectoryName(fullPath);
+        if (!string.IsNullOrEmpty(dir))
+        {
+            Directory.CreateDirectory(dir);
+        }
+        if (File.Exists(fullPath))
+        {
+            File.SetAttributes(fullPath, FileAttributes.Normal);
+        }
+
+        var obj = await ObjectStore.ReadObjectAsync(leaf.Hash, cancellationToken).ConfigureAwait(false);
+        await File.WriteAllBytesAsync(fullPath, obj.Content, cancellationToken).ConfigureAwait(false);
+
+        if (!OperatingSystem.IsWindows())
+        {
+            try
+            {
+                var currentUnixMode = File.GetUnixFileMode(fullPath);
+                if (leaf.Mode == 33261)
+                {
+                    File.SetUnixFileMode(fullPath, currentUnixMode | UnixFileMode.UserExecute | UnixFileMode.GroupExecute | UnixFileMode.OtherExecute);
+                }
+                else if (leaf.Mode == 33188)
+                {
+                    File.SetUnixFileMode(fullPath, currentUnixMode & ~(UnixFileMode.UserExecute | UnixFileMode.GroupExecute | UnixFileMode.OtherExecute));
+                }
+            }
+            catch
+            {
+            }
+        }
+    }
+
+    private async Task WriteContentToWorkspaceAsync(string path, byte[] content, int mode, CancellationToken cancellationToken)
+    {
+        var normalizedPath = _indexManager.NormalizeAndValidateRelativePath(path);
+        var fullPath = Path.Combine(RootPath, normalizedPath.Replace('/', Path.DirectorySeparatorChar));
+        var dir = Path.GetDirectoryName(fullPath);
+        if (!string.IsNullOrEmpty(dir))
+        {
+            Directory.CreateDirectory(dir);
+        }
+        if (File.Exists(fullPath))
+        {
+            File.SetAttributes(fullPath, FileAttributes.Normal);
+        }
+
+        await File.WriteAllBytesAsync(fullPath, content, cancellationToken).ConfigureAwait(false);
+
+        if (!OperatingSystem.IsWindows())
+        {
+            try
+            {
+                var currentUnixMode = File.GetUnixFileMode(fullPath);
+                if (mode == 33261)
+                {
+                    File.SetUnixFileMode(fullPath, currentUnixMode | UnixFileMode.UserExecute | UnixFileMode.GroupExecute | UnixFileMode.OtherExecute);
+                }
+                else if (mode == 33188)
+                {
+                    File.SetUnixFileMode(fullPath, currentUnixMode & ~(UnixFileMode.UserExecute | UnixFileMode.GroupExecute | UnixFileMode.OtherExecute));
+                }
+            }
+            catch
+            {
+            }
+        }
+    }
+
+    private void DeleteFileFromWorkspace(string path)
+    {
+        var normalizedPath = _indexManager.NormalizeAndValidateRelativePath(path);
+        var fullPath = Path.Combine(RootPath, normalizedPath.Replace('/', Path.DirectorySeparatorChar));
+        if (File.Exists(fullPath))
+        {
+            File.SetAttributes(fullPath, FileAttributes.Normal);
+            File.Delete(fullPath);
+
+            var parent = Path.GetDirectoryName(fullPath);
+            while (!string.IsNullOrEmpty(parent) &&
+                   !parent.Equals(RootPath, StringComparison.OrdinalIgnoreCase) &&
+                   Directory.Exists(parent) &&
+                   !Directory.EnumerateFileSystemEntries(parent).Any())
+            {
+                try
+                {
+                    Directory.Delete(parent);
+                    parent = Path.GetDirectoryName(parent);
+                }
+                catch
+                {
+                    break;
+                }
+            }
+        }
+    }
 
     private async Task SyncWorkspaceToCommitAsync(GitCommit targetCommit, CancellationToken cancellationToken)
     {
@@ -740,8 +1254,9 @@ public sealed class GitRepositoryWithIndexAndWorkspace : IGitWorkspaceRepository
         {
             if (item.Entry.Kind == GitTreeEntryKind.Blob)
             {
-                targetFiles.Add(item.Path);
-                var fullPath = Path.Combine(RootPath, item.Path);
+                var normalizedPath = _indexManager.NormalizeAndValidateRelativePath(item.Path);
+                targetFiles.Add(normalizedPath);
+                var fullPath = Path.Combine(RootPath, normalizedPath.Replace('/', Path.DirectorySeparatorChar));
                 var dir = Path.GetDirectoryName(fullPath);
                 if (!string.IsNullOrEmpty(dir))
                 {
@@ -785,7 +1300,7 @@ public sealed class GitRepositoryWithIndexAndWorkspace : IGitWorkspaceRepository
                 }
 
                 var fileInfo = new FileInfo(fullPath);
-                var entry = GitIndexEntry.FromFileInfo(item.Path, fileInfo, item.Entry.Hash);
+                var entry = GitIndexEntry.FromFileInfo(normalizedPath, fileInfo, item.Entry.Hash);
                 entry.FileMode = item.Entry.Mode;
                 newIndex.AddOrUpdate(entry);
             }
@@ -793,9 +1308,10 @@ public sealed class GitRepositoryWithIndexAndWorkspace : IGitWorkspaceRepository
 
         foreach (var oldEntry in oldIndex.Entries)
         {
-            if (!targetFiles.Contains(oldEntry.Path))
+            var normalizedPath = _indexManager.NormalizeAndValidateRelativePath(oldEntry.Path);
+            if (!targetFiles.Contains(normalizedPath))
             {
-                var fullPath = Path.Combine(RootPath, oldEntry.Path);
+                var fullPath = Path.Combine(RootPath, normalizedPath.Replace('/', Path.DirectorySeparatorChar));
                 if (File.Exists(fullPath))
                 {
                     File.Delete(fullPath);

@@ -233,6 +233,25 @@ public interface IGitRepository : IGitRepositoryCacheInvalidator
     Task<bool> IsCommitReachableAsync(GitHash from, GitHash to, CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Finds the best common ancestor (merge base) between two commits.
+    /// If multiple incomparable merge bases exist (criss-cross history), constructs a recursive virtual merge base commit.
+    /// </summary>
+    /// <param name="commit1">The first commit hash.</param>
+    /// <param name="commit2">The second commit hash.</param>
+    /// <param name="cancellationToken">Token used to cancel the async operation.</param>
+    /// <returns>The merge base commit hash, or null if no common ancestor exists.</returns>
+    Task<GitHash?> FindMergeBaseAsync(GitHash commit1, GitHash commit2, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Finds all best common ancestors (merge bases) between two commits without merging them.
+    /// </summary>
+    /// <param name="commit1">The first commit hash.</param>
+    /// <param name="commit2">The second commit hash.</param>
+    /// <param name="cancellationToken">Token used to cancel the async operation.</param>
+    /// <returns>A list of best common ancestor commit hashes.</returns>
+    Task<IReadOnlyList<GitHash>> FindMergeBasesAsync(GitHash commit1, GitHash commit2, CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// Compares two trees and returns the list of added, modified, and deleted files.
     /// </summary>
     /// <param name="oldTreeHash">The hash of the baseline tree.</param>

@@ -171,4 +171,55 @@ public interface IGitWorkspaceRepository : IGitRepository, IDisposable
     Task<string> GetStagedDiffAsync(
         string? path = null,
         CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Merges the specified branch or commit into the current HEAD.
+    /// </summary>
+    /// <param name="branchOrCommit">Branch name or commit-ish to merge.</param>
+    /// <param name="options">Optional merge options (fast-forward controls, custom commit message, metadata).</param>
+    /// <param name="cancellationToken">Token used to cancel the async operation.</param>
+    /// <returns>A <see cref="GitMergeResult"/> describing the merge outcome.</returns>
+    Task<GitMergeResult> MergeAsync(
+        string branchOrCommit,
+        GitMergeOptions? options = null,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Checks whether a merge operation is currently in progress.
+    /// </summary>
+    /// <param name="cancellationToken">Token used to cancel the async operation.</param>
+    /// <returns>True if a merge is in progress (MERGE_HEAD exists); false otherwise.</returns>
+    Task<bool> IsMergeInProgressAsync(CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Returns the list of repository-relative file paths that are currently in conflict.
+    /// </summary>
+    /// <param name="cancellationToken">Token used to cancel the async operation.</param>
+    /// <returns>A list of conflicted file paths.</returns>
+    Task<IReadOnlyList<string>> GetConflictedFilesAsync(CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Marks a conflicted file as resolved by staging its current working tree content.
+    /// </summary>
+    /// <param name="relativeFilePath">Path of the file relative to the repository root.</param>
+    /// <param name="cancellationToken">Token used to cancel the async operation.</param>
+    Task ResolveConflictAsync(string relativeFilePath, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Concludes an in-progress merge after all conflicts have been resolved, creating a merge commit with two parents.
+    /// </summary>
+    /// <param name="commitMessage">Optional commit message; if null, uses the default message in MERGE_MSG.</param>
+    /// <param name="metadata">Optional commit metadata (author/committer).</param>
+    /// <param name="cancellationToken">Token used to cancel the async operation.</param>
+    /// <returns>The hash of the created merge commit.</returns>
+    Task<GitHash> ContinueMergeAsync(
+        string? commitMessage = null,
+        GitCommitMetadata? metadata = null,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Aborts an in-progress merge and restores the repository state prior to the merge.
+    /// </summary>
+    /// <param name="cancellationToken">Token used to cancel the async operation.</param>
+    Task AbortMergeAsync(CancellationToken cancellationToken = default);
 }
