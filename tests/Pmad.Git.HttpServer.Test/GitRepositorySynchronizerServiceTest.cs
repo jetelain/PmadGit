@@ -1,4 +1,5 @@
 using Pmad.Git.Cli;
+using Pmad.Git.LocalRepositories;
 
 namespace Pmad.Git.HttpServer.Test;
 

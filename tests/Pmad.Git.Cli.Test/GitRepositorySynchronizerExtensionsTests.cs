@@ -26,7 +26,7 @@ public sealed class GitRepositorySynchronizerExtensionsTests : IDisposable
     public async Task CreateSynchronizer_Starts_By_Default()
     {
         var runner = new FakeGitRunner();
-        var options = new GitSyncOptions { GitRunner = runner };
+        var options = new GitCliSyncOptions { GitRunner = runner };
 
         await using var synchronizer = _repository.CreateSynchronizer(options);
 
@@ -41,7 +41,7 @@ public sealed class GitRepositorySynchronizerExtensionsTests : IDisposable
     public async Task CreateSynchronizer_With_Start_False_Does_Not_Start_Periodic_Loop()
     {
         var runner = new FakeGitRunner();
-        var options = new GitSyncOptions { GitRunner = runner };
+        var options = new GitCliSyncOptions { GitRunner = runner };
 
         await using var synchronizer = _repository.CreateSynchronizer(options, start: false);
 
@@ -52,7 +52,7 @@ public sealed class GitRepositorySynchronizerExtensionsTests : IDisposable
     public async Task CreateSynchronizer_Subscribes_To_Repository_Changed_Event()
     {
         var runner = new FakeGitRunner().Enqueue(0);
-        var options = new GitSyncOptions { GitRunner = runner, PushDebounceDelay = TimeSpan.FromMilliseconds(20) };
+        var options = new GitCliSyncOptions { GitRunner = runner, PushDebounceDelay = TimeSpan.FromMilliseconds(20) };
 
         await using var synchronizer = _repository.CreateSynchronizer(options, start: false);
 

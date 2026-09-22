@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using Pmad.Git.Cli;
+using Pmad.Git.LocalRepositories;
 
 namespace Pmad.Git.HttpServer;
 
@@ -71,7 +72,8 @@ internal sealed class GitRepositorySynchronizerService : IGitRepositorySynchroni
                 throw new InvalidOperationException($"Directory '{normalizedPath}' already exists, is not empty, but does not contain a git repository.");
             }
 
-            await GitCliRepository.CloneAsync(remoteUrl, normalizedPath, options.Branch, options.Remote, options.GitCliPath, cancellationToken).ConfigureAwait(false);
+            var gitCliPath = (options as GitCliSyncOptions)?.GitCliPath ?? "git";
+            await GitCliRepository.CloneAsync(remoteUrl, normalizedPath, options.Branch, options.Remote, gitCliPath, cancellationToken).ConfigureAwait(false);
         }
 
         return SetupSynchronizer(normalizedPath, options);

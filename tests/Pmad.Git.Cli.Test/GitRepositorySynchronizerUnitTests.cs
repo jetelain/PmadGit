@@ -25,9 +25,9 @@ public sealed class GitRepositorySynchronizerUnitTests : IDisposable
         TestHelper.TryDeleteDirectory(_repoPath);
     }
 
-    private GitSyncOptions CreateOptions(FakeGitRunner runner, TimeSpan? pushDebounceDelay = null)
+    private GitCliSyncOptions CreateOptions(FakeGitRunner runner, TimeSpan? pushDebounceDelay = null)
     {
-        return new GitSyncOptions
+        return new GitCliSyncOptions
         {
             GitRunner = runner,
             PushDebounceDelay = pushDebounceDelay ?? TimeSpan.FromMilliseconds(20),
@@ -35,11 +35,21 @@ public sealed class GitRepositorySynchronizerUnitTests : IDisposable
         };
     }
 
+    private GitRepositorySynchronizer CreateSynchronizer(GitCliSyncOptions options)
+    {
+        return _repository.CreateSynchronizer(options.GitRunner, options, start: false);
+    }
+
+    private GitRepositorySynchronizer CreateSynchronizer(FakeGitRunner runner, TimeSpan? pushDebounceDelay = null)
+    {
+        return CreateSynchronizer(CreateOptions(runner, pushDebounceDelay));
+    }
+
     [Fact]
     public void State_Is_Idle_By_Default()
     {
         var runner = new FakeGitRunner();
-        var synchronizer = new GitRepositorySynchronizer(_repository, CreateOptions(runner));
+        var synchronizer = CreateSynchronizer(runner);
 
         Assert.Equal(GitSyncState.Idle, synchronizer.State);
         Assert.Null(synchronizer.Conflict);
@@ -50,7 +60,7 @@ public sealed class GitRepositorySynchronizerUnitTests : IDisposable
     public async Task NotifyLocalChange_Then_Debounce_Elapses_Triggers_Push()
     {
         var runner = new FakeGitRunner().Enqueue(0);
-        await using var synchronizer = new GitRepositorySynchronizer(_repository, CreateOptions(runner));
+        await using var synchronizer = CreateSynchronizer(runner);
 
         synchronizer.NotifyLocalChange();
 
@@ -63,7 +73,7 @@ public sealed class GitRepositorySynchronizerUnitTests : IDisposable
     public async Task RepositoryChanged_Event_Schedules_Debounced_Push()
     {
         var runner = new FakeGitRunner().Enqueue(0);
-        await using var synchronizer = new GitRepositorySynchronizer(_repository, CreateOptions(runner));
+        await using var synchronizer = CreateSynchronizer(runner);
 
         // Simulate an external local change (e.g. a commit made through IGitRepository).
         _repository.InvalidateCaches();
@@ -77,7 +87,7 @@ public sealed class GitRepositorySynchronizerUnitTests : IDisposable
     public async Task FlushPendingPushAsync_Without_Pending_Change_Does_Nothing()
     {
         var runner = new FakeGitRunner();
-        await using var synchronizer = new GitRepositorySynchronizer(_repository, CreateOptions(runner));
+        await using var synchronizer = CreateSynchronizer(runner);
 
         await synchronizer.FlushPendingPushAsync();
 
@@ -88,7 +98,7 @@ public sealed class GitRepositorySynchronizerUnitTests : IDisposable
     public async Task FlushPendingPushAsync_Pushes_Immediately_And_Cancels_Debounce()
     {
         var runner = new FakeGitRunner().Enqueue(0);
-        await using var synchronizer = new GitRepositorySynchronizer(_repository, CreateOptions(runner, TimeSpan.FromMinutes(5)));
+        await using var synchronizer = CreateSynchronizer(runner, TimeSpan.FromMinutes(5));
 
         synchronizer.NotifyLocalChange();
         await synchronizer.FlushPendingPushAsync();
@@ -101,7 +111,7 @@ public sealed class GitRepositorySynchronizerUnitTests : IDisposable
     public async Task FlushPendingPushAsync_Failure_Reports_SyncError_And_Keeps_Change_Pending()
     {
         var runner = new FakeGitRunner().Enqueue(1, stderr: "network error");
-        await using var synchronizer = new GitRepositorySynchronizer(_repository, CreateOptions(runner, TimeSpan.FromMinutes(5)));
+        await using var synchronizer = CreateSynchronizer(runner, TimeSpan.FromMinutes(5));
 
         Exception? reportedError = null;
         synchronizer.SyncError += (_, ex) => reportedError = ex;
@@ -127,7 +137,7 @@ public sealed class GitRepositorySynchronizerUnitTests : IDisposable
     {
         var runner = new FakeGitRunner();
         var blockingPush = runner.EnqueueBlocking();
-        await using var synchronizer = new GitRepositorySynchronizer(_repository, CreateOptions(runner, TimeSpan.FromMinutes(5)));
+        await using var synchronizer = CreateSynchronizer(runner, TimeSpan.FromMinutes(5));
 
         synchronizer.NotifyLocalChange();
 
@@ -160,7 +170,7 @@ public sealed class GitRepositorySynchronizerUnitTests : IDisposable
         var blockingPull = runner.EnqueueBlocking();
         runner.Enqueue(0); // The push, once the debounce timer is rearmed and retries.
 
-        await using var synchronizer = new GitRepositorySynchronizer(_repository, CreateOptions(runner, TimeSpan.FromMilliseconds(20)));
+        await using var synchronizer = CreateSynchronizer(runner, TimeSpan.FromMilliseconds(20));
 
         // Hold the gate with an in-progress pull.
         var pullTask = synchronizer.TriggerRemoteSyncAsync();
@@ -185,7 +195,7 @@ public sealed class GitRepositorySynchronizerUnitTests : IDisposable
     public async Task Push_Triggered_By_Synchronizer_Does_Not_Reschedule_Itself()
     {
         var runner = new FakeGitRunner().Enqueue(0);
-        await using var synchronizer = new GitRepositorySynchronizer(_repository, CreateOptions(runner));
+        await using var synchronizer = CreateSynchronizer(runner);
 
         synchronizer.NotifyLocalChange();
         await synchronizer.FlushPendingPushAsync();
@@ -201,7 +211,7 @@ public sealed class GitRepositorySynchronizerUnitTests : IDisposable
     public async Task TriggerRemoteSyncAsync_Successful_Pull_Keeps_State_Idle()
     {
         var runner = new FakeGitRunner().Enqueue(0);
-        await using var synchronizer = new GitRepositorySynchronizer(_repository, CreateOptions(runner));
+        await using var synchronizer = CreateSynchronizer(runner);
 
         await synchronizer.TriggerRemoteSyncAsync();
 
@@ -217,7 +227,7 @@ public sealed class GitRepositorySynchronizerUnitTests : IDisposable
         var runner = new FakeGitRunner()
             .Enqueue(1, stderr: "CONFLICT")
             .Enqueue(0, stdout: "README.md\n");
-        await using var synchronizer = new GitRepositorySynchronizer(_repository, CreateOptions(runner));
+        await using var synchronizer = CreateSynchronizer(runner);
 
         await synchronizer.TriggerRemoteSyncAsync();
 
@@ -233,7 +243,7 @@ public sealed class GitRepositorySynchronizerUnitTests : IDisposable
         var runner = new FakeGitRunner()
             .Enqueue(1, stderr: "CONFLICT")
             .Enqueue(0, stdout: "README.md\n");
-        await using var synchronizer = new GitRepositorySynchronizer(_repository, CreateOptions(runner));
+        await using var synchronizer = CreateSynchronizer(runner);
 
         await synchronizer.TriggerRemoteSyncAsync();
         Assert.Equal(GitSyncState.Conflict, synchronizer.State);
@@ -248,7 +258,7 @@ public sealed class GitRepositorySynchronizerUnitTests : IDisposable
     public async Task ResolveConflictAsync_Without_Pending_Conflict_Throws()
     {
         var runner = new FakeGitRunner();
-        await using var synchronizer = new GitRepositorySynchronizer(_repository, CreateOptions(runner));
+        await using var synchronizer = CreateSynchronizer(runner);
 
         await Assert.ThrowsAsync<InvalidOperationException>(() => synchronizer.ResolveConflictAsync("README.md"));
     }
@@ -262,7 +272,7 @@ public sealed class GitRepositorySynchronizerUnitTests : IDisposable
             .Enqueue(0) // add --
             .Enqueue(0) // commit
             .Enqueue(0); // push
-        await using var synchronizer = new GitRepositorySynchronizer(_repository, CreateOptions(runner));
+        await using var synchronizer = CreateSynchronizer(runner);
 
         await synchronizer.TriggerRemoteSyncAsync();
         Assert.Equal(GitSyncState.Conflict, synchronizer.State);
@@ -284,7 +294,7 @@ public sealed class GitRepositorySynchronizerUnitTests : IDisposable
             .Enqueue(1, stderr: "CONFLICT")
             .Enqueue(0, stdout: "README.md\n")
             .Enqueue(0); // merge --abort
-        await using var synchronizer = new GitRepositorySynchronizer(_repository, CreateOptions(runner));
+        await using var synchronizer = CreateSynchronizer(runner);
 
         await synchronizer.TriggerRemoteSyncAsync();
         Assert.Equal(GitSyncState.Conflict, synchronizer.State);
@@ -304,7 +314,7 @@ public sealed class GitRepositorySynchronizerUnitTests : IDisposable
             .Enqueue(0, stdout: "pull ok"); // second pull succeeds
         var options = CreateOptions(runner);
         options.PullInterval = TimeSpan.FromMilliseconds(20);
-        await using var synchronizer = new GitRepositorySynchronizer(_repository, options);
+        await using var synchronizer = CreateSynchronizer(options);
 
         Exception? reportedError = null;
         synchronizer.SyncError += (_, ex) => reportedError = ex;
@@ -324,7 +334,7 @@ public sealed class GitRepositorySynchronizerUnitTests : IDisposable
     public async Task Start_Is_Idempotent()
     {
         var runner = new FakeGitRunner();
-        await using var synchronizer = new GitRepositorySynchronizer(_repository, CreateOptions(runner));
+        await using var synchronizer = CreateSynchronizer(runner);
 
         synchronizer.Start();
         synchronizer.Start();

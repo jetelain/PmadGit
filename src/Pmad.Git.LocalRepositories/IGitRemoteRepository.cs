@@ -1,6 +1,4 @@
-using Pmad.Git.LocalRepositories;
-
-namespace Pmad.Git.Cli;
+namespace Pmad.Git.LocalRepositories;
 
 /// <summary>
 /// Defines remote and merge synchronization operations for a Git repository.

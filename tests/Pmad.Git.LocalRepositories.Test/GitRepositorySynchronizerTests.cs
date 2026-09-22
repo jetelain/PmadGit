@@ -1,8 +1,6 @@
-using Pmad.Git.LocalRepositories;
+namespace Pmad.Git.LocalRepositories.Test;
 
-namespace Pmad.Git.Cli.Test;
-
-public sealed class GitRepositorySynchronizerRemoteMockTests
+public sealed class GitRepositorySynchronizerTests
 {
     private sealed class FakeRemoteRepository : IGitRemoteRepository, IGitRepositoryCacheInvalidator
     {
@@ -104,12 +102,6 @@ public sealed class GitRepositorySynchronizerRemoteMockTests
     }
 
     [Fact]
-    public void GitCliRepository_Implements_IGitRemoteRepository()
-    {
-        Assert.True(typeof(IGitRemoteRepository).IsAssignableFrom(typeof(GitCliRepository)));
-    }
-
-    [Fact]
     public async Task Synchronizer_Targets_IGitRemoteRepository_For_Push()
     {
         var fake = new FakeRemoteRepository();
@@ -120,7 +112,7 @@ public sealed class GitRepositorySynchronizerRemoteMockTests
             PushDebounceDelay = TimeSpan.FromMilliseconds(20)
         };
 
-        await using var synchronizer = new GitRepositorySynchronizer((IGitRemoteRepository)fake, options);
+        await using var synchronizer = new GitRepositorySynchronizer(fake, options);
 
         synchronizer.NotifyLocalChange();
         await synchronizer.FlushPendingPushAsync();
@@ -142,7 +134,7 @@ public sealed class GitRepositorySynchronizerRemoteMockTests
             Branch = "main"
         };
 
-        await using var synchronizer = new GitRepositorySynchronizer((IGitRemoteRepository)fake, options);
+        await using var synchronizer = new GitRepositorySynchronizer(fake, options);
 
         await synchronizer.TriggerRemoteSyncAsync();
 
@@ -162,7 +154,7 @@ public sealed class GitRepositorySynchronizerRemoteMockTests
         };
         var options = new GitSyncOptions();
 
-        await using var synchronizer = new GitRepositorySynchronizer((IGitRemoteRepository)fake, options);
+        await using var synchronizer = new GitRepositorySynchronizer(fake, options);
 
         await synchronizer.TriggerRemoteSyncAsync();
 
@@ -193,7 +185,7 @@ public sealed class GitRepositorySynchronizerRemoteMockTests
         };
         var options = new GitSyncOptions();
 
-        await using var synchronizer = new GitRepositorySynchronizer((IGitRemoteRepository)fake, options);
+        await using var synchronizer = new GitRepositorySynchronizer(fake, options);
 
         await synchronizer.TriggerRemoteSyncAsync();
         Assert.Equal(GitSyncState.Conflict, synchronizer.State);
@@ -215,7 +207,7 @@ public sealed class GitRepositorySynchronizerRemoteMockTests
         };
 
         // When fake implements IGitRepositoryCacheInvalidator, it automatically subscribes
-        await using var synchronizer = new GitRepositorySynchronizer((IGitRemoteRepository)fake, options);
+        await using var synchronizer = new GitRepositorySynchronizer(fake, options);
 
         fake.RaiseChanged();
 

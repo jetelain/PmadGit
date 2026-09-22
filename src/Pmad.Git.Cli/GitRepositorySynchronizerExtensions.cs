@@ -3,7 +3,7 @@ using Pmad.Git.LocalRepositories;
 namespace Pmad.Git.Cli;
 
 /// <summary>
-/// Extension methods to easily create a <see cref="GitRepositorySynchronizer"/> from an
+/// Extension methods to easily create a CLI-backed <see cref="GitRepositorySynchronizer"/> from an
 /// <see cref="IGitRepository"/>.
 /// </summary>
 public static class GitRepositorySynchronizerExtensions
@@ -17,7 +17,9 @@ public static class GitRepositorySynchronizerExtensions
     /// <param name="start">When <c>true</c> (default), immediately starts the periodic pull loop.</param>
     public static GitRepositorySynchronizer CreateSynchronizer(this IGitRepository repository, GitSyncOptions? options = null, bool start = true)
     {
-        var synchronizer = new GitRepositorySynchronizer(repository, options);
+        var runner = (options as GitCliSyncOptions)?.GitRunner ?? new GitRunner((options as GitCliSyncOptions)?.GitCliPath ?? "git");
+        var cli = new GitCliRepository(repository, runner);
+        var synchronizer = new GitRepositorySynchronizer(cli, repository, options);
         if (start)
         {
             synchronizer.Start();
@@ -26,16 +28,17 @@ public static class GitRepositorySynchronizerExtensions
     }
 
     /// <summary>
-    /// Creates a <see cref="GitRepositorySynchronizer"/> that keeps this remote repository synchronized.
-    /// If the repository implements <see cref="IGitRepositoryCacheInvalidator"/>, it is automatically
-    /// subscribed to detect local changes.
+    /// Creates a <see cref="GitRepositorySynchronizer"/> that keeps this repository synchronized
+    /// with its remote using the Git CLI at the specified executable path.
     /// </summary>
-    /// <param name="remoteRepository">The remote repository to synchronize.</param>
+    /// <param name="repository">The local repository to synchronize.</param>
+    /// <param name="gitCliPath">Path to the Git CLI executable.</param>
     /// <param name="options">Synchronization options; defaults are used when omitted.</param>
     /// <param name="start">When <c>true</c> (default), immediately starts the periodic pull loop.</param>
-    public static GitRepositorySynchronizer CreateSynchronizer(this IGitRemoteRepository remoteRepository, GitSyncOptions? options = null, bool start = true)
+    public static GitRepositorySynchronizer CreateSynchronizer(this IGitRepository repository, string gitCliPath, GitSyncOptions? options = null, bool start = true)
     {
-        var synchronizer = new GitRepositorySynchronizer(remoteRepository, options);
+        var cli = new GitCliRepository(repository, gitCliPath);
+        var synchronizer = new GitRepositorySynchronizer(cli, repository, options);
         if (start)
         {
             synchronizer.Start();
@@ -43,17 +46,10 @@ public static class GitRepositorySynchronizerExtensions
         return synchronizer;
     }
 
-    /// <summary>
-    /// Creates a <see cref="GitRepositorySynchronizer"/> that keeps this remote repository synchronized,
-    /// subscribing to the given <paramref name="changeSource"/> to detect local changes.
-    /// </summary>
-    /// <param name="remoteRepository">The remote repository to synchronize.</param>
-    /// <param name="changeSource">The change source to observe for local changes.</param>
-    /// <param name="options">Synchronization options; defaults are used when omitted.</param>
-    /// <param name="start">When <c>true</c> (default), immediately starts the periodic pull loop.</param>
-    public static GitRepositorySynchronizer CreateSynchronizer(this IGitRemoteRepository remoteRepository, IGitRepositoryCacheInvalidator? changeSource, GitSyncOptions? options = null, bool start = true)
+    internal static GitRepositorySynchronizer CreateSynchronizer(this IGitRepository repository, IGitRunner gitRunner, GitSyncOptions? options = null, bool start = true)
     {
-        var synchronizer = new GitRepositorySynchronizer(remoteRepository, changeSource, options);
+        var cli = new GitCliRepository(repository, gitRunner);
+        var synchronizer = new GitRepositorySynchronizer(cli, repository, options);
         if (start)
         {
             synchronizer.Start();

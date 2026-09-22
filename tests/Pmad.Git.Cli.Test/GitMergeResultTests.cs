@@ -1,3 +1,5 @@
+using Pmad.Git.LocalRepositories;
+
 namespace Pmad.Git.Cli.Test;
 
 public class GitMergeResultTests
