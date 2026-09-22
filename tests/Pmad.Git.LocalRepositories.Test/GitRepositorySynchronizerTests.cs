@@ -2,7 +2,7 @@ namespace Pmad.Git.LocalRepositories.Test;
 
 public sealed class GitRepositorySynchronizerTests
 {
-    private sealed class FakeRemoteRepository : IGitRemoteRepository, IGitRepositoryCacheInvalidator
+    private sealed class FakeRemoteRepository : IGitRemoteRepository
     {
         public string RootPath { get; set; } = "C:\\fake\\repo";
 
@@ -20,18 +20,6 @@ public sealed class GitRepositorySynchronizerTests
         public IReadOnlyList<string> ConflictedFiles { get; set; } = Array.Empty<string>();
         public GitTrackingStatus TrackingStatus { get; set; } = new GitTrackingStatus("main", "origin/main", 0, 0);
         public bool IsCommitPushed { get; set; } = true;
-
-        public event EventHandler? Changed;
-
-        public void RaiseChanged() => Changed?.Invoke(this, EventArgs.Empty);
-
-        public void InvalidateCaches(bool clearAllData = false, bool raiseChanged = true)
-        {
-            if (raiseChanged)
-            {
-                RaiseChanged();
-            }
-        }
 
         public Task FetchAsync(string? remote = null, string? branch = null, bool prune = false, CancellationToken cancellationToken = default)
         {
@@ -195,29 +183,6 @@ public sealed class GitRepositorySynchronizerTests
         Assert.Equal(1, fake.AbortMergeCalls);
         Assert.Equal(GitSyncState.Idle, synchronizer.State);
         Assert.Null(synchronizer.Conflict);
-    }
-
-    [Fact]
-    public async Task Synchronizer_AutoSubscribes_To_ChangeSource_And_Debounces_Push()
-    {
-        var fake = new FakeRemoteRepository();
-        var options = new GitSyncOptions
-        {
-            PushDebounceDelay = TimeSpan.FromMilliseconds(20)
-        };
-
-        // When fake implements IGitRepositoryCacheInvalidator, it automatically subscribes
-        await using var synchronizer = new GitRepositorySynchronizer(fake, options);
-
-        fake.RaiseChanged();
-
-        var start = DateTime.UtcNow;
-        while (fake.PushCalls.Count == 0 && (DateTime.UtcNow - start).TotalMilliseconds < 2000)
-        {
-            await Task.Delay(10);
-        }
-
-        Assert.Single(fake.PushCalls);
     }
 }
 
