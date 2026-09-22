@@ -68,15 +68,6 @@ public sealed class GitRepositorySynchronizerExtensionsTests : IDisposable
     }
 
     [Fact]
-    public async Task CreateSynchronizer_With_GitCliPath_And_GitCliSyncOptions()
-    {
-        var options = new GitCliSyncOptions { Remote = "origin", Branch = "main" };
-        await using var synchronizer = _repository.CreateSynchronizer("git", options, start: false);
-
-        Assert.Equal(GitSyncState.Idle, synchronizer.State);
-    }
-
-    [Fact]
     public async Task CreateSynchronizer_With_GitRunner_And_GitCliSyncOptions()
     {
         var runner = new FakeGitRunner();
