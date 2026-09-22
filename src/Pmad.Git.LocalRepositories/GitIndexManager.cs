@@ -527,7 +527,7 @@ public sealed class GitIndexManager
         }
     }
 
-    private string NormalizeAndValidateRelativePath(string relativePath)
+    internal string NormalizeAndValidateRelativePath(string relativePath)
     {
         if (string.IsNullOrWhiteSpace(relativePath))
         {

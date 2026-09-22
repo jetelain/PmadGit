@@ -125,5 +125,33 @@ public sealed class Diff3MergeTests
         var expected = "line1\r\n<<<<<<< HEAD\r\nline2_ours\r\n=======\r\nline2_theirs\r\n>>>>>>> feature\r\nline3\r\n";
         Assert.Equal(expected, result.MergedText);
     }
+
+    [Fact]
+    public void Merge_NonUtf8Blob_WithoutNulByte_PreservesOursBytesAndReportsConflict()
+    {
+        // Invalid UTF-8 sequences that do not contain any NUL byte (0x00)
+        var baseBytes = new byte[] { 0xC0, 0xAF, 0x80, 0x81, 0x82 };
+        var oursBytes = new byte[] { 0xC0, 0xAF, 0xFF, 0xFE, 0x80 };
+        var theirsBytes = new byte[] { 0xC0, 0xAF, 0x88, 0x99, 0xAA };
+
+        var result = Diff3Merge.Merge(baseBytes, oursBytes, theirsBytes);
+
+        Assert.True(result.HasConflict);
+        // Must preserve oursBytes byte-for-byte without replacement character corruption
+        Assert.Equal(oursBytes, result.MergedBytes);
+    }
+
+    [Fact]
+    public void Merge_BinaryBlob_PreservesOursBytesAndReportsConflict()
+    {
+        var baseBytes = new byte[] { 0x01, 0x00, 0x02 };
+        var oursBytes = new byte[] { 0x01, 0x00, 0x03 };
+        var theirsBytes = new byte[] { 0x01, 0x00, 0x04 };
+
+        var result = Diff3Merge.Merge(baseBytes, oursBytes, theirsBytes);
+
+        Assert.True(result.HasConflict);
+        Assert.Equal(oursBytes, result.MergedBytes);
+    }
 }
 

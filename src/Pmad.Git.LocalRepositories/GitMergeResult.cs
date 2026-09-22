@@ -55,7 +55,7 @@ public sealed class GitMergeOptions
 /// <summary>
 /// Result of a merge operation.
 /// </summary>
-public class GitMergeResult
+public sealed class GitMergeResult
 {
     /// <summary>
     /// Initializes a new instance of the <see cref="GitMergeResult"/> class.

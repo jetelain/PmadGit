@@ -80,19 +80,34 @@ public static class Diff3Merge
         // Fast path: if ours and theirs are identical, no merge needed
         if (oursContent.AsSpan().SequenceEqual(theirsContent))
         {
-            return new Diff3MergeResult(false, oursContent, Encoding.UTF8.GetString(oursContent));
+            var text = System.Text.Unicode.Utf8.IsValid(oursContent) ? Encoding.UTF8.GetString(oursContent) : string.Empty;
+            return new Diff3MergeResult(false, oursContent, text);
         }
 
         // Fast path: if base equals theirs, take ours
         if (baseContent.AsSpan().SequenceEqual(theirsContent))
         {
-            return new Diff3MergeResult(false, oursContent, Encoding.UTF8.GetString(oursContent));
+            var text = System.Text.Unicode.Utf8.IsValid(oursContent) ? Encoding.UTF8.GetString(oursContent) : string.Empty;
+            return new Diff3MergeResult(false, oursContent, text);
         }
 
         // Fast path: if base equals ours, take theirs
         if (baseContent.AsSpan().SequenceEqual(oursContent))
         {
-            return new Diff3MergeResult(false, theirsContent, Encoding.UTF8.GetString(theirsContent));
+            var text = System.Text.Unicode.Utf8.IsValid(theirsContent) ? Encoding.UTF8.GetString(theirsContent) : string.Empty;
+            return new Diff3MergeResult(false, theirsContent, text);
+        }
+
+        // Strictly validate that base, ours, and theirs are valid UTF-8 and non-binary.
+        // Non-UTF-8 blobs (or binary files) cannot be merged line-by-line without byte corruption.
+        if (UnifiedDiffFormatter.IsBinary(oursContent) ||
+            UnifiedDiffFormatter.IsBinary(theirsContent) ||
+            UnifiedDiffFormatter.IsBinary(baseContent) ||
+            !System.Text.Unicode.Utf8.IsValid(oursContent) ||
+            !System.Text.Unicode.Utf8.IsValid(theirsContent) ||
+            !System.Text.Unicode.Utf8.IsValid(baseContent))
+        {
+            return new Diff3MergeResult(hasConflict: true, mergedBytes: oursContent, mergedText: string.Empty);
         }
 
         var (baseRawLines, baseHasNewline) = UnifiedDiffFormatter.SplitLines(baseContent);

@@ -378,4 +378,78 @@ public sealed class GitMergeRepositoryTests
         Assert.Contains("file.txt", result.ConflictedFiles);
         Assert.True(await workspace.IsMergeInProgressAsync());
     }
+
+    [Fact]
+    public async Task MergeAsync_FastForward_UntrackedFileWouldBeOverwritten_ThrowsAndLeavesHeadUnchanged()
+    {
+        using var testRepo = GitTestRepository.Create();
+        var baseCommit = testRepo.RunGit("rev-parse HEAD").Trim();
+
+        testRepo.RunGit("checkout -b feature");
+        var featureFilePath = Path.Combine(testRepo.WorkingDirectory, "feature.txt");
+        await File.WriteAllTextAsync(featureFilePath, "from feature\n");
+        testRepo.RunGit("add feature.txt");
+        testRepo.RunGit("commit -m \"Add feature\"");
+
+        testRepo.RunGit("checkout master");
+
+        // Create untracked file at the exact target path
+        await File.WriteAllTextAsync(featureFilePath, "untracked local content\n");
+
+        using var workspace = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => workspace.MergeAsync("feature"));
+
+        Assert.Contains("untracked working tree file", ex.Message);
+
+        // HEAD must NOT have moved
+        var currentHead = (await workspace.ReferenceStore.ResolveHeadAsync()).ToString();
+        Assert.Equal(baseCommit, currentHead);
+
+        // Untracked file must NOT be overwritten
+        Assert.Equal("untracked local content\n", await File.ReadAllTextAsync(featureFilePath));
+    }
+
+    [Fact]
+    public async Task MergeAsync_NonUtf8BlobConflict_PreservesWorkingCopyAndSetsConflictStages()
+    {
+        using var testRepo = GitTestRepository.Create();
+        var baseBytes = new byte[] { 0xC0, 0xAF, 0x80, 0x81, 0x82 };
+        var masterBytes = new byte[] { 0xC0, 0xAF, 0xFF, 0xFE, 0x80 };
+        var featureBytes = new byte[] { 0xC0, 0xAF, 0x88, 0x99, 0xAA };
+
+        var filePath = Path.Combine(testRepo.WorkingDirectory, "blob.bin");
+        await File.WriteAllBytesAsync(filePath, baseBytes);
+        testRepo.RunGit("add blob.bin");
+        testRepo.RunGit("commit -m \"Base blob\"");
+        var baseCommit = testRepo.RunGit("rev-parse HEAD").Trim();
+
+        await File.WriteAllBytesAsync(filePath, masterBytes);
+        testRepo.RunGit("add blob.bin");
+        testRepo.RunGit("commit -m \"Master blob\"");
+
+        testRepo.RunGit($"checkout -b feature {baseCommit}");
+        await File.WriteAllBytesAsync(filePath, featureBytes);
+        testRepo.RunGit("add blob.bin");
+        testRepo.RunGit("commit -m \"Feature blob\"");
+
+        testRepo.RunGit("checkout master");
+
+        using var workspace = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+
+        var result = await workspace.MergeAsync("feature");
+
+        Assert.False(result.IsSuccess);
+        Assert.True(result.HasConflicts);
+        Assert.Contains("blob.bin", result.ConflictedFiles);
+
+        // Working tree file must be preserved as master's byte content (not corrupted with replacement chars or text markers)
+        var actualBytes = await File.ReadAllBytesAsync(filePath);
+        Assert.Equal(masterBytes, actualBytes);
+
+        var conflicted = await workspace.GetConflictedFilesAsync();
+        Assert.Single(conflicted, "blob.bin");
+    }
 }
+

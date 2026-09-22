@@ -872,6 +872,10 @@ public sealed class GitRepositoryWithIndexAndWorkspace : IGitWorkspaceRepository
                 return new GitMergeResult(true, Array.Empty<string>(), headHash, GitMergeStatus.AlreadyUpToDate, "Already up to date.");
             }
 
+            var headCommit = await _repo.GetCommitAsync(headHash.Value, cancellationToken).ConfigureAwait(false);
+            var ourLeaves = await _repo.LoadLeafEntriesAsync(headCommit.Tree, cancellationToken).ConfigureAwait(false);
+            var theirLeaves = await _repo.LoadLeafEntriesAsync(theirCommit.Tree, cancellationToken).ConfigureAwait(false);
+
             var mergeBaseHash = await _repo.FindMergeBaseAsync(headHash, theirHash, cancellationToken).ConfigureAwait(false);
 
             if (mergeBaseHash.HasValue && mergeBaseHash.Value.Equals(theirHash))
@@ -884,8 +888,22 @@ public sealed class GitRepositoryWithIndexAndWorkspace : IGitWorkspaceRepository
                 // Fast forward
                 if (options?.NoFastForward != true)
                 {
-                    await UpdateHeadOrBranchAsync(theirHash, targetRef, cancellationToken).ConfigureAwait(false);
+                    // Preflight target tree paths and prevent overwriting untracked working tree files
+                    foreach (var (path, _) in theirLeaves)
+                    {
+                        var normalizedPath = _indexManager.NormalizeAndValidateRelativePath(path);
+                        if (!ourLeaves.ContainsKey(normalizedPath))
+                        {
+                            var fullPath = Path.Combine(RootPath, normalizedPath.Replace('/', Path.DirectorySeparatorChar));
+                            if (File.Exists(fullPath) || Directory.Exists(fullPath))
+                            {
+                                throw new InvalidOperationException($"The untracked working tree file '{normalizedPath}' would be overwritten by merge.");
+                            }
+                        }
+                    }
+
                     await SyncWorkspaceToCommitAsync(theirCommit, cancellationToken).ConfigureAwait(false);
+                    await UpdateHeadOrBranchAsync(theirHash, targetRef, cancellationToken).ConfigureAwait(false);
                     InvalidateCaches();
                     return new GitMergeResult(true, Array.Empty<string>(), theirHash, GitMergeStatus.FastForward, "Fast-forward");
                 }
@@ -897,16 +915,15 @@ public sealed class GitRepositoryWithIndexAndWorkspace : IGitWorkspaceRepository
             }
 
             // 3-way merge
-            var headCommit = await _repo.GetCommitAsync(headHash.Value, cancellationToken).ConfigureAwait(false);
             var baseLeaves = mergeBaseHash.HasValue
                 ? await _repo.LoadLeafEntriesAsync((await _repo.GetCommitAsync(mergeBaseHash.Value.Value, cancellationToken).ConfigureAwait(false)).Tree, cancellationToken).ConfigureAwait(false)
                 : new Dictionary<string, TreeLeaf>(StringComparer.Ordinal);
-            var ourLeaves = await _repo.LoadLeafEntriesAsync(headCommit.Tree, cancellationToken).ConfigureAwait(false);
-            var theirLeaves = await _repo.LoadLeafEntriesAsync(theirCommit.Tree, cancellationToken).ConfigureAwait(false);
 
             var allPaths = baseLeaves.Keys
                 .Concat(ourLeaves.Keys)
                 .Concat(theirLeaves.Keys)
+                .Distinct(StringComparer.Ordinal)
+                .Select(p => _indexManager.NormalizeAndValidateRelativePath(p))
                 .Distinct(StringComparer.Ordinal)
                 .OrderBy(p => p, StringComparer.Ordinal)
                 .ToList();
@@ -919,7 +936,7 @@ public sealed class GitRepositoryWithIndexAndWorkspace : IGitWorkspaceRepository
                 if (!ourLeaf.HasValue && theirLeaf.HasValue)
                 {
                     var fullPath = Path.Combine(RootPath, path.Replace('/', Path.DirectorySeparatorChar));
-                    if (File.Exists(fullPath))
+                    if (File.Exists(fullPath) || Directory.Exists(fullPath))
                     {
                         throw new InvalidOperationException($"The untracked working tree file '{path}' would be overwritten by merge.");
                     }
@@ -1022,7 +1039,10 @@ public sealed class GitRepositoryWithIndexAndWorkspace : IGitWorkspaceRepository
 
                         var isBinary = UnifiedDiffFormatter.IsBinary(ourBlob.Content) ||
                                        UnifiedDiffFormatter.IsBinary(theirBlob.Content) ||
-                                       (baseBlob != null && UnifiedDiffFormatter.IsBinary(baseBlob.Content));
+                                       (baseBlob != null && UnifiedDiffFormatter.IsBinary(baseBlob.Content)) ||
+                                       !System.Text.Unicode.Utf8.IsValid(ourBlob.Content) ||
+                                       !System.Text.Unicode.Utf8.IsValid(theirBlob.Content) ||
+                                       (baseBlob != null && !System.Text.Unicode.Utf8.IsValid(baseBlob.Content));
 
                         if (!isBinary)
                         {
@@ -1121,7 +1141,8 @@ public sealed class GitRepositoryWithIndexAndWorkspace : IGitWorkspaceRepository
 
     private async Task WriteLeafToWorkspaceAsync(string path, TreeLeaf leaf, CancellationToken cancellationToken)
     {
-        var fullPath = Path.Combine(RootPath, path.Replace('/', Path.DirectorySeparatorChar));
+        var normalizedPath = _indexManager.NormalizeAndValidateRelativePath(path);
+        var fullPath = Path.Combine(RootPath, normalizedPath.Replace('/', Path.DirectorySeparatorChar));
         var dir = Path.GetDirectoryName(fullPath);
         if (!string.IsNullOrEmpty(dir))
         {
@@ -1157,7 +1178,8 @@ public sealed class GitRepositoryWithIndexAndWorkspace : IGitWorkspaceRepository
 
     private async Task WriteContentToWorkspaceAsync(string path, byte[] content, int mode, CancellationToken cancellationToken)
     {
-        var fullPath = Path.Combine(RootPath, path.Replace('/', Path.DirectorySeparatorChar));
+        var normalizedPath = _indexManager.NormalizeAndValidateRelativePath(path);
+        var fullPath = Path.Combine(RootPath, normalizedPath.Replace('/', Path.DirectorySeparatorChar));
         var dir = Path.GetDirectoryName(fullPath);
         if (!string.IsNullOrEmpty(dir))
         {
@@ -1192,7 +1214,8 @@ public sealed class GitRepositoryWithIndexAndWorkspace : IGitWorkspaceRepository
 
     private void DeleteFileFromWorkspace(string path)
     {
-        var fullPath = Path.Combine(RootPath, path.Replace('/', Path.DirectorySeparatorChar));
+        var normalizedPath = _indexManager.NormalizeAndValidateRelativePath(path);
+        var fullPath = Path.Combine(RootPath, normalizedPath.Replace('/', Path.DirectorySeparatorChar));
         if (File.Exists(fullPath))
         {
             File.SetAttributes(fullPath, FileAttributes.Normal);
@@ -1227,8 +1250,9 @@ public sealed class GitRepositoryWithIndexAndWorkspace : IGitWorkspaceRepository
         {
             if (item.Entry.Kind == GitTreeEntryKind.Blob)
             {
-                targetFiles.Add(item.Path);
-                var fullPath = Path.Combine(RootPath, item.Path);
+                var normalizedPath = _indexManager.NormalizeAndValidateRelativePath(item.Path);
+                targetFiles.Add(normalizedPath);
+                var fullPath = Path.Combine(RootPath, normalizedPath.Replace('/', Path.DirectorySeparatorChar));
                 var dir = Path.GetDirectoryName(fullPath);
                 if (!string.IsNullOrEmpty(dir))
                 {
@@ -1272,7 +1296,7 @@ public sealed class GitRepositoryWithIndexAndWorkspace : IGitWorkspaceRepository
                 }
 
                 var fileInfo = new FileInfo(fullPath);
-                var entry = GitIndexEntry.FromFileInfo(item.Path, fileInfo, item.Entry.Hash);
+                var entry = GitIndexEntry.FromFileInfo(normalizedPath, fileInfo, item.Entry.Hash);
                 entry.FileMode = item.Entry.Mode;
                 newIndex.AddOrUpdate(entry);
             }
@@ -1280,9 +1304,10 @@ public sealed class GitRepositoryWithIndexAndWorkspace : IGitWorkspaceRepository
 
         foreach (var oldEntry in oldIndex.Entries)
         {
-            if (!targetFiles.Contains(oldEntry.Path))
+            var normalizedPath = _indexManager.NormalizeAndValidateRelativePath(oldEntry.Path);
+            if (!targetFiles.Contains(normalizedPath))
             {
-                var fullPath = Path.Combine(RootPath, oldEntry.Path);
+                var fullPath = Path.Combine(RootPath, normalizedPath.Replace('/', Path.DirectorySeparatorChar));
                 if (File.Exists(fullPath))
                 {
                     File.Delete(fullPath);
