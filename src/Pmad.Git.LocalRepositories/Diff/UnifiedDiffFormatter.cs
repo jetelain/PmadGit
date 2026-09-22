@@ -32,7 +32,17 @@ public static class UnifiedDiffFormatter
     }
 
     /// <summary>
+    /// Represents a line of text along with metadata indicating whether it has a trailing newline delimiter.
+    /// </summary>
+    public readonly record struct DiffLine(string Text, bool HasNewline)
+    {
+        /// <inheritdoc />
+        public override string ToString() => Text;
+    }
+
+    /// <summary>
     /// Splits raw content into lines using UTF-8 encoding and detects whether the content ends with a trailing newline.
+    /// Preserves any '\r' before '\n' as part of the line text.
     /// </summary>
     /// <param name="content">The raw byte payload.</param>
     /// <returns>A tuple containing the decoded lines and trailing newline indicator.</returns>
@@ -47,11 +57,20 @@ public static class UnifiedDiffFormatter
         var text = Encoding.UTF8.GetString(content);
 
         var lines = new List<string>();
-        using var reader = new StringReader(text);
-        string? line;
-        while ((line = reader.ReadLine()) != null)
+        var start = 0;
+        while (start < text.Length)
         {
-            lines.Add(line);
+            var nl = text.IndexOf('\n', start);
+            if (nl >= 0)
+            {
+                lines.Add(text[start..nl]);
+                start = nl + 1;
+            }
+            else
+            {
+                lines.Add(text[start..]);
+                break;
+            }
         }
 
         return (lines, hasTrailingNewline);
@@ -228,11 +247,30 @@ public static class UnifiedDiffFormatter
         }
 
         // Decode lines and trailing newline flags
-        var (oldLines, oldHasNewline) = SplitLines(oldContent);
-        var (newLines, newHasNewline) = SplitLines(newContent);
+        var (oldRawLines, oldHasNewline) = SplitLines(oldContent);
+        var (newRawLines, newHasNewline) = SplitLines(newContent);
+
+        var oldLines = new DiffLine[oldRawLines.Count];
+        for (var i = 0; i < oldRawLines.Count; i++)
+        {
+            oldLines[i] = new DiffLine(oldRawLines[i], i < oldRawLines.Count - 1 || oldHasNewline);
+        }
+
+        var newLines = new DiffLine[newRawLines.Count];
+        for (var i = 0; i < newRawLines.Count; i++)
+        {
+            newLines[i] = new DiffLine(newRawLines[i], i < newRawLines.Count - 1 || newHasNewline);
+        }
 
         var changes = MyersDiff.Compute(oldLines, newLines);
-        var hunks = CreateHunks(changes, contextLines);
+        var stringChanges = new DiffChange<string>[changes.Count];
+        for (var i = 0; i < changes.Count; i++)
+        {
+            var c = changes[i];
+            stringChanges[i] = new DiffChange<string>(c.Type, c.Item.Text, c.OldIndex, c.NewIndex);
+        }
+
+        var hunks = CreateHunks(stringChanges, contextLines);
 
         if (!isCreated && !isDeleted && hunks.Count == 0)
         {
@@ -302,8 +340,8 @@ public static class UnifiedDiffFormatter
                 {
                     case DiffChangeType.Keep:
                         sb.Append(' ').Append(c.Item).Append('\n');
-                        if (c.OldIndex == oldLines.Count - 1 && !oldHasNewline &&
-                            c.NewIndex == newLines.Count - 1 && !newHasNewline)
+                        if (c.OldIndex == oldRawLines.Count - 1 && !oldHasNewline &&
+                            c.NewIndex == newRawLines.Count - 1 && !newHasNewline)
                         {
                             sb.Append("\\ No newline at end of file\n");
                         }
@@ -312,7 +350,7 @@ public static class UnifiedDiffFormatter
                     case DiffChangeType.Delete:
                         sb.Append('-').Append(c.Item).Append('\n');
                         deletions++;
-                        if (c.OldIndex == oldLines.Count - 1 && !oldHasNewline)
+                        if (c.OldIndex == oldRawLines.Count - 1 && !oldHasNewline)
                         {
                             sb.Append("\\ No newline at end of file\n");
                         }
@@ -321,7 +359,7 @@ public static class UnifiedDiffFormatter
                     case DiffChangeType.Insert:
                         sb.Append('+').Append(c.Item).Append('\n');
                         insertions++;
-                        if (c.NewIndex == newLines.Count - 1 && !newHasNewline)
+                        if (c.NewIndex == newRawLines.Count - 1 && !newHasNewline)
                         {
                             sb.Append("\\ No newline at end of file\n");
                         }

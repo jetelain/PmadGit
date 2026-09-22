@@ -279,6 +279,108 @@ public sealed class GitDiffRepositoryTests
         Assert.Equal(Normalize(cliDiff), Normalize(managedDiff));
     }
 
+    [Fact]
+    public async Task GetCommitDiffAsync_Submodule_MatchesGitCliOutput()
+    {
+        using var testRepo = GitTestRepository.Create();
+        var subHash1 = "1111111111111111111111111111111111111111";
+        var subHash2 = "2222222222222222222222222222222222222222";
+
+        // Add submodule
+        testRepo.RunGit($"update-index --add --cacheinfo 160000,{subHash1},sub");
+        testRepo.RunGit("commit -m \"Add submodule\"");
+        var addCommit = testRepo.RunGit("rev-parse HEAD").Trim();
+
+        var repo = GitRepository.Open(testRepo.WorkingDirectory);
+        var addDiffManaged = await repo.GetCommitDiffAsync(addCommit);
+        var addDiffCli = testRepo.RunGit("-c core.abbrev=7 diff HEAD~1 HEAD");
+        Assert.Equal(Normalize(addDiffCli), Normalize(addDiffManaged));
+
+        var addStat = await repo.GetCommitStatAsync(addCommit);
+        var addStatCli = testRepo.RunGit("diff --shortstat HEAD~1 HEAD").Trim();
+        Assert.Equal(addStatCli, addStat.ToShortStat());
+
+        // Update submodule
+        testRepo.RunGit($"update-index --add --cacheinfo 160000,{subHash2},sub");
+        testRepo.RunGit("commit -m \"Update submodule\"");
+        var updateCommit = testRepo.RunGit("rev-parse HEAD").Trim();
+
+        var updateDiffManaged = await repo.GetCommitDiffAsync(updateCommit);
+        var updateDiffCli = testRepo.RunGit("-c core.abbrev=7 diff HEAD~1 HEAD");
+        Assert.Equal(Normalize(updateDiffCli), Normalize(updateDiffManaged));
+
+        var updateStat = await repo.GetCommitStatAsync(updateCommit);
+        var updateStatCli = testRepo.RunGit("diff --shortstat HEAD~1 HEAD").Trim();
+        Assert.Equal(updateStatCli, updateStat.ToShortStat());
+
+        // Delete submodule
+        testRepo.RunGit("update-index --force-remove sub");
+        testRepo.RunGit("commit -m \"Delete submodule\"");
+        var deleteCommit = testRepo.RunGit("rev-parse HEAD").Trim();
+
+        var deleteDiffManaged = await repo.GetCommitDiffAsync(deleteCommit);
+        var deleteDiffCli = testRepo.RunGit("-c core.abbrev=7 diff HEAD~1 HEAD");
+        Assert.Equal(Normalize(deleteDiffCli), Normalize(deleteDiffManaged));
+
+        var deleteStat = await repo.GetCommitStatAsync(deleteCommit);
+        var deleteStatCli = testRepo.RunGit("diff --shortstat HEAD~1 HEAD").Trim();
+        Assert.Equal(deleteStatCli, deleteStat.ToShortStat());
+    }
+
+    [Fact]
+    public async Task GetCommitDiffAsync_FinalNewlineChange_MatchesGitCliOutput()
+    {
+        using var testRepo = GitTestRepository.Create();
+        testRepo.RunGit("config core.autocrlf false");
+        var filePath = Path.Combine(testRepo.WorkingDirectory, "file.txt");
+
+        await File.WriteAllTextAsync(filePath, "abc");
+        testRepo.RunGit("add file.txt");
+        testRepo.RunGit("commit -m \"No newline\"");
+
+        await File.WriteAllTextAsync(filePath, "abc\n");
+        testRepo.RunGit("add file.txt");
+        testRepo.RunGit("commit -m \"Added newline\"");
+
+        var headCommit = testRepo.RunGit("rev-parse HEAD").Trim();
+        var repo = GitRepository.Open(testRepo.WorkingDirectory);
+
+        var managedDiff = await repo.GetCommitDiffAsync(headCommit);
+        var cliDiff = testRepo.RunGit("-c core.abbrev=7 diff HEAD~1 HEAD");
+        Assert.Equal(Normalize(cliDiff), Normalize(managedDiff));
+
+        var stat = await repo.GetCommitStatAsync(headCommit);
+        var cliStat = testRepo.RunGit("diff --shortstat HEAD~1 HEAD").Trim();
+        Assert.Equal(cliStat, stat.ToShortStat());
+    }
+
+    [Fact]
+    public async Task GetCommitDiffAsync_LineEndingChangeLfToCrlf_MatchesGitCliOutput()
+    {
+        using var testRepo = GitTestRepository.Create();
+        testRepo.RunGit("config core.autocrlf false");
+        var filePath = Path.Combine(testRepo.WorkingDirectory, "file.txt");
+
+        await File.WriteAllTextAsync(filePath, "line1\nline2\n");
+        testRepo.RunGit("add file.txt");
+        testRepo.RunGit("commit -m \"LF line endings\"");
+
+        await File.WriteAllTextAsync(filePath, "line1\r\nline2\r\n");
+        testRepo.RunGit("add file.txt");
+        testRepo.RunGit("commit -m \"CRLF line endings\"");
+
+        var headCommit = testRepo.RunGit("rev-parse HEAD").Trim();
+        var repo = GitRepository.Open(testRepo.WorkingDirectory);
+
+        var managedDiff = await repo.GetCommitDiffAsync(headCommit);
+        var cliDiff = testRepo.RunGit("-c core.abbrev=7 diff HEAD~1 HEAD");
+        Assert.Equal(Normalize(cliDiff), Normalize(managedDiff));
+
+        var stat = await repo.GetCommitStatAsync(headCommit);
+        var cliStat = testRepo.RunGit("diff --shortstat HEAD~1 HEAD").Trim();
+        Assert.Equal(cliStat, stat.ToShortStat());
+    }
+
     private static string Normalize(string text) =>
         text.Replace("\r\n", "\n").Trim();
 }

@@ -98,10 +98,31 @@ public class MyersDiffTests
         }
         Assert.Equal(newChars, reconstructed);
 
-        // Ensure keeps match
-        var keepsFromOld = result.Where(c => c.Type == DiffChangeType.Keep).Select(c => c.Item).ToList();
-        var keepsFromNew = result.Where(c => c.Type == DiffChangeType.Keep).Select(c => c.Item).ToList();
-        Assert.Equal(keepsFromOld, keepsFromNew);
+        // Validate that kept items match the actual characters at OldIndex and NewIndex
+        var keepChanges = result.Where(c => c.Type == DiffChangeType.Keep).ToList();
+        Assert.NotEmpty(keepChanges);
+        foreach (var keep in keepChanges)
+        {
+            Assert.InRange(keep.OldIndex, 0, oldChars.Length - 1);
+            Assert.InRange(keep.NewIndex, 0, newChars.Length - 1);
+            Assert.Equal(keep.Item, oldChars[keep.OldIndex]);
+            Assert.Equal(keep.Item, newChars[keep.NewIndex]);
+        }
+
+        // Validate delete and insert indices against input sequences
+        foreach (var del in result.Where(c => c.Type == DiffChangeType.Delete))
+        {
+            Assert.Equal(-1, del.NewIndex);
+            Assert.InRange(del.OldIndex, 0, oldChars.Length - 1);
+            Assert.Equal(del.Item, oldChars[del.OldIndex]);
+        }
+
+        foreach (var ins in result.Where(c => c.Type == DiffChangeType.Insert))
+        {
+            Assert.Equal(-1, ins.OldIndex);
+            Assert.InRange(ins.NewIndex, 0, newChars.Length - 1);
+            Assert.Equal(ins.Item, newChars[ins.NewIndex]);
+        }
     }
 
     [Fact]

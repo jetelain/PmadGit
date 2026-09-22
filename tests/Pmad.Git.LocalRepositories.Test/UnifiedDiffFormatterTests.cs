@@ -208,5 +208,73 @@ public class UnifiedDiffFormatterTests
         Assert.Equal(0, ins);
         Assert.Equal(0, del);
     }
+
+    [Fact]
+    public void FormatFileDiff_OnlyFinalNewlineAdded_EmitsHunkAndStats()
+    {
+        var oldContent = Encoding.UTF8.GetBytes("abc");
+        var newContent = Encoding.UTF8.GetBytes("abc\n");
+        var oldHash = GitHashHelper.ComputeBlobHash(oldContent);
+        var newHash = GitHashHelper.ComputeBlobHash(newContent);
+
+        var (diffText, ins, del) = UnifiedDiffFormatter.FormatFileDiff(
+            oldPath: "file.txt",
+            newPath: "file.txt",
+            oldHash: oldHash,
+            newHash: newHash,
+            oldContent: oldContent,
+            newContent: newContent);
+
+        Assert.Equal(1, ins);
+        Assert.Equal(1, del);
+        Assert.Contains("@@ -1 +1 @@", diffText);
+        Assert.Contains("-abc\n\\ No newline at end of file\n+abc", diffText);
+    }
+
+    [Fact]
+    public void FormatFileDiff_OnlyFinalNewlineRemoved_EmitsHunkAndStats()
+    {
+        var oldContent = Encoding.UTF8.GetBytes("abc\n");
+        var newContent = Encoding.UTF8.GetBytes("abc");
+        var oldHash = GitHashHelper.ComputeBlobHash(oldContent);
+        var newHash = GitHashHelper.ComputeBlobHash(newContent);
+
+        var (diffText, ins, del) = UnifiedDiffFormatter.FormatFileDiff(
+            oldPath: "file.txt",
+            newPath: "file.txt",
+            oldHash: oldHash,
+            newHash: newHash,
+            oldContent: oldContent,
+            newContent: newContent);
+
+        Assert.Equal(1, ins);
+        Assert.Equal(1, del);
+        Assert.Contains("@@ -1 +1 @@", diffText);
+        Assert.Contains("-abc\n+abc\n\\ No newline at end of file", diffText);
+    }
+
+    [Fact]
+    public void FormatFileDiff_LineEndingChangeLfToCrlf_EmitsHunkAndStats()
+    {
+        var oldContent = Encoding.UTF8.GetBytes("line1\nline2\n");
+        var newContent = Encoding.UTF8.GetBytes("line1\r\nline2\r\n");
+        var oldHash = GitHashHelper.ComputeBlobHash(oldContent);
+        var newHash = GitHashHelper.ComputeBlobHash(newContent);
+
+        var (diffText, ins, del) = UnifiedDiffFormatter.FormatFileDiff(
+            oldPath: "file.txt",
+            newPath: "file.txt",
+            oldHash: oldHash,
+            newHash: newHash,
+            oldContent: oldContent,
+            newContent: newContent);
+
+        Assert.Equal(2, ins);
+        Assert.Equal(2, del);
+        Assert.Contains("-line1", diffText);
+        Assert.Contains("+line1\r", diffText);
+        Assert.Contains("-line2", diffText);
+        Assert.Contains("+line2\r", diffText);
+    }
 }
 

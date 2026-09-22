@@ -339,6 +339,26 @@ public sealed class GitRepositoryWithIndexAndWorkspace : IGitWorkspaceRepository
 
             var fullPath = Path.Combine(RootPath, entry.Path.Replace('/', Path.DirectorySeparatorChar));
 
+            if (entry.FileMode == GitRepository.SubmoduleMode)
+            {
+                if (!Directory.Exists(fullPath))
+                {
+                    // Deleted submodule
+                    var oldContent = Encoding.UTF8.GetBytes($"Subproject commit {entry.Hash.Value}\n");
+                    var (diffText, _, _) = UnifiedDiffFormatter.FormatFileDiff(
+                        oldPath: entry.Path,
+                        newPath: null,
+                        oldHash: entry.Hash,
+                        newHash: null,
+                        oldContent: oldContent,
+                        newContent: null,
+                        oldMode: GitRepository.FormatFileMode(entry.FileMode),
+                        newMode: null);
+                    sb.Append(diffText);
+                }
+                continue;
+            }
+
             if (!File.Exists(fullPath))
             {
                 // Deleted in working tree
@@ -357,29 +377,10 @@ public sealed class GitRepositoryWithIndexAndWorkspace : IGitWorkspaceRepository
             }
             else
             {
+                var fileInfo = new FileInfo(fullPath);
                 var workingBytes = await File.ReadAllBytesAsync(fullPath, cancellationToken).ConfigureAwait(false);
                 var workingHash = GitHashHelper.ComputeBlobHash(workingBytes, HashLengthBytes);
-
-                int currentMode = entry.FileMode;
-                if (!OperatingSystem.IsWindows())
-                {
-                    try
-                    {
-                        var unixMode = File.GetUnixFileMode(fullPath);
-                        if ((unixMode & (UnixFileMode.UserExecute | UnixFileMode.GroupExecute | UnixFileMode.OtherExecute)) != 0)
-                        {
-                            currentMode = 33261; // 100755
-                        }
-                        else
-                        {
-                            currentMode = 33188; // 100644
-                        }
-                    }
-                    catch
-                    {
-                        // Ignore file mode inspection error
-                    }
-                }
+                int currentMode = GitIndexEntry.GetFileMode(fileInfo);
 
                 if (workingHash == entry.Hash && currentMode == entry.FileMode)
                 {

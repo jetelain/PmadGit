@@ -21,6 +21,7 @@ public sealed class GitRepository : IGitRepository, IGitRepositoryCacheInvalidat
     private readonly GitLastChangeCache _lastChangeCache;
     private const int RegularFileMode = 33188; // 100644 in octal
     private const int DirectoryMode = 16384;   // 040000 in octal
+    internal const int SubmoduleMode = 57344; // 160000 in octal
 
     private GitRepository(string rootPath, string gitDirectory, IGitRepositoryLockManager lockManager)
     {
@@ -1995,6 +1996,17 @@ public sealed class GitRepository : IGitRepository, IGitRepositoryCacheInvalidat
                normalizedPath.StartsWith(normalizedFilter + "/", StringComparison.Ordinal);
     }
 
+    private async Task<byte[]> GetEntryDiffContentAsync(TreeLeaf leaf, CancellationToken cancellationToken)
+    {
+        if (leaf.Mode == SubmoduleMode)
+        {
+            return Encoding.UTF8.GetBytes($"Subproject commit {leaf.Hash.Value}\n");
+        }
+
+        var blob = await _objectStore.ReadObjectAsync(leaf.Hash, cancellationToken).ConfigureAwait(false);
+        return blob.Content;
+    }
+
     internal async Task<(string DiffText, GitDiffStat Stat)> ComputeLeavesDiffAsync(
         IReadOnlyDictionary<string, TreeLeaf> oldLeaves,
         IReadOnlyDictionary<string, TreeLeaf> newLeaves,
@@ -2021,13 +2033,13 @@ public sealed class GitRepository : IGitRepository, IGitRepositoryCacheInvalidat
             if (inOld && !inNew)
             {
                 // Deleted file
-                var oldBlob = await _objectStore.ReadObjectAsync(oldLeaf.Hash, cancellationToken).ConfigureAwait(false);
+                var oldContent = await GetEntryDiffContentAsync(oldLeaf, cancellationToken).ConfigureAwait(false);
                 var (diffText, ins, del) = UnifiedDiffFormatter.FormatFileDiff(
                     oldPath: path,
                     newPath: null,
                     oldHash: oldLeaf.Hash,
                     newHash: null,
-                    oldContent: oldBlob.Content,
+                    oldContent: oldContent,
                     newContent: null,
                     oldMode: FormatFileMode(oldLeaf.Mode),
                     newMode: null);
@@ -2043,14 +2055,14 @@ public sealed class GitRepository : IGitRepository, IGitRepositoryCacheInvalidat
             else if (!inOld && inNew)
             {
                 // Created file
-                var newBlob = await _objectStore.ReadObjectAsync(newLeaf.Hash, cancellationToken).ConfigureAwait(false);
+                var newContent = await GetEntryDiffContentAsync(newLeaf, cancellationToken).ConfigureAwait(false);
                 var (diffText, ins, del) = UnifiedDiffFormatter.FormatFileDiff(
                     oldPath: null,
                     newPath: path,
                     oldHash: null,
                     newHash: newLeaf.Hash,
                     oldContent: null,
-                    newContent: newBlob.Content,
+                    newContent: newContent,
                     oldMode: null,
                     newMode: FormatFileMode(newLeaf.Mode));
 
@@ -2093,15 +2105,15 @@ public sealed class GitRepository : IGitRepository, IGitRepositoryCacheInvalidat
                 else
                 {
                     // Content changed (and possibly mode changed)
-                    var oldBlob = await _objectStore.ReadObjectAsync(oldLeaf.Hash, cancellationToken).ConfigureAwait(false);
-                    var newBlob = await _objectStore.ReadObjectAsync(newLeaf.Hash, cancellationToken).ConfigureAwait(false);
+                    var oldContent = await GetEntryDiffContentAsync(oldLeaf, cancellationToken).ConfigureAwait(false);
+                    var newContent = await GetEntryDiffContentAsync(newLeaf, cancellationToken).ConfigureAwait(false);
                     var (diffText, ins, del) = UnifiedDiffFormatter.FormatFileDiff(
                         oldPath: path,
                         newPath: path,
                         oldHash: oldLeaf.Hash,
                         newHash: newLeaf.Hash,
-                        oldContent: oldBlob.Content,
-                        newContent: newBlob.Content,
+                        oldContent: oldContent,
+                        newContent: newContent,
                         oldMode: FormatFileMode(oldLeaf.Mode),
                         newMode: FormatFileMode(newLeaf.Mode));
 
