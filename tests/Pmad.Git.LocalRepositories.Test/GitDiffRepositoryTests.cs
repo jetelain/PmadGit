@@ -328,6 +328,53 @@ public sealed class GitDiffRepositoryTests
     }
 
     [Fact]
+    public async Task GetUnstagedDiffAsync_Submodule_MatchesGitCliOutput()
+    {
+        using var testRepo = GitTestRepository.Create();
+        var subDir = Path.Combine(testRepo.WorkingDirectory, "sub");
+        TestHelper.RunGit(testRepo.WorkingDirectory, "init sub");
+        TestHelper.RunGit(subDir, "config user.name test");
+        TestHelper.RunGit(subDir, "config user.email test@test.com");
+        TestHelper.RunGit(subDir, "commit --allow-empty -m \"sub1\"");
+        var subHash1 = TestHelper.RunGit(subDir, "rev-parse HEAD").Trim();
+        TestHelper.RunGit(subDir, "commit --allow-empty -m \"sub2\"");
+        var subHash2 = TestHelper.RunGit(subDir, "rev-parse HEAD").Trim();
+        TestHelper.RunGit(subDir, $"checkout {subHash1}");
+
+        testRepo.RunGit($"update-index --add --cacheinfo 160000,{subHash1},sub");
+        testRepo.RunGit("commit -m \"Add submodule\"");
+
+        using var workspaceRepo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+
+        // When submodule HEAD matches index, unstaged diff is empty
+        var cleanManagedDiff = await workspaceRepo.GetUnstagedDiffAsync();
+        Assert.Empty(cleanManagedDiff);
+
+        // When submodule HEAD is updated without staging
+        TestHelper.RunGit(subDir, $"checkout {subHash2}");
+
+        var updatedManagedDiff = await workspaceRepo.GetUnstagedDiffAsync();
+        var updatedCliDiff = testRepo.RunGit("-c core.abbrev=7 diff");
+        Assert.Equal(Normalize(updatedCliDiff), Normalize(updatedManagedDiff));
+
+        // Also test gitdir file pointer scenario (.git file pointing to gitdir)
+        var externalGitDir = Path.Combine(testRepo.WorkingDirectory, ".git", "modules", "sub");
+        Directory.CreateDirectory(externalGitDir);
+        await File.WriteAllTextAsync(Path.Combine(externalGitDir, "HEAD"), subHash2 + "\n");
+        TestHelper.TryDeleteDirectory(Path.Combine(subDir, ".git"));
+        await File.WriteAllTextAsync(Path.Combine(subDir, ".git"), "gitdir: ../.git/modules/sub\n");
+
+        var gitdirManagedDiff = await workspaceRepo.GetUnstagedDiffAsync();
+        Assert.Equal(Normalize(updatedCliDiff), Normalize(gitdirManagedDiff));
+
+        // When submodule folder is removed from workspace, unstaged diff reports deleted submodule
+        TestHelper.TryDeleteDirectory(subDir);
+        var deletedManagedDiff = await workspaceRepo.GetUnstagedDiffAsync();
+        var deletedCliDiff = testRepo.RunGit("-c core.abbrev=7 diff");
+        Assert.Equal(Normalize(deletedCliDiff), Normalize(deletedManagedDiff));
+    }
+
+    [Fact]
     public async Task GetCommitDiffAsync_FinalNewlineChange_MatchesGitCliOutput()
     {
         using var testRepo = GitTestRepository.Create();

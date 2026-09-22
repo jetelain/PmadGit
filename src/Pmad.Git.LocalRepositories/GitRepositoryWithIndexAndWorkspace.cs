@@ -356,6 +356,25 @@ public sealed class GitRepositoryWithIndexAndWorkspace : IGitWorkspaceRepository
                         newMode: null);
                     sb.Append(diffText);
                 }
+                else
+                {
+                    var workingHead = await TryGetSubmoduleHeadAsync(fullPath, cancellationToken).ConfigureAwait(false);
+                    if (workingHead.HasValue && !workingHead.Value.Equals(entry.Hash))
+                    {
+                        var oldContent = Encoding.UTF8.GetBytes($"Subproject commit {entry.Hash.Value}\n");
+                        var newContent = Encoding.UTF8.GetBytes($"Subproject commit {workingHead.Value.Value}\n");
+                        var (diffText, _, _) = UnifiedDiffFormatter.FormatFileDiff(
+                            oldPath: entry.Path,
+                            newPath: entry.Path,
+                            oldHash: entry.Hash,
+                            newHash: workingHead.Value,
+                            oldContent: oldContent,
+                            newContent: newContent,
+                            oldMode: GitRepository.FormatFileMode(entry.FileMode),
+                            newMode: GitRepository.FormatFileMode(entry.FileMode));
+                        sb.Append(diffText);
+                    }
+                }
                 continue;
             }
 
@@ -922,6 +941,45 @@ public sealed class GitRepositoryWithIndexAndWorkspace : IGitWorkspaceRepository
         }
 
         return null;
+    }
+
+    private static async Task<GitHash?> TryGetSubmoduleHeadAsync(string fullPath, CancellationToken cancellationToken)
+    {
+        try
+        {
+            string? gitDir = null;
+            var gitItemPath = Path.Combine(fullPath, ".git");
+
+            if (Directory.Exists(gitItemPath))
+            {
+                gitDir = gitItemPath;
+            }
+            else if (File.Exists(gitItemPath))
+            {
+                var content = (await File.ReadAllTextAsync(gitItemPath, cancellationToken).ConfigureAwait(false)).Trim();
+                if (content.StartsWith("gitdir:", StringComparison.OrdinalIgnoreCase))
+                {
+                    var target = content.Substring(7).Trim();
+                    gitDir = Path.GetFullPath(Path.Combine(fullPath, target));
+                }
+            }
+            else if (File.Exists(Path.Combine(fullPath, "HEAD")))
+            {
+                gitDir = fullPath;
+            }
+
+            if (gitDir == null || !Directory.Exists(gitDir))
+            {
+                return null;
+            }
+
+            var refStore = new GitReferenceStore(gitDir);
+            return await refStore.ResolveHeadAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch
+        {
+            return null;
+        }
     }
 
     #endregion
