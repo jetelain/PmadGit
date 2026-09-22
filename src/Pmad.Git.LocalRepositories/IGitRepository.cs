@@ -233,6 +233,15 @@ public interface IGitRepository : IGitRepositoryCacheInvalidator
     Task<bool> IsCommitReachableAsync(GitHash from, GitHash to, CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Finds the best common ancestor (merge base) between two commits.
+    /// </summary>
+    /// <param name="commit1">The first commit hash.</param>
+    /// <param name="commit2">The second commit hash.</param>
+    /// <param name="cancellationToken">Token used to cancel the async operation.</param>
+    /// <returns>The merge base commit hash, or null if no common ancestor exists.</returns>
+    Task<GitHash?> FindMergeBaseAsync(GitHash commit1, GitHash commit2, CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// Compares two trees and returns the list of added, modified, and deleted files.
     /// </summary>
     /// <param name="oldTreeHash">The hash of the baseline tree.</param>

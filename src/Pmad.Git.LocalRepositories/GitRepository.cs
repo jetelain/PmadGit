@@ -1008,6 +1008,126 @@ public sealed class GitRepository : IGitRepository, IGitRepositoryCacheInvalidat
     }
 
     /// <inheritdoc />
+    public async Task<GitHash?> FindMergeBaseAsync(GitHash commit1, GitHash commit2, CancellationToken cancellationToken = default)
+    {
+        if (commit1.Equals(commit2))
+        {
+            return commit1;
+        }
+
+        // Quick check: is one commit an ancestor of the other?
+        if (await IsCommitReachableAsync(from: commit2, to: commit1, cancellationToken).ConfigureAwait(false))
+        {
+            return commit1;
+        }
+
+        if (await IsCommitReachableAsync(from: commit1, to: commit2, cancellationToken).ConfigureAwait(false))
+        {
+            return commit2;
+        }
+
+        // Collect all reachable ancestors of commit1
+        var ancestors1 = new HashSet<GitHash>();
+        var queue1 = new Queue<GitHash>();
+        queue1.Enqueue(commit1);
+
+        while (queue1.Count > 0)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var current = queue1.Dequeue();
+            if (!ancestors1.Add(current))
+            {
+                continue;
+            }
+
+            var commit = await GetCommitAsync(current, cancellationToken).ConfigureAwait(false);
+            foreach (var parent in commit.Parents)
+            {
+                queue1.Enqueue(parent);
+            }
+        }
+
+        // Walk ancestors of commit2 to find common ancestors
+        var visited2 = new HashSet<GitHash>();
+        var queue2 = new Queue<GitHash>();
+        queue2.Enqueue(commit2);
+        var commonCandidates = new HashSet<GitHash>();
+
+        while (queue2.Count > 0)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var current = queue2.Dequeue();
+            if (!visited2.Add(current))
+            {
+                continue;
+            }
+
+            if (ancestors1.Contains(current))
+            {
+                commonCandidates.Add(current);
+                // Deeper ancestors are redundant since they are reachable from current
+                continue;
+            }
+
+            var commit = await GetCommitAsync(current, cancellationToken).ConfigureAwait(false);
+            foreach (var parent in commit.Parents)
+            {
+                queue2.Enqueue(parent);
+            }
+        }
+
+        if (commonCandidates.Count == 0)
+        {
+            return null;
+        }
+
+        if (commonCandidates.Count == 1)
+        {
+            return commonCandidates.First();
+        }
+
+        // In case of multiple candidates, eliminate any candidate reachable from another candidate
+        var bestCandidates = new List<GitHash>(commonCandidates);
+        for (var i = bestCandidates.Count - 1; i >= 0; i--)
+        {
+            var candidate = bestCandidates[i];
+            var isRedundant = false;
+            for (var j = 0; j < bestCandidates.Count; j++)
+            {
+                if (i != j && await IsCommitReachableAsync(from: bestCandidates[j], to: candidate, cancellationToken).ConfigureAwait(false))
+                {
+                    isRedundant = true;
+                    break;
+                }
+            }
+            if (isRedundant)
+            {
+                bestCandidates.RemoveAt(i);
+            }
+        }
+
+        if (bestCandidates.Count == 1)
+        {
+            return bestCandidates[0];
+        }
+
+        // If multiple independent common ancestors remain, pick the one with the newest committer date
+        GitHash? best = null;
+        DateTimeOffset bestDate = DateTimeOffset.MinValue;
+        foreach (var c in bestCandidates)
+        {
+            var commitObj = await GetCommitAsync(c, cancellationToken).ConfigureAwait(false);
+            if (best == null || commitObj.Metadata.Committer.Timestamp > bestDate)
+            {
+                best = c;
+                bestDate = commitObj.Metadata.Committer.Timestamp;
+            }
+        }
+
+        return best;
+    }
+
+    /// <inheritdoc />
     public async Task<IReadOnlyList<GitTreeChange>> CompareTreesAsync(
         GitHash oldTreeHash,
         GitHash newTreeHash,

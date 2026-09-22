@@ -105,6 +105,18 @@ public sealed class GitIndexEntry
     }
 
     /// <summary>
+    /// Initializes a new instance of the <see cref="GitIndexEntry"/> class with a specified stage.
+    /// </summary>
+    /// <param name="path">Repository-relative file path.</param>
+    /// <param name="hash">Object hash.</param>
+    /// <param name="fileMode">File mode.</param>
+    /// <param name="stage">Stage number (0 for normal, 1 for ancestor, 2 for ours, 3 for theirs).</param>
+    public GitIndexEntry(string path, GitHash hash, int fileMode, int stage)
+        : this(path, hash, fileMode, 0, 0, 0, 0, 0, 0, 0, 0, 0, (ushort)((stage & 0x3) << 12), 0)
+    {
+    }
+
+    /// <summary>
     /// Initializes a new instance of the <see cref="GitIndexEntry"/> class with extended flags.
     /// </summary>
     public GitIndexEntry(
