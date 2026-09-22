@@ -35,12 +35,12 @@ namespace Pmad.Git.Cli;
 /// followed by <see cref="CompleteConflictResolutionAsync"/>, or discarded via
 /// <see cref="AbortConflictResolutionAsync"/>.
 /// </para>
-/// <para>Use <see cref="GitRepositorySynchronizerExtensions.CreateSynchronizer"/> to create an instance
+/// <para>Use <see cref="GitRepositorySynchronizerExtensions.CreateSynchronizer(IGitRepository, GitSyncOptions?, bool)"/> to create an instance
 /// directly from an <see cref="IGitRepository"/>.</para>
 /// </remarks>
 public sealed class GitRepositorySynchronizer : IAsyncDisposable
 {
-    private readonly GitCliRepository _cli;
+    private readonly IGitRemoteRepository _remoteRepo;
     private readonly GitSyncOptions _options;
     private readonly SemaphoreSlim _gate = new(1, 1);
     private readonly CancellationTokenSource _lifetimeCts = new();
@@ -73,10 +73,8 @@ public sealed class GitRepositorySynchronizer : IAsyncDisposable
     /// detect local changes without requiring manual <see cref="NotifyLocalChange"/> calls.
     /// </summary>
     public GitRepositorySynchronizer(IGitRepository repository, GitSyncOptions? options = null)
-        : this(new GitCliRepository(repository, (options ??= new GitSyncOptions()).GitRunner), options)
+        : this(new GitCliRepository(repository, (options ??= new GitSyncOptions()).GitRunner), repository, options)
     {
-        _changeSource = repository;
-        _changeSource.Changed += OnRepositoryChanged;
     }
 
     /// <summary>
@@ -85,9 +83,33 @@ public sealed class GitRepositorySynchronizer : IAsyncDisposable
     /// reported manually via <see cref="NotifyLocalChange"/>.
     /// </summary>
     public GitRepositorySynchronizer(GitCliRepository cli, GitSyncOptions? options = null)
+        : this((IGitRemoteRepository)cli, options)
     {
-        _cli = cli ?? throw new ArgumentNullException(nameof(cli));
+    }
+
+    /// <summary>
+    /// Creates a synchronizer wrapping an <see cref="IGitRemoteRepository"/>.
+    /// If the repository implements <see cref="IGitRepositoryCacheInvalidator"/>, it is automatically
+    /// subscribed to detect local changes without requiring manual <see cref="NotifyLocalChange"/> calls.
+    /// </summary>
+    public GitRepositorySynchronizer(IGitRemoteRepository remoteRepository, GitSyncOptions? options = null)
+        : this(remoteRepository, remoteRepository as IGitRepositoryCacheInvalidator, options)
+    {
+    }
+
+    /// <summary>
+    /// Creates a synchronizer wrapping an <see cref="IGitRemoteRepository"/> and an optional
+    /// <see cref="IGitRepositoryCacheInvalidator"/> change source to automatically detect local changes.
+    /// </summary>
+    public GitRepositorySynchronizer(IGitRemoteRepository remoteRepository, IGitRepositoryCacheInvalidator? changeSource, GitSyncOptions? options = null)
+    {
+        _remoteRepo = remoteRepository ?? throw new ArgumentNullException(nameof(remoteRepository));
         _options = options ?? new GitSyncOptions();
+        if (changeSource != null)
+        {
+            _changeSource = changeSource;
+            _changeSource.Changed += OnRepositoryChanged;
+        }
     }
 
     private void OnRepositoryChanged(object? sender, EventArgs e)
@@ -249,7 +271,7 @@ public sealed class GitRepositorySynchronizer : IAsyncDisposable
             BeginSelfOperation();
             try
             {
-                await _cli.PushAsync(_options.Remote, _options.Branch, cancellationToken: cancellationToken).ConfigureAwait(false);
+                await _remoteRepo.PushAsync(_options.Remote, _options.Branch, cancellationToken: cancellationToken).ConfigureAwait(false);
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
@@ -306,7 +328,7 @@ public sealed class GitRepositorySynchronizer : IAsyncDisposable
             BeginSelfOperation();
             try
             {
-                result = await _cli.PullAsync(_options.Remote, _options.Branch, cancellationToken: cancellationToken).ConfigureAwait(false);
+                result = await _remoteRepo.PullAsync(_options.Remote, _options.Branch, cancellationToken: cancellationToken).ConfigureAwait(false);
             }
             finally
             {
@@ -347,7 +369,7 @@ public sealed class GitRepositorySynchronizer : IAsyncDisposable
             BeginSelfOperation();
             try
             {
-                await _cli.ResolveConflictAsync(relativeFilePath, cancellationToken).ConfigureAwait(false);
+                await _remoteRepo.ResolveConflictAsync(relativeFilePath, cancellationToken).ConfigureAwait(false);
             }
             finally
             {
@@ -377,7 +399,7 @@ public sealed class GitRepositorySynchronizer : IAsyncDisposable
             BeginSelfOperation();
             try
             {
-                await _cli.ContinueMergeAsync(commitMessage, cancellationToken).ConfigureAwait(false);
+                await _remoteRepo.ContinueMergeAsync(commitMessage, cancellationToken).ConfigureAwait(false);
             }
             finally
             {
@@ -410,7 +432,7 @@ public sealed class GitRepositorySynchronizer : IAsyncDisposable
             BeginSelfOperation();
             try
             {
-                await _cli.AbortMergeAsync(cancellationToken).ConfigureAwait(false);
+                await _remoteRepo.AbortMergeAsync(cancellationToken).ConfigureAwait(false);
             }
             finally
             {
@@ -475,7 +497,7 @@ public sealed class GitRepositorySynchronizer : IAsyncDisposable
         // Quiesce any operation still in flight (a debounced push started just before the timer
         // was disposed, or a manually invoked FlushPendingPushAsync/TriggerRemoteSyncAsync call)
         // by acquiring the gate: since every such operation holds the gate for its whole
-        // duration, waiting for it here guarantees none of them touches _gate or _cli after this
+        // duration, waiting for it here guarantees none of them touches _gate or _remoteRepo after this
         // method returns and disposes the synchronization primitives.
         await _gate.WaitAsync().ConfigureAwait(false);
         _gate.Release();
