@@ -76,7 +76,7 @@ public sealed class GitFileLastChangeHelperTests
 
         var result = GitFileLastChangeHelper.ApplyFilters(source, string.Empty, SearchOption.TopDirectoryOnly, null);
 
-        Assert.Equal(1, result.Count);
+        Assert.Single(result);
         Assert.Contains(result, e => e.Path == "README.md");
     }
 

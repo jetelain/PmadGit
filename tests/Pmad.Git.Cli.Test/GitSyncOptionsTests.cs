@@ -54,4 +54,46 @@ public class GitSyncOptionsTests
         Assert.Same(fakeRunner, options.GitRunner);
         Assert.Equal(fakeRunner.GitCliPath, options.GitCliPath);
     }
+
+    [Fact]
+    public void GitCliSyncOptions_CopyConstructor_Copies_All_Properties()
+    {
+        var baseOptions = new GitSyncOptions
+        {
+            Remote = "origin",
+            Branch = "main",
+            PullInterval = TimeSpan.FromMinutes(30),
+            PushDebounceDelay = TimeSpan.FromSeconds(10)
+        };
+
+        var cliOptions = new GitCliSyncOptions(baseOptions);
+
+        Assert.Equal("origin", cliOptions.Remote);
+        Assert.Equal("main", cliOptions.Branch);
+        Assert.Equal(TimeSpan.FromMinutes(30), cliOptions.PullInterval);
+        Assert.Equal(TimeSpan.FromSeconds(10), cliOptions.PushDebounceDelay);
+        Assert.Equal("git", cliOptions.GitCliPath);
+    }
+
+    [Fact]
+    public void GitCliSyncOptions_CopyConstructor_Preserves_Runner_When_Source_Is_GitCliSyncOptions()
+    {
+        var fakeRunner = new Infrastructure.FakeGitRunner();
+        var source = new GitCliSyncOptions
+        {
+            Remote = "upstream",
+            GitRunner = fakeRunner
+        };
+
+        var copy = new GitCliSyncOptions(source);
+
+        Assert.Equal("upstream", copy.Remote);
+        Assert.Same(fakeRunner, copy.GitRunner);
+    }
+
+    [Fact]
+    public void GitCliSyncOptions_CopyConstructor_Throws_On_Null()
+    {
+        Assert.Throws<ArgumentNullException>(() => new GitCliSyncOptions(null!));
+    }
 }

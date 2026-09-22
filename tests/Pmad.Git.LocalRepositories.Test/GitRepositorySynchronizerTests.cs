@@ -219,17 +219,5 @@ public sealed class GitRepositorySynchronizerTests
 
         Assert.Single(fake.PushCalls);
     }
-
-    [Fact]
-    public async Task CreateSynchronizer_ExtensionMethods_Work_With_IGitRemoteRepository()
-    {
-        var fake = new FakeRemoteRepository();
-        var options = new GitSyncOptions();
-
-        await using var synchronizer1 = fake.CreateSynchronizer(options, start: false);
-        Assert.Equal(GitSyncState.Idle, synchronizer1.State);
-
-        await using var synchronizer2 = ((IGitRemoteRepository)fake).CreateSynchronizer(options, start: false);
-        Assert.Equal(GitSyncState.Idle, synchronizer2.State);
-    }
 }
+

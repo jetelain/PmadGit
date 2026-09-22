@@ -1,5 +1,3 @@
-using System.Threading;
-
 namespace Pmad.Git.LocalRepositories;
 
 /// <summary>
@@ -32,8 +30,6 @@ namespace Pmad.Git.LocalRepositories;
 /// followed by <see cref="CompleteConflictResolutionAsync"/>, or discarded via
 /// <see cref="AbortConflictResolutionAsync"/>.
 /// </para>
-/// <para>Use <see cref="GitRepositorySynchronizerExtensions.CreateSynchronizer(IGitRemoteRepository, GitSyncOptions?, bool)"/>
-/// to create an instance directly from an <see cref="IGitRemoteRepository"/>.</para>
 /// </remarks>
 public sealed class GitRepositorySynchronizer : IAsyncDisposable
 {
@@ -62,13 +58,11 @@ public sealed class GitRepositorySynchronizer : IAsyncDisposable
     public event EventHandler<Exception>? SyncError;
 
     /// <summary>
-    /// Creates a synchronizer wrapping an <see cref="IGitRemoteRepository"/>.
-    /// If the repository implements <see cref="IGitRepositoryCacheInvalidator"/>, it is automatically
-    /// subscribed to detect local changes without requiring manual <see cref="NotifyLocalChange"/> calls.
+    /// Creates a synchronizer wrapping an <see cref="IGitRemoteRepository"/> with no automatic local-change detection.
     /// </summary>
-    public GitRepositorySynchronizer(IGitRemoteRepository remoteRepository, GitSyncOptions? options = null)
-        : this(remoteRepository, remoteRepository as IGitRepositoryCacheInvalidator, options)
+    public GitRepositorySynchronizer(IGitRemoteRepository remoteRepository, GitSyncOptions? options = null) : this(remoteRepository, null, options)
     {
+
     }
 
     /// <summary>
@@ -469,3 +463,4 @@ public sealed class GitRepositorySynchronizer : IAsyncDisposable
         _gate.Dispose();
     }
 }
+
