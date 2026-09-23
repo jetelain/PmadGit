@@ -58,10 +58,10 @@ public sealed class GitSmartHttpEndToEndTest : IDisposable
         _testServer = _host.GetTestServer();
     }
 
-    private void CreateServerRepository(string name, (string path, string content)[] files)
+    private void CreateServerRepository(string name, (string path, string content)[] files, string objectFormat = "sha1")
     {
         var barePath = Path.Combine(_serverRepoRoot, $"{name}.git");
-        using var repo = GitRepositoryWithIndexAndWorkspace.Init(barePath, initialBranch: "main");
+        using var repo = GitRepositoryWithIndexAndWorkspace.Init(barePath, initialBranch: "main", objectFormat: objectFormat);
 
         foreach (var (path, content) in files)
         {
@@ -507,6 +507,73 @@ public sealed class GitSmartHttpEndToEndTest : IDisposable
         });
 
         Assert.Contains("Non-fast-forward push rejected", ex.Message);
+    }
+
+    [Fact]
+    public async Task PushAsync_BranchPointsToExistingCommit_SendsValidEmptyPackAndCreatesBranch()
+    {
+        // Arrange
+        CreateServerRepository("push-empty-pack-test", new[] { ("init.txt", "init content") });
+        await StartServerAsync();
+
+        var client = _testServer!.CreateClient();
+        var options = new GitRemoteClientOptions { HttpClient = client };
+        var cloneDir = Path.Combine(_clientWorkingDir, "empty-pack-clone");
+
+        using var clientRepo = await GitRemoteClientRepository.CloneAsync(
+            "http://localhost/push-empty-pack-test.git",
+            cloneDir,
+            options);
+
+        // Create new local branch pointing to existing HEAD commit without making any new commits
+        var headCommit = await clientRepo.LocalRepository.ReferenceStore.ResolveHeadAsync();
+        await clientRepo.LocalRepository.ReferenceStore.CreateReferenceAsync("refs/heads/existing-ref", headCommit, overwrite: true);
+
+        // Act: Push new branch pointing to existing commit (0 objects need to be transferred)
+        await clientRepo.PushAsync(branch: "existing-ref");
+
+        // Assert: Server now has refs/heads/existing-ref pointing to headCommit
+        var serverRepoPath = Path.Combine(_serverRepoRoot, "push-empty-pack-test.git");
+        var serverRepo = GitRepository.Open(serverRepoPath);
+        serverRepo.InvalidateCaches();
+        var serverExistingRef = await serverRepo.ReferenceStore.TryResolveReferenceAsync("refs/heads/existing-ref");
+
+        Assert.NotNull(serverExistingRef);
+        Assert.Equal(headCommit, serverExistingRef.Value);
+    }
+
+    [Fact]
+    public async Task CloneAsync_WithSha256Advertisement_InitializesSha256Repository()
+    {
+        // Arrange
+        CreateServerRepository("sha256-clone-test", new[]
+        {
+            ("README.md", "# SHA-256 Readme"),
+            ("file.txt", "sha256 content")
+        }, objectFormat: "sha256");
+
+        await StartServerAsync();
+        var client = _testServer!.CreateClient();
+        var options = new GitRemoteClientOptions { HttpClient = client };
+        var cloneDir = Path.Combine(_clientWorkingDir, "sha256-cloned-repo");
+
+        // Act
+        using var repo = await GitRemoteClientRepository.CloneAsync(
+            "http://localhost/sha256-clone-test.git",
+            cloneDir,
+            options);
+
+        // Assert
+        Assert.NotNull(repo);
+        Assert.Equal(32, repo.LocalRepository.HashLengthBytes);
+        Assert.True(File.Exists(Path.Combine(cloneDir, "README.md")));
+        Assert.Equal("# SHA-256 Readme", File.ReadAllText(Path.Combine(cloneDir, "README.md")));
+
+        var trackingRef = await repo.LocalRepository.ReferenceStore.TryResolveReferenceAsync("refs/remotes/origin/main");
+        var headRef = await repo.LocalRepository.ReferenceStore.TryResolveReferenceAsync("refs/heads/main");
+        Assert.NotNull(trackingRef);
+        Assert.NotNull(headRef);
+        Assert.Equal(trackingRef, headRef);
     }
 
     public void Dispose()

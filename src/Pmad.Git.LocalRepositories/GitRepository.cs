@@ -81,8 +81,9 @@ public sealed class GitRepository : IGitRepository, IGitRepositoryCacheInvalidat
     /// wrapper) operating on the same repository directory within the same process, to synchronize
     /// their writes. When omitted, a new dedicated lock manager is created.
     /// </param>
+    /// <param name="objectFormat">The object format to use (<c>sha1</c> or <c>sha256</c>); defaults to <c>sha1</c>.</param>
     /// <returns>An initialized <see cref="GitRepository"/>.</returns>
-    public static GitRepository Init(string path, bool bare = false, string initialBranch = "main", IGitRepositoryLockManager? lockManager = null)
+    public static GitRepository Init(string path, bool bare = false, string initialBranch = "main", IGitRepositoryLockManager? lockManager = null, string objectFormat = "sha1")
     {
         if (string.IsNullOrWhiteSpace(path))
         {
@@ -127,9 +128,10 @@ public sealed class GitRepository : IGitRepository, IGitRepositoryCacheInvalidat
         var headRef = $"ref: refs/heads/{initialBranch}";
         File.WriteAllText(Path.Combine(gitDirectory, "HEAD"), headRef + "\n");
 
+        var isSha256 = string.Equals(objectFormat, "sha256", StringComparison.OrdinalIgnoreCase);
         var configBuilder = new StringBuilder();
         configBuilder.AppendLine("[core]");
-        configBuilder.AppendLine("\trepositoryformatversion = 0");
+        configBuilder.AppendLine(isSha256 ? "\trepositoryformatversion = 1" : "\trepositoryformatversion = 0");
         configBuilder.AppendLine("\tfilemode = false");
         if (bare)
         {
@@ -138,6 +140,11 @@ public sealed class GitRepository : IGitRepository, IGitRepositoryCacheInvalidat
         else
         {
             configBuilder.AppendLine("\tbare = false");
+        }
+        if (isSha256)
+        {
+            configBuilder.AppendLine("[extensions]");
+            configBuilder.AppendLine("\tobjectformat = sha256");
         }
         File.WriteAllText(Path.Combine(gitDirectory, "config"), configBuilder.ToString());
 

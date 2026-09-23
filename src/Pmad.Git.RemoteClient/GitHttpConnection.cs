@@ -54,15 +54,26 @@ public sealed class GitHttpConnection : IDisposable
         var baseUrl = remoteUrl.ToString().TrimEnd('/');
         var requestUrl = $"{baseUrl}/info/refs?service={service}";
 
-        using var request = new HttpRequestMessage(HttpMethod.Get, requestUrl);
-        ApplyRequestHeaders(request);
+        using var timeoutCts = new CancellationTokenSource(_options.Timeout);
+        using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeoutCts.Token);
+        var effectiveToken = linkedCts.Token;
 
-        using var response = await SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken).ConfigureAwait(false);
-        EnsureSuccessStatusCode(response);
-        ValidateContentType(response, $"application/x-{service}-advertisement");
+        try
+        {
+            using var request = new HttpRequestMessage(HttpMethod.Get, requestUrl);
+            ApplyRequestHeaders(request);
 
-        await using var responseStream = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
-        return await ParseAdvertisementAsync(responseStream, service, cancellationToken).ConfigureAwait(false);
+            using var response = await SendAsync(request, HttpCompletionOption.ResponseHeadersRead, effectiveToken).ConfigureAwait(false);
+            EnsureSuccessStatusCode(response);
+            ValidateContentType(response, $"application/x-{service}-advertisement");
+
+            await using var responseStream = await response.Content.ReadAsStreamAsync(effectiveToken).ConfigureAwait(false);
+            return await ParseAdvertisementAsync(responseStream, service, effectiveToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
+        {
+            throw new TimeoutException($"Git HTTP request to '{requestUrl}' timed out after {_options.Timeout}.");
+        }
     }
 
     /// <summary>
@@ -94,113 +105,146 @@ public sealed class GitHttpConnection : IDisposable
         var baseUrl = remoteUrl.ToString().TrimEnd('/');
         var requestUrl = $"{baseUrl}/git-upload-pack";
 
+        var timeoutCts = new CancellationTokenSource(_options.Timeout);
+        var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeoutCts.Token);
+        var effectiveToken = linkedCts.Token;
+
         var requestBodyStream = new MemoryStream();
-        var negotiatedSideband = false;
-
-        // Negotiate client capabilities to include in first want line
-        var clientCapabilities = new List<string>();
-        if (advertisement.Capabilities.Contains("multi_ack"))
-        {
-            clientCapabilities.Add("multi_ack");
-        }
-        if (advertisement.Capabilities.Contains("side-band-64k"))
-        {
-            clientCapabilities.Add("side-band-64k");
-            negotiatedSideband = true;
-        }
-        else if (advertisement.Capabilities.Contains("side-band"))
-        {
-            clientCapabilities.Add("side-band");
-            negotiatedSideband = true;
-        }
-        if (advertisement.Capabilities.Contains("ofs-delta"))
-        {
-            clientCapabilities.Add("ofs-delta");
-        }
-        if (advertisement.Capabilities.Contains("thin-pack"))
-        {
-            clientCapabilities.Add("thin-pack");
-        }
-        if (!string.IsNullOrEmpty(_options.Agent))
-        {
-            clientCapabilities.Add($"agent={_options.Agent}");
-        }
-        if (advertisement.Capabilities.Contains("object-format=sha256"))
-        {
-            clientCapabilities.Add("object-format=sha256");
-        }
-
-        var capString = clientCapabilities.Count > 0 ? " " + string.Join(' ', clientCapabilities) : string.Empty;
-
-        // Write wants
-        for (var i = 0; i < wants.Count; i++)
-        {
-            var line = i == 0
-                ? $"want {wants[i].Value}{capString}\n"
-                : $"want {wants[i].Value}\n";
-            await PktLineWriter.WriteStringAsync(requestBodyStream, line, cancellationToken).ConfigureAwait(false);
-        }
-        await PktLineWriter.WriteFlushAsync(requestBodyStream, cancellationToken).ConfigureAwait(false);
-
-        // Write haves
-        foreach (var have in haves)
-        {
-            await PktLineWriter.WriteStringAsync(requestBodyStream, $"have {have.Value}\n", cancellationToken).ConfigureAwait(false);
-        }
-        await PktLineWriter.WriteStringAsync(requestBodyStream, "done\n", cancellationToken).ConfigureAwait(false);
-
-        requestBodyStream.Seek(0, SeekOrigin.Begin);
-
-        var request = new HttpRequestMessage(HttpMethod.Post, requestUrl);
-        ApplyRequestHeaders(request);
-        request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/x-git-upload-pack-result"));
-        request.Content = new StreamContent(requestBodyStream);
-        request.Content.Headers.ContentType = new MediaTypeHeaderValue("application/x-git-upload-pack-request");
-
-        var response = await SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken).ConfigureAwait(false);
         try
         {
-            EnsureSuccessStatusCode(response);
-            ValidateContentType(response, "application/x-git-upload-pack-result");
+            var negotiatedSideband = false;
 
-            var responseStream = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
-            var pktReader = new PktLineReader(responseStream);
-
-            // Read ACK/NAK lines
-            while (true)
+            // Negotiate client capabilities to include in first want line
+            var clientCapabilities = new List<string>();
+            if (advertisement.Capabilities.Contains("multi_ack"))
             {
-                var packet = await pktReader.ReadAsync(cancellationToken).ConfigureAwait(false);
-                if (packet is null || packet.Value.IsFlush)
-                {
-                    break;
-                }
-
-                var line = packet.Value.AsString().TrimEnd('\r', '\n');
-                if (line.StartsWith("ERR ", StringComparison.Ordinal))
-                {
-                    throw new GitRemoteException($"Server returned error: {line[4..]}");
-                }
-                if (line.Equals("NAK", StringComparison.Ordinal) || line.StartsWith("ACK", StringComparison.Ordinal))
-                {
-                    break;
-                }
+                clientCapabilities.Add("multi_ack");
+            }
+            if (advertisement.Capabilities.Contains("side-band-64k"))
+            {
+                clientCapabilities.Add("side-band-64k");
+                negotiatedSideband = true;
+            }
+            else if (advertisement.Capabilities.Contains("side-band"))
+            {
+                clientCapabilities.Add("side-band");
+                negotiatedSideband = true;
+            }
+            if (advertisement.Capabilities.Contains("ofs-delta"))
+            {
+                clientCapabilities.Add("ofs-delta");
+            }
+            if (advertisement.Capabilities.Contains("thin-pack"))
+            {
+                clientCapabilities.Add("thin-pack");
+            }
+            if (!string.IsNullOrEmpty(_options.Agent))
+            {
+                clientCapabilities.Add($"agent={_options.Agent}");
+            }
+            if (advertisement.Capabilities.Contains("object-format=sha256"))
+            {
+                clientCapabilities.Add("object-format=sha256");
             }
 
-            Stream packStream;
-            if (negotiatedSideband)
-            {
-                packStream = new GitSidebandStream(responseStream, _options.OnProgress);
-            }
-            else
-            {
-                packStream = responseStream;
-            }
+            var capString = clientCapabilities.Count > 0 ? " " + string.Join(' ', clientCapabilities) : string.Empty;
 
-            return new GitUploadPackResponse(packStream, response, requestBodyStream);
+            // Write wants
+            for (var i = 0; i < wants.Count; i++)
+            {
+                var line = i == 0
+                    ? $"want {wants[i].Value}{capString}\n"
+                    : $"want {wants[i].Value}\n";
+                await PktLineWriter.WriteStringAsync(requestBodyStream, line, effectiveToken).ConfigureAwait(false);
+            }
+            await PktLineWriter.WriteFlushAsync(requestBodyStream, effectiveToken).ConfigureAwait(false);
+
+            // Write haves
+            foreach (var have in haves)
+            {
+                await PktLineWriter.WriteStringAsync(requestBodyStream, $"have {have.Value}\n", effectiveToken).ConfigureAwait(false);
+            }
+            await PktLineWriter.WriteStringAsync(requestBodyStream, "done\n", effectiveToken).ConfigureAwait(false);
+
+            requestBodyStream.Seek(0, SeekOrigin.Begin);
+
+            var request = new HttpRequestMessage(HttpMethod.Post, requestUrl);
+            ApplyRequestHeaders(request);
+            request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/x-git-upload-pack-result"));
+            request.Content = new StreamContent(requestBodyStream);
+            request.Content.Headers.ContentType = new MediaTypeHeaderValue("application/x-git-upload-pack-request");
+
+            var response = await SendAsync(request, HttpCompletionOption.ResponseHeadersRead, effectiveToken).ConfigureAwait(false);
+            try
+            {
+                EnsureSuccessStatusCode(response);
+                ValidateContentType(response, "application/x-git-upload-pack-result");
+
+                var responseStream = await response.Content.ReadAsStreamAsync(effectiveToken).ConfigureAwait(false);
+                var pktReader = new PktLineReader(responseStream);
+
+                // Read ACK/NAK lines
+                while (true)
+                {
+                    var packet = await pktReader.ReadAsync(effectiveToken).ConfigureAwait(false);
+                    if (packet is null || packet.Value.IsFlush)
+                    {
+                        break;
+                    }
+
+                    var line = packet.Value.AsString().TrimEnd('\r', '\n');
+                    if (line.StartsWith("ERR ", StringComparison.Ordinal))
+                    {
+                        throw new GitRemoteException($"Server returned error: {line[4..]}");
+                    }
+                    if (line.Equals("NAK", StringComparison.Ordinal))
+                    {
+                        break;
+                    }
+                    if (line.StartsWith("ACK", StringComparison.Ordinal))
+                    {
+                        // Intermediate ACKs end with "continue" or "common"
+                        if (line.EndsWith(" continue", StringComparison.Ordinal) ||
+                            line.EndsWith(" common", StringComparison.Ordinal))
+                        {
+                            continue;
+                        }
+
+                        // Terminal ACK
+                        break;
+                    }
+                }
+
+                Stream packStream;
+                if (negotiatedSideband)
+                {
+                    packStream = new GitSidebandStream(responseStream, _options.OnProgress);
+                }
+                else
+                {
+                    packStream = responseStream;
+                }
+
+                var timeoutProtectedStream = new TimeoutStream(packStream, timeoutCts, linkedCts, _options.Timeout);
+                return new GitUploadPackResponse(timeoutProtectedStream, response, requestBodyStream);
+            }
+            catch
+            {
+                response.Dispose();
+                throw;
+            }
+        }
+        catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
+        {
+            linkedCts.Dispose();
+            timeoutCts.Dispose();
+            requestBodyStream.Dispose();
+            throw new TimeoutException($"Git HTTP upload-pack request to '{requestUrl}' timed out after {_options.Timeout}.");
         }
         catch
         {
-            response.Dispose();
+            linkedCts.Dispose();
+            timeoutCts.Dispose();
             requestBodyStream.Dispose();
             throw;
         }
@@ -232,78 +276,91 @@ public sealed class GitHttpConnection : IDisposable
             return;
         }
 
+        if (!advertisement.Capabilities.Contains("report-status") && !advertisement.Capabilities.Contains("report-status-v2"))
+        {
+            throw new GitRemoteException("Remote repository does not support 'report-status' capability required for push verification.");
+        }
+
         var baseUrl = remoteUrl.ToString().TrimEnd('/');
         var requestUrl = $"{baseUrl}/git-receive-pack";
         var zeroHash = new string('0', hashLengthBytes * 2);
 
-        using var requestPayload = new MemoryStream();
+        using var timeoutCts = new CancellationTokenSource(_options.Timeout);
+        using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeoutCts.Token);
+        var effectiveToken = linkedCts.Token;
 
-        // Write command pkt-lines
-        for (var i = 0; i < commands.Count; i++)
+        try
         {
-            var cmd = commands[i];
-            var oldSha = cmd.OldValue?.Value ?? zeroHash;
-            var newSha = cmd.NewValue?.Value ?? zeroHash;
+            using var requestPayload = new MemoryStream();
 
-            if (i == 0)
+            // Write command pkt-lines
+            for (var i = 0; i < commands.Count; i++)
             {
-                var caps = new List<string>();
-                if (advertisement.Capabilities.Contains("report-status"))
-                {
-                    caps.Add("report-status");
-                }
-                if (advertisement.Capabilities.Contains("delete-refs"))
-                {
-                    caps.Add("delete-refs");
-                }
-                if (!string.IsNullOrEmpty(_options.Agent))
-                {
-                    caps.Add($"agent={_options.Agent}");
-                }
-                if (advertisement.Capabilities.Contains("object-format=sha256"))
-                {
-                    caps.Add("object-format=sha256");
-                }
+                var cmd = commands[i];
+                var oldSha = cmd.OldValue?.Value ?? zeroHash;
+                var newSha = cmd.NewValue?.Value ?? zeroHash;
 
-                var capString = caps.Count > 0 ? "\0" + string.Join(' ', caps) : string.Empty;
-                var line = $"{oldSha} {newSha} {cmd.RefName}{capString}\n";
-                await PktLineWriter.WriteStringAsync(requestPayload, line, cancellationToken).ConfigureAwait(false);
+                if (i == 0)
+                {
+                    var caps = new List<string>();
+                    if (advertisement.Capabilities.Contains("report-status"))
+                    {
+                        caps.Add("report-status");
+                    }
+                    if (advertisement.Capabilities.Contains("delete-refs"))
+                    {
+                        caps.Add("delete-refs");
+                    }
+                    if (!string.IsNullOrEmpty(_options.Agent))
+                    {
+                        caps.Add($"agent={_options.Agent}");
+                    }
+                    if (advertisement.Capabilities.Contains("object-format=sha256"))
+                    {
+                        caps.Add("object-format=sha256");
+                    }
+
+                    var capString = caps.Count > 0 ? "\0" + string.Join(' ', caps) : string.Empty;
+                    var line = $"{oldSha} {newSha} {cmd.RefName}{capString}\n";
+                    await PktLineWriter.WriteStringAsync(requestPayload, line, effectiveToken).ConfigureAwait(false);
+                }
+                else
+                {
+                    var line = $"{oldSha} {newSha} {cmd.RefName}\n";
+                    await PktLineWriter.WriteStringAsync(requestPayload, line, effectiveToken).ConfigureAwait(false);
+                }
             }
-            else
+
+            await PktLineWriter.WriteFlushAsync(requestPayload, effectiveToken).ConfigureAwait(false);
+
+            // Append packfile if present
+            if (packDataStream != null)
             {
-                var line = $"{oldSha} {newSha} {cmd.RefName}\n";
-                await PktLineWriter.WriteStringAsync(requestPayload, line, cancellationToken).ConfigureAwait(false);
+                if (packDataStream.CanSeek)
+                {
+                    packDataStream.Seek(0, SeekOrigin.Begin);
+                }
+                await packDataStream.CopyToAsync(requestPayload, effectiveToken).ConfigureAwait(false);
             }
+
+            requestPayload.Seek(0, SeekOrigin.Begin);
+
+            using var request = new HttpRequestMessage(HttpMethod.Post, requestUrl);
+            ApplyRequestHeaders(request);
+            request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/x-git-receive-pack-result"));
+            request.Content = new StreamContent(requestPayload);
+            request.Content.Headers.ContentType = new MediaTypeHeaderValue("application/x-git-receive-pack-request");
+
+            using var response = await SendAsync(request, HttpCompletionOption.ResponseHeadersRead, effectiveToken).ConfigureAwait(false);
+            EnsureSuccessStatusCode(response);
+            ValidateContentType(response, "application/x-git-receive-pack-result");
+
+            await using var responseStream = await response.Content.ReadAsStreamAsync(effectiveToken).ConfigureAwait(false);
+            await ParseReceivePackStatusAsync(responseStream, effectiveToken).ConfigureAwait(false);
         }
-
-        await PktLineWriter.WriteFlushAsync(requestPayload, cancellationToken).ConfigureAwait(false);
-
-        // Append packfile if present
-        if (packDataStream != null)
+        catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
         {
-            if (packDataStream.CanSeek)
-            {
-                packDataStream.Seek(0, SeekOrigin.Begin);
-            }
-            await packDataStream.CopyToAsync(requestPayload, cancellationToken).ConfigureAwait(false);
-        }
-
-        requestPayload.Seek(0, SeekOrigin.Begin);
-
-        using var request = new HttpRequestMessage(HttpMethod.Post, requestUrl);
-        ApplyRequestHeaders(request);
-        request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/x-git-receive-pack-result"));
-        request.Content = new StreamContent(requestPayload);
-        request.Content.Headers.ContentType = new MediaTypeHeaderValue("application/x-git-receive-pack-request");
-
-        using var response = await SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken).ConfigureAwait(false);
-        EnsureSuccessStatusCode(response);
-        ValidateContentType(response, "application/x-git-receive-pack-result");
-
-        await using var responseStream = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
-        if (advertisement.Capabilities.Contains("report-status"))
-        {
-            await ParseReceivePackStatusAsync(responseStream, cancellationToken).ConfigureAwait(false);
+            throw new TimeoutException($"Git HTTP receive-pack request to '{requestUrl}' timed out after {_options.Timeout}.");
         }
     }
 
@@ -318,16 +375,9 @@ public sealed class GitHttpConnection : IDisposable
 
     private async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, HttpCompletionOption completionOption, CancellationToken cancellationToken)
     {
-        using var timeoutCts = new CancellationTokenSource(_options.Timeout);
-        using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeoutCts.Token);
-
         try
         {
-            return await _httpClient.SendAsync(request, completionOption, linkedCts.Token).ConfigureAwait(false);
-        }
-        catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
-        {
-            throw new TimeoutException($"Git HTTP request to '{request.RequestUri}' timed out after {_options.Timeout}.");
+            return await _httpClient.SendAsync(request, completionOption, cancellationToken).ConfigureAwait(false);
         }
         catch (HttpRequestException ex)
         {

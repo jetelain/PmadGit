@@ -170,7 +170,14 @@ public sealed class GitRemoteClientRepository : IGitRepositoryWithRemote, IDispo
             Directory.CreateDirectory(parentDir);
         }
 
-        var workspace = GitRepositoryWithIndexAndWorkspace.Init(fullTargetPath, initialBranch: targetBranch);
+        var objectFormat = advertisement.ObjectFormat ?? "sha1";
+        if (!string.Equals(objectFormat, "sha1", StringComparison.OrdinalIgnoreCase) &&
+            !string.Equals(objectFormat, "sha256", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new NotSupportedException($"Unsupported object format '{objectFormat}' reported by remote.");
+        }
+
+        var workspace = GitRepositoryWithIndexAndWorkspace.Init(fullTargetPath, initialBranch: targetBranch, objectFormat: objectFormat);
 
         // Configure remote in .git/config
         var configPath = Path.Combine(workspace.GitDirectory, "config");
@@ -416,13 +423,10 @@ public sealed class GitRemoteClientRepository : IGitRepositoryWithRemote, IDispo
             excludes: advertisement.References.Values,
             cancellationToken: cancellationToken).ConfigureAwait(false);
 
-        MemoryStream? packDataStream = null;
-        if (objectsToSend.Count > 0)
-        {
-            packDataStream = new MemoryStream();
-            var packBuilder = new GitPackBuilder();
-            await packBuilder.WriteAsync(_repo, objectsToSend, packDataStream, cancellationToken).ConfigureAwait(false);
-        }
+        // Always send a packfile for non-delete updates (even an empty pack if objects already exist on remote)
+        var packDataStream = new MemoryStream();
+        var packBuilder = new GitPackBuilder();
+        await packBuilder.WriteAsync(_repo, objectsToSend, packDataStream, cancellationToken).ConfigureAwait(false);
 
         try
         {
