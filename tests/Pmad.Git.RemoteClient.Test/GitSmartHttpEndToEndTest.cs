@@ -636,6 +636,111 @@ public sealed class GitSmartHttpEndToEndTest : IDisposable
         Assert.Null(trackingRefAfter);
     }
 
+    [Theory]
+    [InlineData("../../etc/passwd")]
+    [InlineData("feature/../main")]
+    [InlineData("main/..")]
+    [InlineData("bad~branch")]
+    [InlineData("bad^branch")]
+    [InlineData("bad:branch")]
+    [InlineData("bad branch")]
+    public async Task PushAsync_WithInvalidBranchName_ThrowsArgumentException(string invalidBranch)
+    {
+        CreateServerRepository("branch-validation-test", new[] { ("file.txt", "content") });
+        await StartServerAsync();
+        var client = _testServer!.CreateClient();
+        var options = new GitRemoteClientOptions { HttpClient = client };
+        var cloneDir = Path.Combine(_clientWorkingDir, "branch-val-clone");
+
+        using var repo = await GitRemoteClientRepository.CloneAsync(
+            "http://localhost/branch-validation-test.git",
+            cloneDir,
+            options);
+
+        var ex = await Assert.ThrowsAsync<ArgumentException>(async () =>
+        {
+            await repo.PushAsync(branch: invalidBranch);
+        });
+
+        Assert.Equal("branch", ex.ParamName);
+    }
+
+    [Theory]
+    [InlineData("../../etc/passwd")]
+    [InlineData("feature/../main")]
+    [InlineData("bad:branch")]
+    public async Task FetchAsync_WithInvalidBranchName_ThrowsArgumentException(string invalidBranch)
+    {
+        CreateServerRepository("fetch-branch-val-test", new[] { ("file.txt", "content") });
+        await StartServerAsync();
+        var client = _testServer!.CreateClient();
+        var options = new GitRemoteClientOptions { HttpClient = client };
+        var cloneDir = Path.Combine(_clientWorkingDir, "fetch-branch-val-clone");
+
+        using var repo = await GitRemoteClientRepository.CloneAsync(
+            "http://localhost/fetch-branch-val-test.git",
+            cloneDir,
+            options);
+
+        var ex = await Assert.ThrowsAsync<ArgumentException>(async () =>
+        {
+            await repo.FetchAsync(branch: invalidBranch);
+        });
+
+        Assert.Equal("branch", ex.ParamName);
+    }
+
+    [Fact]
+    public async Task PushAsync_WhenObjectFormatMismatched_ThrowsGitRemoteException()
+    {
+        // Server repo is SHA-256
+        CreateServerRepository("sha256-mismatch-server", new[] { ("file.txt", "content") }, objectFormat: GitObjectFormat.Sha256);
+        await StartServerAsync();
+        var client = _testServer!.CreateClient();
+        var options = new GitRemoteClientOptions { HttpClient = client };
+
+        // Client repo is SHA-1
+        var clientRepoDir = Path.Combine(_clientWorkingDir, "sha1-mismatch-client");
+        var clientWs = GitRepositoryWithIndexAndWorkspace.Init(clientRepoDir, objectFormat: GitObjectFormat.Sha1);
+        File.WriteAllText(Path.Combine(clientRepoDir, "file.txt"), "hello");
+        await clientWs.StageAsync("file.txt");
+        await clientWs.CommitAsync("Initial commit");
+
+        using var clientRepo = new GitRemoteClientRepository(clientWs, "http://localhost/sha256-mismatch-server.git", options);
+
+        var ex = await Assert.ThrowsAsync<GitRemoteException>(async () =>
+        {
+            await clientRepo.PushAsync(branch: "main");
+        });
+
+        Assert.Contains("Object format mismatch", ex.Message);
+        Assert.Contains("sha1", ex.Message);
+        Assert.Contains("sha256", ex.Message);
+    }
+
+    [Fact]
+    public async Task FetchAsync_WhenObjectFormatMismatched_ThrowsGitRemoteException()
+    {
+        // Server repo is SHA-256
+        CreateServerRepository("sha256-fetch-mismatch-server", new[] { ("file.txt", "content") }, objectFormat: GitObjectFormat.Sha256);
+        await StartServerAsync();
+        var client = _testServer!.CreateClient();
+        var options = new GitRemoteClientOptions { HttpClient = client };
+
+        // Client repo is SHA-1
+        var clientRepoDir = Path.Combine(_clientWorkingDir, "sha1-fetch-mismatch-client");
+        var clientWs = GitRepositoryWithIndexAndWorkspace.Init(clientRepoDir, objectFormat: GitObjectFormat.Sha1);
+
+        using var clientRepo = new GitRemoteClientRepository(clientWs, "http://localhost/sha256-fetch-mismatch-server.git", options);
+
+        var ex = await Assert.ThrowsAsync<GitRemoteException>(async () =>
+        {
+            await clientRepo.FetchAsync();
+        });
+
+        Assert.Contains("Object format mismatch", ex.Message);
+    }
+
     public void Dispose()
     {
         _host?.Dispose();

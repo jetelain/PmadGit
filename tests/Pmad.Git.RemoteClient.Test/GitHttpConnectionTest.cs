@@ -358,6 +358,61 @@ public sealed class GitHttpConnectionTest
     }
 
     [Fact]
+    public async Task ReceivePackAsync_WithReportStatusV2_SendsReportStatusV2AndParsesOptionLines()
+    {
+        string? sentCommands = null;
+        var handler = new MockHttpMessageHandler
+        {
+            Handler = async req =>
+            {
+                var reqStream = await req.Content!.ReadAsStreamAsync();
+                var reqReader = new PktLineReader(reqStream);
+                var firstLine = await reqReader.ReadAsync(CancellationToken.None);
+                sentCommands = firstLine?.AsString();
+
+                var body = new MemoryStream();
+                await PktLineWriter.WriteStringAsync(body, "unpack ok\n", CancellationToken.None);
+                await PktLineWriter.WriteStringAsync(body, "ok refs/heads/main\n", CancellationToken.None);
+                await PktLineWriter.WriteStringAsync(body, "option refname refs/heads/main\n", CancellationToken.None);
+                await PktLineWriter.WriteStringAsync(body, "option new-oid 1111111111111111111111111111111111111111\n", CancellationToken.None);
+                await PktLineWriter.WriteFlushAsync(body, CancellationToken.None);
+
+                body.Seek(0, SeekOrigin.Begin);
+                var response = new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new StreamContent(body)
+                };
+                response.Content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/x-git-receive-pack-result");
+                return response;
+            }
+        };
+
+        var httpClient = new HttpClient(handler);
+        using var connection = new GitHttpConnection(new GitRemoteClientOptions { HttpClient = httpClient });
+
+        var ad = new GitRemoteAdvertisement(
+            new Dictionary<string, GitHash>(),
+            new HashSet<string> { "report-status-v2", "report-status" },
+            new Dictionary<string, string>(),
+            null,
+            null,
+            GitObjectFormat.Sha1,
+            "test");
+
+        var cmd = new GitRefUpdateCommand(null, new GitHash("1111111111111111111111111111111111111111"), "refs/heads/main");
+
+        await connection.ReceivePackAsync(
+            new Uri("http://localhost/test.git"),
+            new[] { cmd },
+            null,
+            ad,
+            20);
+
+        Assert.NotNull(sentCommands);
+        Assert.Contains("report-status-v2", sentCommands);
+    }
+
+    [Fact]
     public async Task DiscoverReferencesAsync_StalledResponseBody_ThrowsTimeoutException()
     {
         var handler = new MockHttpMessageHandler

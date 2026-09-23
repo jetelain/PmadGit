@@ -304,7 +304,11 @@ public sealed class GitHttpConnection : IDisposable
                 if (i == 0)
                 {
                     var caps = new List<string>();
-                    if (advertisement.Capabilities.Contains("report-status"))
+                    if (advertisement.Capabilities.Contains("report-status-v2"))
+                    {
+                        caps.Add("report-status-v2");
+                    }
+                    else if (advertisement.Capabilities.Contains("report-status"))
                     {
                         caps.Add("report-status");
                     }
@@ -589,6 +593,10 @@ public sealed class GitHttpConnection : IDisposable
             if (line.StartsWith("ERR ", StringComparison.Ordinal))
             {
                 throw new GitRemoteException($"Server returned error: {line[4..]}");
+            }
+            if (line.StartsWith("option ", StringComparison.Ordinal))
+            {
+                continue;
             }
             if (line.StartsWith("ng ", StringComparison.Ordinal))
             {

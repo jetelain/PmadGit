@@ -139,6 +139,7 @@ public sealed class GitRemoteClientRepository : IGitRepositoryWithRemote, IDispo
         string targetBranch;
         if (!string.IsNullOrEmpty(branch))
         {
+            ValidateBranchName(branch);
             targetBranch = branch.StartsWith("refs/heads/", StringComparison.Ordinal)
                 ? branch["refs/heads/".Length..]
                 : branch;
@@ -187,19 +188,13 @@ public sealed class GitRemoteClientRepository : IGitRepositoryWithRemote, IDispo
             // Fetch objects and update remote tracking refs
             await repository.FetchAsync(remote: remoteName, branch: null, prune: false, cancellationToken: cancellationToken).ConfigureAwait(false);
 
-            // Check if target branch has a commit to check out
-            GitHash? targetCommitHash = null;
-            if (advertisement.References.TryGetValue($"refs/heads/{targetBranch}", out var branchHash))
-            {
-                targetCommitHash = branchHash;
-            }
-            else if (!string.IsNullOrEmpty(branch))
+            // Check if target branch has a commit to check out from the fetched tracking ref
+            var trackingRefName = $"refs/remotes/{remoteName}/{targetBranch}";
+            var targetCommitHash = await workspace.ReferenceStore.TryResolveReferenceAsync(trackingRefName, cancellationToken).ConfigureAwait(false);
+
+            if (!targetCommitHash.HasValue && !string.IsNullOrEmpty(branch))
             {
                 throw new GitRemoteException($"Remote branch '{branch}' not found in upstream '{remoteName}'.");
-            }
-            else if (advertisement.HeadHash.HasValue)
-            {
-                targetCommitHash = advertisement.HeadHash;
             }
 
             if (targetCommitHash.HasValue)
@@ -236,10 +231,20 @@ public sealed class GitRemoteClientRepository : IGitRepositoryWithRemote, IDispo
         bool prune = false,
         CancellationToken cancellationToken = default)
     {
+        if (!string.IsNullOrEmpty(branch))
+        {
+            ValidateBranchName(branch);
+        }
+
         var targetRemote = remote ?? await ResolveRemoteNameAsync(branch, cancellationToken).ConfigureAwait(false);
         var remoteUrl = await ResolveRemoteUrlAsync(targetRemote, cancellationToken).ConfigureAwait(false);
 
         var advertisement = await _connection.DiscoverReferencesAsync(remoteUrl, "git-upload-pack", cancellationToken).ConfigureAwait(false);
+
+        if (advertisement.ObjectFormat != _repo.ObjectFormat)
+        {
+            throw new GitRemoteException($"Object format mismatch: local repository is {_repo.ObjectFormat.ToFormatName()} but remote repository is {advertisement.ObjectFormat.ToFormatName()}.");
+        }
 
         // Determine remote branches to fetch
         var remoteRefsToFetch = new Dictionary<string, GitHash>(StringComparer.Ordinal);
@@ -370,6 +375,8 @@ public sealed class GitRemoteClientRepository : IGitRepositoryWithRemote, IDispo
             localBranch = localBranch["refs/heads/".Length..];
         }
 
+        ValidateBranchName(localBranch);
+
         var localRef = $"refs/heads/{localBranch}";
         var localCommit = await _repo.ReferenceStore.TryResolveReferenceAsync(localRef, cancellationToken).ConfigureAwait(false);
         if (!localCommit.HasValue)
@@ -379,6 +386,11 @@ public sealed class GitRemoteClientRepository : IGitRepositoryWithRemote, IDispo
 
         var remoteUrl = await ResolveRemoteUrlAsync(targetRemote, cancellationToken).ConfigureAwait(false);
         var advertisement = await _connection.DiscoverReferencesAsync(remoteUrl, "git-receive-pack", cancellationToken).ConfigureAwait(false);
+
+        if (advertisement.ObjectFormat != _repo.ObjectFormat)
+        {
+            throw new GitRemoteException($"Object format mismatch: local repository is {_repo.ObjectFormat.ToFormatName()} but remote repository is {advertisement.ObjectFormat.ToFormatName()}.");
+        }
 
         var remoteRefName = $"refs/heads/{localBranch}";
         GitHash? remoteCommit = advertisement.References.TryGetValue(remoteRefName, out var existingHash)
@@ -495,6 +507,7 @@ public sealed class GitRemoteClientRepository : IGitRepositoryWithRemote, IDispo
         string targetRemoteBranch;
         if (!string.IsNullOrEmpty(branch))
         {
+            ValidateBranchName(branch);
             var cleanBranch = branch.StartsWith("refs/heads/", StringComparison.Ordinal)
                 ? branch["refs/heads/".Length..]
                 : branch;
@@ -654,6 +667,49 @@ public sealed class GitRemoteClientRepository : IGitRepositoryWithRemote, IDispo
         catch
         {
             // Ignore cleanup failure during exception propagation
+        }
+    }
+
+    private static void ValidateBranchName(string branchName, string paramName = "branch")
+    {
+        if (string.IsNullOrWhiteSpace(branchName))
+        {
+            throw new ArgumentException("Branch name cannot be empty.", paramName);
+        }
+
+        var clean = branchName;
+        if (clean.StartsWith("refs/heads/", StringComparison.Ordinal))
+        {
+            clean = clean["refs/heads/".Length..];
+        }
+        else if (clean.StartsWith("refs/", StringComparison.Ordinal))
+        {
+            clean = clean["refs/".Length..];
+        }
+
+        var segments = clean.Split('/');
+        foreach (var segment in segments)
+        {
+            if (string.IsNullOrEmpty(segment) || segment == "." || segment == "..")
+            {
+                throw new ArgumentException($"Invalid branch name '{branchName}': contains invalid path segments.", paramName);
+            }
+        }
+
+        if (clean.Contains('\\') ||
+            clean.Contains("..") ||
+            clean.Contains(' ') ||
+            clean.Contains('~') ||
+            clean.Contains('^') ||
+            clean.Contains(':') ||
+            clean.Contains('?') ||
+            clean.Contains('*') ||
+            clean.Contains('[') ||
+            clean.Contains("@{") ||
+            clean.EndsWith(".lock", StringComparison.OrdinalIgnoreCase) ||
+            clean.EndsWith('/'))
+        {
+            throw new ArgumentException($"Invalid branch name '{branchName}'.", paramName);
         }
     }
 
