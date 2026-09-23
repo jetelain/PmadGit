@@ -57,6 +57,9 @@ public sealed class GitRepository : IGitRepository, IGitRepositoryCacheInvalidat
     public int HashLengthBytes => _objectStore.HashLengthBytes;
 
     /// <inheritdoc />
+    public GitObjectFormat ObjectFormat => _objectStore.HashLengthBytes == GitHash.Sha256ByteLength ? GitObjectFormat.Sha256 : GitObjectFormat.Sha1;
+
+    /// <inheritdoc />
     public bool IsBare => string.Equals(RootPath, GitDirectory, StringComparison.OrdinalIgnoreCase);
 
     private GitIndexManager? _indexManager;
@@ -81,9 +84,9 @@ public sealed class GitRepository : IGitRepository, IGitRepositoryCacheInvalidat
     /// wrapper) operating on the same repository directory within the same process, to synchronize
     /// their writes. When omitted, a new dedicated lock manager is created.
     /// </param>
-    /// <param name="objectFormat">The object format to use (<c>sha1</c> or <c>sha256</c>); defaults to <c>sha1</c>.</param>
+    /// <param name="objectFormat">The object format to use; defaults to <see cref="GitObjectFormat.Sha1"/>.</param>
     /// <returns>An initialized <see cref="GitRepository"/>.</returns>
-    public static GitRepository Init(string path, bool bare = false, string initialBranch = "main", IGitRepositoryLockManager? lockManager = null, string objectFormat = "sha1")
+    public static GitRepository Init(string path, bool bare = false, string initialBranch = "main", IGitRepositoryLockManager? lockManager = null, GitObjectFormat objectFormat = GitObjectFormat.Sha1)
     {
         if (string.IsNullOrWhiteSpace(path))
         {
@@ -128,7 +131,7 @@ public sealed class GitRepository : IGitRepository, IGitRepositoryCacheInvalidat
         var headRef = $"ref: refs/heads/{initialBranch}";
         File.WriteAllText(Path.Combine(gitDirectory, "HEAD"), headRef + "\n");
 
-        var isSha256 = string.Equals(objectFormat, "sha256", StringComparison.OrdinalIgnoreCase);
+        var isSha256 = objectFormat == GitObjectFormat.Sha256;
         var configBuilder = new StringBuilder();
         configBuilder.AppendLine("[core]");
         configBuilder.AppendLine(isSha256 ? "\trepositoryformatversion = 1" : "\trepositoryformatversion = 0");

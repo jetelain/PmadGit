@@ -58,7 +58,7 @@ public sealed class GitSmartHttpEndToEndTest : IDisposable
         _testServer = _host.GetTestServer();
     }
 
-    private void CreateServerRepository(string name, (string path, string content)[] files, string objectFormat = "sha1")
+    private void CreateServerRepository(string name, (string path, string content)[] files, GitObjectFormat objectFormat = GitObjectFormat.Sha1)
     {
         var barePath = Path.Combine(_serverRepoRoot, $"{name}.git");
         using var repo = GitRepositoryWithIndexAndWorkspace.Init(barePath, initialBranch: "main", objectFormat: objectFormat);
@@ -550,7 +550,7 @@ public sealed class GitSmartHttpEndToEndTest : IDisposable
         {
             ("README.md", "# SHA-256 Readme"),
             ("file.txt", "sha256 content")
-        }, objectFormat: "sha256");
+        }, objectFormat: GitObjectFormat.Sha256);
 
         await StartServerAsync();
         var client = _testServer!.CreateClient();
@@ -565,6 +565,7 @@ public sealed class GitSmartHttpEndToEndTest : IDisposable
 
         // Assert
         Assert.NotNull(repo);
+        Assert.Equal(GitObjectFormat.Sha256, repo.LocalRepository.ObjectFormat);
         Assert.Equal(32, repo.LocalRepository.HashLengthBytes);
         Assert.True(File.Exists(Path.Combine(cloneDir, "README.md")));
         Assert.Equal("# SHA-256 Readme", File.ReadAllText(Path.Combine(cloneDir, "README.md")));

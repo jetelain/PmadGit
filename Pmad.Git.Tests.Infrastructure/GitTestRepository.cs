@@ -4,12 +4,6 @@ using Pmad.Git.LocalRepositories;
 
 namespace Pmad.Git.Tests.Infrastructure;
 
-public enum GitObjectFormat
-{
-    Sha1,
-    Sha256
-}
-
 public sealed class GitTestRepository : IDisposable
 {
     private GitHash _head;

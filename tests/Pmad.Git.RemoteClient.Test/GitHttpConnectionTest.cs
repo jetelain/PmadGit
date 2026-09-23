@@ -210,7 +210,7 @@ public sealed class GitHttpConnectionTest
             new Dictionary<string, string>(),
             "refs/heads/main",
             new("1111111111111111111111111111111111111111"),
-            "sha1",
+            GitObjectFormat.Sha1,
             "test");
 
         var ex = await Assert.ThrowsAsync<GitRemoteException>(async () =>
@@ -263,7 +263,7 @@ public sealed class GitHttpConnectionTest
             new Dictionary<string, string>(),
             "refs/heads/main",
             new("3333333333333333333333333333333333333333"),
-            "sha1",
+            GitObjectFormat.Sha1,
             "test");
 
         await using var uploadPackResponse = await connection.UploadPackAsync(
@@ -290,7 +290,7 @@ public sealed class GitHttpConnectionTest
             new Dictionary<string, string>(),
             null,
             null,
-            "sha1",
+            GitObjectFormat.Sha1,
             "test");
 
         var cmd = new GitRefUpdateCommand(null, new GitHash("1111111111111111111111111111111111111111"), "refs/heads/main");
@@ -369,7 +369,7 @@ public sealed class GitHttpConnectionTest
             new Dictionary<string, string>(),
             "refs/heads/main",
             new("1111111111111111111111111111111111111111"),
-            "sha1",
+            GitObjectFormat.Sha1,
             "test");
 
         await using var uploadPackResponse = await connection.UploadPackAsync(

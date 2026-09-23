@@ -142,7 +142,7 @@ public sealed class GitHttpConnection : IDisposable
             {
                 clientCapabilities.Add($"agent={_options.Agent}");
             }
-            if (advertisement.Capabilities.Contains("object-format=sha256"))
+            if (advertisement.ObjectFormat == GitObjectFormat.Sha256)
             {
                 clientCapabilities.Add("object-format=sha256");
             }
@@ -453,7 +453,7 @@ public sealed class GitHttpConnection : IDisposable
         var symrefs = new Dictionary<string, string>(StringComparer.Ordinal);
         string? headSymrefTarget = null;
         GitHash? headHash = null;
-        var objectFormat = "sha1";
+        var objectFormat = GitObjectFormat.Sha1;
         string? agent = null;
         var first = true;
 
@@ -504,7 +504,11 @@ public sealed class GitHttpConnection : IDisposable
                         }
                         else if (cap.StartsWith("object-format=", StringComparison.Ordinal))
                         {
-                            objectFormat = cap[14..];
+                            var formatStr = cap[14..];
+                            if (!GitObjectFormatExtensions.TryParse(formatStr, out objectFormat))
+                            {
+                                throw new GitRemoteException($"Unsupported object format '{formatStr}' advertised by remote.");
+                            }
                         }
                     }
                 }

@@ -47,9 +47,9 @@ public sealed class GitRepositoryWithIndexAndWorkspace : IGitWorkspaceRepository
     /// <param name="path">Path where the repository should be initialized.</param>
     /// <param name="initialBranch">Name of the initial branch; defaults to "main".</param>
     /// <param name="lockManager">Optional shared lock manager.</param>
-    /// <param name="objectFormat">The object format to use (<c>sha1</c> or <c>sha256</c>); defaults to <c>sha1</c>.</param>
+    /// <param name="objectFormat">The object format to use; defaults to <see cref="GitObjectFormat.Sha1"/>.</param>
     /// <returns>An initialized <see cref="GitRepositoryWithIndexAndWorkspace"/>.</returns>
-    public static GitRepositoryWithIndexAndWorkspace Init(string path, string initialBranch = "main", IGitRepositoryLockManager? lockManager = null, string objectFormat = "sha1")
+    public static GitRepositoryWithIndexAndWorkspace Init(string path, string initialBranch = "main", IGitRepositoryLockManager? lockManager = null, GitObjectFormat objectFormat = GitObjectFormat.Sha1)
     {
         var repo = GitRepository.Init(path, bare: false, initialBranch: initialBranch, lockManager: lockManager, objectFormat: objectFormat);
         return new GitRepositoryWithIndexAndWorkspace(repo);
@@ -70,6 +70,9 @@ public sealed class GitRepositoryWithIndexAndWorkspace : IGitWorkspaceRepository
 
     /// <inheritdoc />
     public int HashLengthBytes => _repo.HashLengthBytes;
+
+    /// <inheritdoc />
+    public GitObjectFormat ObjectFormat => _repo.ObjectFormat;
 
     /// <inheritdoc />
     public bool IsBare => false;

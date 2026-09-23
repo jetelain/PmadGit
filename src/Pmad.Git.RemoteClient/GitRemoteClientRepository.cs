@@ -170,14 +170,7 @@ public sealed class GitRemoteClientRepository : IGitRepositoryWithRemote, IDispo
             Directory.CreateDirectory(parentDir);
         }
 
-        var objectFormat = advertisement.ObjectFormat ?? "sha1";
-        if (!string.Equals(objectFormat, "sha1", StringComparison.OrdinalIgnoreCase) &&
-            !string.Equals(objectFormat, "sha256", StringComparison.OrdinalIgnoreCase))
-        {
-            throw new NotSupportedException($"Unsupported object format '{objectFormat}' reported by remote.");
-        }
-
-        var workspace = GitRepositoryWithIndexAndWorkspace.Init(fullTargetPath, initialBranch: targetBranch, objectFormat: objectFormat);
+        var workspace = GitRepositoryWithIndexAndWorkspace.Init(fullTargetPath, initialBranch: targetBranch, objectFormat: advertisement.ObjectFormat);
 
         // Configure remote in .git/config
         var configPath = Path.Combine(workspace.GitDirectory, "config");

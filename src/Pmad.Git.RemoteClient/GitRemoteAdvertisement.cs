@@ -33,9 +33,9 @@ public sealed class GitRemoteAdvertisement
     public GitHash? HeadHash { get; }
 
     /// <summary>
-    /// Gets the advertised object format (e.g. <c>sha1</c> or <c>sha256</c>).
+    /// Gets the advertised object format.
     /// </summary>
-    public string ObjectFormat { get; }
+    public GitObjectFormat ObjectFormat { get; }
 
     /// <summary>
     /// Gets the agent string advertised by the remote server, if any.
@@ -51,15 +51,15 @@ public sealed class GitRemoteAdvertisement
         IReadOnlyDictionary<string, string> symrefs,
         string? headSymrefTarget,
         GitHash? headHash,
-        string objectFormat,
-        string? agent)
+        GitObjectFormat objectFormat = GitObjectFormat.Sha1,
+        string? agent = null)
     {
         References = references ?? throw new ArgumentNullException(nameof(references));
         Capabilities = capabilities ?? throw new ArgumentNullException(nameof(capabilities));
         Symrefs = symrefs ?? throw new ArgumentNullException(nameof(symrefs));
         HeadSymrefTarget = headSymrefTarget;
         HeadHash = headHash;
-        ObjectFormat = objectFormat ?? "sha1";
+        ObjectFormat = objectFormat;
         Agent = agent;
     }
 }
