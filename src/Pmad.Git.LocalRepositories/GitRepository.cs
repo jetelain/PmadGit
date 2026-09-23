@@ -74,7 +74,7 @@ public sealed class GitRepository : IGitRepository, IGitRepositoryCacheInvalidat
     public IGitReferenceStore ReferenceStore => _referenceStore;
 
     /// <summary>
-    /// Creates a new empty git repository at the specified path.
+    /// Creates a new empty git repository at the specified path using the standard SHA-1 object format.
     /// </summary>
     /// <param name="path">Path where the repository should be created.</param>
     /// <param name="bare">Whether to create a bare repository (no working directory).</param>
@@ -84,9 +84,20 @@ public sealed class GitRepository : IGitRepository, IGitRepositoryCacheInvalidat
     /// wrapper) operating on the same repository directory within the same process, to synchronize
     /// their writes. When omitted, a new dedicated lock manager is created.
     /// </param>
-    /// <param name="objectFormat">The object format to use; defaults to <see cref="GitObjectFormat.Sha1"/>.</param>
     /// <returns>An initialized <see cref="GitRepository"/>.</returns>
-    public static GitRepository Init(string path, bool bare = false, string initialBranch = "main", IGitRepositoryLockManager? lockManager = null, GitObjectFormat objectFormat = GitObjectFormat.Sha1)
+    public static GitRepository Init(string path, bool bare = false, string initialBranch = "main", IGitRepositoryLockManager? lockManager = null)
+        => Init(path, GitObjectFormat.Sha1, bare, initialBranch, lockManager);
+
+    /// <summary>
+    /// Creates a new empty git repository at the specified path with the specified object format.
+    /// </summary>
+    /// <param name="path">Path where the repository should be created.</param>
+    /// <param name="objectFormat">The object format (hash algorithm) to use.</param>
+    /// <param name="bare">Whether to create a bare repository (no working directory).</param>
+    /// <param name="initialBranch">Name of the initial branch; defaults to "main".</param>
+    /// <param name="lockManager">Optional lock manager to use.</param>
+    /// <returns>An initialized <see cref="GitRepository"/>.</returns>
+    public static GitRepository Init(string path, GitObjectFormat objectFormat, bool bare = false, string initialBranch = "main", IGitRepositoryLockManager? lockManager = null)
     {
         if (string.IsNullOrWhiteSpace(path))
         {

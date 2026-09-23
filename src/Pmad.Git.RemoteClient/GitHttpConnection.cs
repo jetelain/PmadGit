@@ -13,6 +13,7 @@ namespace Pmad.Git.RemoteClient;
 /// </summary>
 public sealed class GitHttpConnection : IDisposable
 {
+    private static readonly HttpClient SharedHttpClient = new();
     private readonly HttpClient _httpClient;
     private readonly bool _disposeHttpClient;
     private readonly GitRemoteClientOptions _options;
@@ -31,8 +32,8 @@ public sealed class GitHttpConnection : IDisposable
         }
         else
         {
-            _httpClient = new HttpClient();
-            _disposeHttpClient = true;
+            _httpClient = SharedHttpClient;
+            _disposeHttpClient = false;
         }
     }
 
@@ -291,7 +292,7 @@ public sealed class GitHttpConnection : IDisposable
 
         try
         {
-            using var requestPayload = new MemoryStream();
+            var commandsPayload = new MemoryStream();
 
             // Write command pkt-lines
             for (var i = 0; i < commands.Count; i++)
@@ -322,33 +323,36 @@ public sealed class GitHttpConnection : IDisposable
 
                     var capString = caps.Count > 0 ? "\0" + string.Join(' ', caps) : string.Empty;
                     var line = $"{oldSha} {newSha} {cmd.RefName}{capString}\n";
-                    await PktLineWriter.WriteStringAsync(requestPayload, line, effectiveToken).ConfigureAwait(false);
+                    await PktLineWriter.WriteStringAsync(commandsPayload, line, effectiveToken).ConfigureAwait(false);
                 }
                 else
                 {
                     var line = $"{oldSha} {newSha} {cmd.RefName}\n";
-                    await PktLineWriter.WriteStringAsync(requestPayload, line, effectiveToken).ConfigureAwait(false);
+                    await PktLineWriter.WriteStringAsync(commandsPayload, line, effectiveToken).ConfigureAwait(false);
                 }
             }
 
-            await PktLineWriter.WriteFlushAsync(requestPayload, effectiveToken).ConfigureAwait(false);
+            await PktLineWriter.WriteFlushAsync(commandsPayload, effectiveToken).ConfigureAwait(false);
+            commandsPayload.Position = 0;
 
-            // Append packfile if present
+            Stream requestStream;
             if (packDataStream != null)
             {
                 if (packDataStream.CanSeek)
                 {
                     packDataStream.Seek(0, SeekOrigin.Begin);
                 }
-                await packDataStream.CopyToAsync(requestPayload, effectiveToken).ConfigureAwait(false);
+                requestStream = new ConcatenatedStream(commandsPayload, packDataStream, leaveSecondOpen: true);
             }
-
-            requestPayload.Seek(0, SeekOrigin.Begin);
+            else
+            {
+                requestStream = commandsPayload;
+            }
 
             using var request = new HttpRequestMessage(HttpMethod.Post, requestUrl);
             ApplyRequestHeaders(request);
             request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/x-git-receive-pack-result"));
-            request.Content = new StreamContent(requestPayload);
+            request.Content = new StreamContent(requestStream);
             request.Content.Headers.ContentType = new MediaTypeHeaderValue("application/x-git-receive-pack-request");
 
             using var response = await SendAsync(request, HttpCompletionOption.ResponseHeadersRead, effectiveToken).ConfigureAwait(false);

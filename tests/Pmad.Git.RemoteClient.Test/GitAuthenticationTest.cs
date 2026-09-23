@@ -28,6 +28,9 @@ public sealed class GitAuthenticationTest : IDisposable
     }
 
     private async Task StartServerAsync(Func<string?, bool> validateAuth)
+        => await StartServerAsync(ctx => validateAuth(ctx.Request.Headers.Authorization.ToString())).ConfigureAwait(false);
+
+    private async Task StartServerAsync(Func<HttpContext, bool> validateRequest)
     {
         var builder = new HostBuilder()
             .ConfigureWebHost(webBuilder =>
@@ -48,8 +51,7 @@ public sealed class GitAuthenticationTest : IDisposable
                     {
                         app.Use(async (context, next) =>
                         {
-                            var authHeader = context.Request.Headers.Authorization.ToString();
-                            if (!validateAuth(authHeader))
+                            if (!validateRequest(context))
                             {
                                 context.Response.StatusCode = StatusCodes.Status401Unauthorized;
                                 context.Response.Headers.WWWAuthenticate = "Basic realm=\"Git\"";
@@ -180,6 +182,52 @@ public sealed class GitAuthenticationTest : IDisposable
         using var repo = await GitRemoteClientRepository.CloneAsync("http://localhost/auth-repo.git", clientDir, options);
         Assert.NotNull(repo);
         Assert.True(File.Exists(Path.Combine(clientDir, "test.txt")));
+    }
+
+    [Fact]
+    public async Task Request_WithCustomHeader_Succeeds()
+    {
+        CreateServerRepository("auth-custom-repo");
+        const string customHeaderName = "X-Git-Custom-Token";
+        const string customHeaderValue = "secret-token-value-12345";
+        await StartServerAsync(ctx =>
+            ctx.Request.Headers.TryGetValue(customHeaderName, out var val) && val.ToString() == customHeaderValue);
+
+        var httpClient = _testServer!.CreateClient();
+        var options = new GitRemoteClientOptions
+        {
+            HttpClient = httpClient,
+            Credentials = GitHttpCredentials.Custom(customHeaderName, customHeaderValue)
+        };
+        var clientDir = Path.Combine(_clientWorkingDir, "valid-custom");
+
+        using var repo = await GitRemoteClientRepository.CloneAsync("http://localhost/auth-custom-repo.git", clientDir, options);
+        Assert.NotNull(repo);
+        Assert.True(File.Exists(Path.Combine(clientDir, "test.txt")));
+    }
+
+    [Fact]
+    public async Task Request_WithInvalidCustomHeader_ThrowsGitAuthenticationException()
+    {
+        CreateServerRepository("auth-custom-repo");
+        const string customHeaderName = "X-Git-Custom-Token";
+        await StartServerAsync(ctx =>
+            ctx.Request.Headers.TryGetValue(customHeaderName, out var val) && val.ToString() == "expected-secret");
+
+        var httpClient = _testServer!.CreateClient();
+        var options = new GitRemoteClientOptions
+        {
+            HttpClient = httpClient,
+            Credentials = GitHttpCredentials.Custom(customHeaderName, "wrong-secret")
+        };
+        var clientDir = Path.Combine(_clientWorkingDir, "invalid-custom");
+
+        var ex = await Assert.ThrowsAsync<GitAuthenticationException>(async () =>
+        {
+            await GitRemoteClientRepository.CloneAsync("http://localhost/auth-custom-repo.git", clientDir, options);
+        });
+
+        Assert.Equal(HttpStatusCode.Unauthorized, ex.StatusCode);
     }
 
     public void Dispose()

@@ -416,13 +416,17 @@ public sealed class GitRemoteClientRepository : IGitRepositoryWithRemote, IDispo
             excludes: advertisement.References.Values,
             cancellationToken: cancellationToken).ConfigureAwait(false);
 
-        // Always send a packfile for non-delete updates (even an empty pack if objects already exist on remote)
-        var packDataStream = new MemoryStream();
-        var packBuilder = new GitPackBuilder();
-        await packBuilder.WriteAsync(_repo, objectsToSend, packDataStream, cancellationToken).ConfigureAwait(false);
-
+        // Always send a packfile for non-delete updates (even an empty pack if objects already exist on remote).
+        // Use a temporary file stream so large packs are not buffered in memory.
+        var tempFilePath = Path.Combine(Path.GetTempPath(), $"pmad_git_pack_{Guid.NewGuid():N}.tmp");
+        FileStream? packDataStream = null;
         try
         {
+            packDataStream = new FileStream(tempFilePath, FileMode.Create, FileAccess.ReadWrite, FileShare.None, 65536, FileOptions.DeleteOnClose);
+            var packBuilder = new GitPackBuilder();
+            await packBuilder.WriteAsync(_repo, objectsToSend, packDataStream, cancellationToken).ConfigureAwait(false);
+            packDataStream.Seek(0, SeekOrigin.Begin);
+
             var command = new GitRefUpdateCommand(remoteCommit, localCommit.Value, remoteRefName);
             await _connection.ReceivePackAsync(
                 remoteUrl,
@@ -434,7 +438,14 @@ public sealed class GitRemoteClientRepository : IGitRepositoryWithRemote, IDispo
         }
         finally
         {
-            packDataStream?.Dispose();
+            if (packDataStream != null)
+            {
+                await packDataStream.DisposeAsync().ConfigureAwait(false);
+            }
+            if (File.Exists(tempFilePath))
+            {
+                try { File.Delete(tempFilePath); } catch { }
+            }
         }
 
         // Update local remote-tracking reference
