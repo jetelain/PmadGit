@@ -190,6 +190,10 @@ public sealed class GitRemoteClientRepository : IGitRepositoryWithRemote, IDispo
         {
             targetCommitHash = branchHash;
         }
+        else if (!string.IsNullOrEmpty(branch))
+        {
+            throw new GitRemoteException($"Remote branch '{branch}' not found in upstream '{remoteName}'.");
+        }
         else if (advertisement.HeadHash.HasValue)
         {
             targetCommitHash = advertisement.HeadHash;
@@ -229,14 +233,17 @@ public sealed class GitRemoteClientRepository : IGitRepositoryWithRemote, IDispo
         var remoteRefsToFetch = new Dictionary<string, GitHash>(StringComparer.Ordinal);
         if (!string.IsNullOrEmpty(branch))
         {
-            var normalizedBranch = branch.StartsWith("refs/heads/", StringComparison.Ordinal)
-                ? branch["refs/heads/".Length..]
-                : branch;
-            var fullRef = $"refs/heads/{normalizedBranch}";
+            var fullRef = branch.StartsWith("refs/", StringComparison.Ordinal)
+                ? branch
+                : $"refs/heads/{branch}";
 
             if (advertisement.References.TryGetValue(fullRef, out var hash))
             {
                 remoteRefsToFetch[fullRef] = hash;
+            }
+            else
+            {
+                throw new GitRemoteException($"Could not find remote ref '{branch}'.");
             }
         }
         else
@@ -371,13 +378,31 @@ public sealed class GitRemoteClientRepository : IGitRepositoryWithRemote, IDispo
         // If remote ref already equals local commit, nothing to push
         if (remoteCommit.HasValue && remoteCommit.Value.Equals(localCommit.Value))
         {
+            if (setUpstream)
+            {
+                var configPath = Path.Combine(_repo.GitDirectory, "config");
+                var config = await GitConfigFile.ReadFromFileAsync(configPath, cancellationToken).ConfigureAwait(false);
+                config.SetValue("branch", localBranch, "remote", targetRemote);
+                config.SetValue("branch", localBranch, "merge", remoteRefName);
+                await config.WriteToFileAsync(configPath, cancellationToken).ConfigureAwait(false);
+                _repo.InvalidateCaches(raiseChanged: true);
+            }
             return;
         }
 
         // Validate fast-forward unless force is specified
         if (remoteCommit.HasValue && !force)
         {
-            var isFastForward = await _repo.IsCommitReachableAsync(from: localCommit.Value, to: remoteCommit.Value, cancellationToken).ConfigureAwait(false);
+            var isFastForward = false;
+            try
+            {
+                isFastForward = await _repo.IsCommitReachableAsync(from: localCommit.Value, to: remoteCommit.Value, cancellationToken).ConfigureAwait(false);
+            }
+            catch (Exception ex) when (ex is FileNotFoundException or InvalidOperationException)
+            {
+                isFastForward = false;
+            }
+
             if (!isFastForward)
             {
                 throw new GitRemoteException("Non-fast-forward push rejected (use force to overwrite).");

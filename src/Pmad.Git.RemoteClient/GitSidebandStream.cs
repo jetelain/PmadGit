@@ -12,8 +12,10 @@ namespace Pmad.Git.RemoteClient;
 /// </summary>
 public sealed class GitSidebandStream : Stream
 {
+    private readonly Stream _stream;
     private readonly PktLineReader _reader;
     private readonly Action<string>? _onProgress;
+    private readonly bool _leaveOpen;
     private ReadOnlyMemory<byte> _currentPayload;
     private int _currentOffset;
     private bool _endOfStream;
@@ -24,11 +26,14 @@ public sealed class GitSidebandStream : Stream
     /// </summary>
     /// <param name="stream">The underlying stream carrying sideband packet lines.</param>
     /// <param name="onProgress">Optional callback for progress messages received on channel 2.</param>
-    public GitSidebandStream(Stream stream, Action<string>? onProgress = null)
+    /// <param name="leaveOpen"><see langword="true"/> to leave the underlying stream open when disposing; otherwise, <see langword="false"/>.</param>
+    public GitSidebandStream(Stream stream, Action<string>? onProgress = null, bool leaveOpen = false)
     {
         ArgumentNullException.ThrowIfNull(stream);
+        _stream = stream;
         _reader = new PktLineReader(stream);
         _onProgress = onProgress;
+        _leaveOpen = leaveOpen;
     }
 
     /// <inheritdoc />
@@ -138,5 +143,25 @@ public sealed class GitSidebandStream : Stream
 
     /// <inheritdoc />
     public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+
+    /// <inheritdoc />
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing && !_leaveOpen)
+        {
+            _stream.Dispose();
+        }
+        base.Dispose(disposing);
+    }
+
+    /// <inheritdoc />
+    public override async ValueTask DisposeAsync()
+    {
+        if (!_leaveOpen)
+        {
+            await _stream.DisposeAsync().ConfigureAwait(false);
+        }
+        await base.DisposeAsync().ConfigureAwait(false);
+    }
 }
 

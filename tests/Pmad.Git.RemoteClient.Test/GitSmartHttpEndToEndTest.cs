@@ -5,6 +5,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Pmad.Git.HttpServer;
 using Pmad.Git.LocalRepositories;
+using Pmad.Git.LocalRepositories.Config;
 using Pmad.Git.RemoteClient;
 
 namespace Pmad.Git.RemoteClient.Test;
@@ -391,6 +392,121 @@ public sealed class GitSmartHttpEndToEndTest : IDisposable
 
         // Assert 2: Client working tree updated with server commit
         Assert.Equal("v3 server", File.ReadAllText(Path.Combine(cloneDir, "file.txt")));
+    }
+
+    [Fact]
+    public async Task CloneAsync_WithNonExistentBranch_ThrowsGitRemoteException()
+    {
+        CreateServerRepository("clone-fail-test", new[] { ("file.txt", "content") });
+        await StartServerAsync();
+
+        var client = _testServer!.CreateClient();
+        var options = new GitRemoteClientOptions { HttpClient = client };
+        var cloneDir = Path.Combine(_clientWorkingDir, "clone-fail");
+
+        var ex = await Assert.ThrowsAsync<GitRemoteException>(async () =>
+        {
+            await GitRemoteClientRepository.CloneAsync(
+                "http://localhost/clone-fail-test.git",
+                cloneDir,
+                options,
+                branch: "nonexistent-branch");
+        });
+
+        Assert.Contains("nonexistent-branch", ex.Message);
+    }
+
+    [Fact]
+    public async Task FetchAsync_WithNonExistentBranch_ThrowsGitRemoteException()
+    {
+        CreateServerRepository("fetch-fail-test", new[] { ("file.txt", "content") });
+        await StartServerAsync();
+
+        var client = _testServer!.CreateClient();
+        var options = new GitRemoteClientOptions { HttpClient = client };
+        var cloneDir = Path.Combine(_clientWorkingDir, "fetch-fail");
+
+        using var clientRepo = await GitRemoteClientRepository.CloneAsync(
+            "http://localhost/fetch-fail-test.git",
+            cloneDir,
+            options);
+
+        var ex = await Assert.ThrowsAsync<GitRemoteException>(async () =>
+        {
+            await clientRepo.FetchAsync(branch: "does-not-exist");
+        });
+
+        Assert.Contains("does-not-exist", ex.Message);
+    }
+
+    [Fact]
+    public async Task PushAsync_AlreadyUpToDate_SetsUpstreamConfig()
+    {
+        CreateServerRepository("push-upstream-test", new[] { ("file.txt", "content") });
+        await StartServerAsync();
+
+        var client = _testServer!.CreateClient();
+        var options = new GitRemoteClientOptions { HttpClient = client };
+        var cloneDir = Path.Combine(_clientWorkingDir, "push-upstream");
+
+        using var clientRepo = await GitRemoteClientRepository.CloneAsync(
+            "http://localhost/push-upstream-test.git",
+            cloneDir,
+            options);
+
+        // Intentionally delete upstream tracking config
+        var configPath = Path.Combine(clientRepo.LocalRepository.GitDirectory, "config");
+        var config = await GitConfigFile.ReadFromFileAsync(configPath, CancellationToken.None);
+        config.RemoveSection("branch", "main");
+        await config.WriteToFileAsync(configPath, CancellationToken.None);
+
+        var trackingBefore = await clientRepo.GetTrackingStatusAsync("main");
+        Assert.False(trackingBefore.HasUpstream);
+
+        // Push with setUpstream when branch is already up-to-date
+        await clientRepo.PushAsync(setUpstream: true);
+
+        var trackingAfter = await clientRepo.GetTrackingStatusAsync("main");
+        Assert.True(trackingAfter.HasUpstream);
+        Assert.Equal("origin/main", trackingAfter.UpstreamBranch);
+    }
+
+    [Fact]
+    public async Task PushAsync_NonFastForwardWithoutForce_ThrowsGitRemoteException()
+    {
+        CreateServerRepository("push-reject-test", new[] { ("file.txt", "base") });
+        await StartServerAsync();
+
+        var client = _testServer!.CreateClient();
+        var options = new GitRemoteClientOptions { HttpClient = client };
+        var cloneDir = Path.Combine(_clientWorkingDir, "push-reject");
+
+        using var clientRepo = await GitRemoteClientRepository.CloneAsync(
+            "http://localhost/push-reject-test.git",
+            cloneDir,
+            options);
+
+        // Advance server with a new commit
+        var serverRepoPath = Path.Combine(_serverRepoRoot, "push-reject-test.git");
+        using (var serverWorkRepo = GitRepositoryWithIndexAndWorkspace.Open(serverRepoPath))
+        {
+            File.WriteAllText(Path.Combine(serverRepoPath, "file.txt"), "server commit");
+            await serverWorkRepo.StageAsync("file.txt");
+            await serverWorkRepo.CommitAsync("server commit");
+        }
+
+        // Advance client independently (diverged)
+        File.WriteAllText(Path.Combine(cloneDir, "file.txt"), "client commit");
+        await clientRepo.WorkspaceRepository!.StageAsync("file.txt");
+        await clientRepo.WorkspaceRepository!.CommitAsync("client commit");
+
+        // Act & Assert: Push without force should throw GitRemoteException
+        var ex = await Assert.ThrowsAsync<GitRemoteException>(async () =>
+        {
+            await clientRepo.PushAsync(force: false);
+        });
+
+        Assert.Contains("Non-fast-forward push rejected", ex.Message);
     }
 
     public void Dispose()

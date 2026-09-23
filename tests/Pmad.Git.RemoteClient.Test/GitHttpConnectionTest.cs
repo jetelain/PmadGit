@@ -151,4 +151,77 @@ public sealed class GitHttpConnectionTest
 
         Assert.Equal(HttpStatusCode.Forbidden, ex.StatusCode);
     }
+
+    [Fact]
+    public async Task DiscoverReferencesAsync_ServerReturnsErrPacket_ThrowsGitRemoteExceptionWithServerMessage()
+    {
+        var handler = new MockHttpMessageHandler
+        {
+            Handler = async _ =>
+            {
+                var body = new MemoryStream();
+                await PktLineWriter.WriteStringAsync(body, "ERR Repository not found\n", CancellationToken.None);
+                body.Seek(0, SeekOrigin.Begin);
+                var response = new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new StreamContent(body)
+                };
+                response.Content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/x-git-upload-pack-advertisement");
+                return response;
+            }
+        };
+
+        var httpClient = new HttpClient(handler);
+        using var connection = new GitHttpConnection(new GitRemoteClientOptions { HttpClient = httpClient });
+
+        var ex = await Assert.ThrowsAsync<GitRemoteException>(async () =>
+        {
+            await connection.DiscoverReferencesAsync(new Uri("http://localhost/test.git"), "git-upload-pack");
+        });
+
+        Assert.Contains("Repository not found", ex.Message);
+    }
+
+    [Fact]
+    public async Task UploadPackAsync_ServerReturnsErrPacket_ThrowsGitRemoteExceptionWithServerMessage()
+    {
+        var handler = new MockHttpMessageHandler
+        {
+            Handler = async _ =>
+            {
+                var body = new MemoryStream();
+                await PktLineWriter.WriteStringAsync(body, "ERR upload-pack: not our ref 1111111111111111111111111111111111111111\n", CancellationToken.None);
+                body.Seek(0, SeekOrigin.Begin);
+                var response = new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new StreamContent(body)
+                };
+                response.Content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/x-git-upload-pack-result");
+                return response;
+            }
+        };
+
+        var httpClient = new HttpClient(handler);
+        using var connection = new GitHttpConnection(new GitRemoteClientOptions { HttpClient = httpClient });
+
+        var ad = new GitRemoteAdvertisement(
+            new Dictionary<string, GitHash> { ["refs/heads/main"] = new("1111111111111111111111111111111111111111") },
+            new HashSet<string> { "side-band-64k" },
+            new Dictionary<string, string>(),
+            "refs/heads/main",
+            new("1111111111111111111111111111111111111111"),
+            "sha1",
+            "test");
+
+        var ex = await Assert.ThrowsAsync<GitRemoteException>(async () =>
+        {
+            await connection.UploadPackAsync(
+                new Uri("http://localhost/test.git"),
+                new[] { new GitHash("1111111111111111111111111111111111111111") },
+                Array.Empty<GitHash>(),
+                ad);
+        });
+
+        Assert.Contains("not our ref", ex.Message);
+    }
 }

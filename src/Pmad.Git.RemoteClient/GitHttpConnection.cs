@@ -176,6 +176,10 @@ public sealed class GitHttpConnection : IDisposable
                 }
 
                 var line = packet.Value.AsString().TrimEnd('\r', '\n');
+                if (line.StartsWith("ERR ", StringComparison.Ordinal))
+                {
+                    throw new GitRemoteException($"Server returned error: {line[4..]}");
+                }
                 if (line.Equals("NAK", StringComparison.Ordinal) || line.StartsWith("ACK", StringComparison.Ordinal))
                 {
                     break;
@@ -297,7 +301,10 @@ public sealed class GitHttpConnection : IDisposable
         ValidateContentType(response, "application/x-git-receive-pack-result");
 
         await using var responseStream = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
-        await ParseReceivePackStatusAsync(responseStream, cancellationToken).ConfigureAwait(false);
+        if (advertisement.Capabilities.Contains("report-status"))
+        {
+            await ParseReceivePackStatusAsync(responseStream, cancellationToken).ConfigureAwait(false);
+        }
     }
 
     private void ApplyRequestHeaders(HttpRequestMessage request)
@@ -373,6 +380,11 @@ public sealed class GitHttpConnection : IDisposable
         }
 
         var serviceHeader = serviceHeaderPacket.Value.AsString().TrimEnd('\r', '\n');
+        if (serviceHeader.StartsWith("ERR ", StringComparison.Ordinal))
+        {
+            throw new GitRemoteException($"Server returned error: {serviceHeader[4..]}");
+        }
+
         var expectedHeader = $"# service={expectedService}";
         if (!serviceHeader.Equals(expectedHeader, StringComparison.Ordinal))
         {
@@ -495,6 +507,11 @@ public sealed class GitHttpConnection : IDisposable
         }
 
         var unpackLine = unpackPacket.Value.AsString().TrimEnd('\r', '\n');
+        if (unpackLine.StartsWith("ERR ", StringComparison.Ordinal))
+        {
+            throw new GitRemoteException($"Server returned error: {unpackLine[4..]}");
+        }
+
         if (!unpackLine.Equals("unpack ok", StringComparison.Ordinal))
         {
             throw new GitRemoteException($"Server unpack failed: {unpackLine}");
