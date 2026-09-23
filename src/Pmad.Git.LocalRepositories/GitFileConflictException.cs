@@ -1,4 +1,4 @@
-﻿namespace Pmad.Git.LocalRepositories;
+namespace Pmad.Git.LocalRepositories;
 
 /// <summary>
 /// The exception that is thrown when a file conflict occurs during a Git operation.
@@ -33,7 +33,7 @@ public sealed class GitFileConflictException : InvalidOperationException
     /// </summary>
     /// <param name="message">The message that describes the error.</param>
     /// <param name="filePath">The path to the file that is involved in the conflict.</param>
-    public GitFileConflictException(string message, string filePath)
+    public GitFileConflictException(string message, string? filePath)
         : base(message)
     {
         FilePath = filePath;

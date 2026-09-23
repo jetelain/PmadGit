@@ -1,0 +1,403 @@
+using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.Hosting;
+using Microsoft.AspNetCore.TestHost;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
+using Pmad.Git.HttpServer;
+using Pmad.Git.LocalRepositories;
+using Pmad.Git.RemoteClient;
+
+namespace Pmad.Git.RemoteClient.Test;
+
+public sealed class GitSmartHttpEndToEndTest : IDisposable
+{
+    private readonly string _serverRepoRoot;
+    private readonly string _clientWorkingDir;
+    private IHost? _host;
+    private TestServer? _testServer;
+
+    public GitSmartHttpEndToEndTest()
+    {
+        _serverRepoRoot = Path.Combine(Path.GetTempPath(), "PmadGitE2EServer", Guid.NewGuid().ToString("N"));
+        _clientWorkingDir = Path.Combine(Path.GetTempPath(), "PmadGitE2EClient", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(_serverRepoRoot);
+        Directory.CreateDirectory(_clientWorkingDir);
+    }
+
+    private async Task StartServerAsync()
+    {
+        var builder = new HostBuilder()
+            .ConfigureWebHost(webBuilder =>
+            {
+                webBuilder
+                    .UseTestServer()
+                    .ConfigureServices(services =>
+                    {
+                        services.AddRouting();
+                        services.AddGitSmartHttp(options =>
+                        {
+                            options.RepositoryRoot = _serverRepoRoot;
+                            options.EnableUploadPack = true;
+                            options.EnableReceivePack = true;
+                            // Allow both read and write operations for tests
+                            options.AuthorizeAsync = static (_, _, _, _) => ValueTask.FromResult(true);
+                        });
+                    })
+                    .Configure(app =>
+                    {
+                        app.UseRouting();
+                        app.UseEndpoints(endpoints =>
+                        {
+                            endpoints.MapGitSmartHttp("/{repository}.git");
+                        });
+                    });
+            });
+
+        _host = await builder.StartAsync();
+        _testServer = _host.GetTestServer();
+    }
+
+    private void CreateServerRepository(string name, (string path, string content)[] files)
+    {
+        var barePath = Path.Combine(_serverRepoRoot, $"{name}.git");
+        using var repo = GitRepositoryWithIndexAndWorkspace.Init(barePath, initialBranch: "main");
+
+        foreach (var (path, content) in files)
+        {
+            var fullPath = Path.Combine(barePath, path.Replace('/', Path.DirectorySeparatorChar));
+            var dir = Path.GetDirectoryName(fullPath);
+            if (!string.IsNullOrEmpty(dir))
+            {
+                Directory.CreateDirectory(dir);
+            }
+            File.WriteAllText(fullPath, content);
+            repo.StageAsync(path).GetAwaiter().GetResult();
+        }
+
+        repo.CommitAsync("Initial commit").GetAwaiter().GetResult();
+    }
+
+    [Fact]
+    public async Task CloneAsync_WithFiles_ClonesRepositoryAndChecksOutFiles()
+    {
+        // Arrange
+        CreateServerRepository("clone-test", new[]
+        {
+            ("README.md", "# Test Readme"),
+            ("src/app.txt", "console.log('hello');")
+        });
+
+        await StartServerAsync();
+        var client = _testServer!.CreateClient();
+        var options = new GitRemoteClientOptions { HttpClient = client };
+        var cloneDir = Path.Combine(_clientWorkingDir, "cloned-repo");
+
+        // Act
+        using var repo = await GitRemoteClientRepository.CloneAsync(
+            "http://localhost/clone-test.git",
+            cloneDir,
+            options);
+
+        // Assert
+        Assert.NotNull(repo);
+        Assert.True(File.Exists(Path.Combine(cloneDir, "README.md")));
+        Assert.True(File.Exists(Path.Combine(cloneDir, "src", "app.txt")));
+        Assert.Equal("# Test Readme", File.ReadAllText(Path.Combine(cloneDir, "README.md")));
+        Assert.Equal("console.log('hello');", File.ReadAllText(Path.Combine(cloneDir, "src", "app.txt")));
+
+        var trackingRef = await repo.LocalRepository.ReferenceStore.TryResolveReferenceAsync("refs/remotes/origin/main");
+        var headRef = await repo.LocalRepository.ReferenceStore.TryResolveReferenceAsync("refs/heads/main");
+        Assert.NotNull(trackingRef);
+        Assert.NotNull(headRef);
+        Assert.Equal(trackingRef, headRef);
+    }
+
+    [Fact]
+    public async Task FetchAsync_ServerHasNewCommits_UpdatesTrackingRefsAndObjectStore()
+    {
+        // Arrange: clone initial repository
+        CreateServerRepository("fetch-test", new[] { ("file1.txt", "v1") });
+        await StartServerAsync();
+
+        var client = _testServer!.CreateClient();
+        var options = new GitRemoteClientOptions { HttpClient = client };
+        var cloneDir = Path.Combine(_clientWorkingDir, "fetch-clone");
+
+        using var clientRepo = await GitRemoteClientRepository.CloneAsync(
+            "http://localhost/fetch-test.git",
+            cloneDir,
+            options);
+
+        var initialCommit = await clientRepo.LocalRepository.ReferenceStore.ResolveHeadAsync();
+
+        // Make another commit on the server directly
+        var serverRepoPath = Path.Combine(_serverRepoRoot, "fetch-test.git");
+        using (var serverRepo = GitRepositoryWithIndexAndWorkspace.Open(serverRepoPath))
+        {
+            File.WriteAllText(Path.Combine(serverRepoPath, "file2.txt"), "v2 content");
+            await serverRepo.StageAsync("file2.txt");
+            await serverRepo.CommitAsync("Second server commit");
+        }
+
+        // Act: Fetch on client
+        await clientRepo.FetchAsync();
+
+        // Assert: Tracking ref should be updated to new commit
+        var updatedTrackingRef = await clientRepo.LocalRepository.ReferenceStore.TryResolveReferenceAsync("refs/remotes/origin/main");
+        Assert.NotNull(updatedTrackingRef);
+        Assert.NotEqual(initialCommit, updatedTrackingRef.Value);
+
+        // Verify the new commit and blob exist in local object store
+        var commitObj = await clientRepo.LocalRepository.ObjectStore.ReadObjectAsync(updatedTrackingRef.Value);
+        Assert.Equal(GitObjectType.Commit, commitObj.Type);
+
+        // Working tree should NOT have file2.txt yet (fetch doesn't merge)
+        Assert.False(File.Exists(Path.Combine(cloneDir, "file2.txt")));
+    }
+
+    [Fact]
+    public async Task PullAsync_ServerHasNewCommits_MergesIntoWorkingTree()
+    {
+        // Arrange
+        CreateServerRepository("pull-test", new[] { ("file1.txt", "v1") });
+        await StartServerAsync();
+
+        var client = _testServer!.CreateClient();
+        var options = new GitRemoteClientOptions { HttpClient = client };
+        var cloneDir = Path.Combine(_clientWorkingDir, "pull-clone");
+
+        using var clientRepo = await GitRemoteClientRepository.CloneAsync(
+            "http://localhost/pull-test.git",
+            cloneDir,
+            options);
+
+        // Make another commit on the server
+        var serverRepoPath = Path.Combine(_serverRepoRoot, "pull-test.git");
+        using (var serverRepo = GitRepositoryWithIndexAndWorkspace.Open(serverRepoPath))
+        {
+            File.WriteAllText(Path.Combine(serverRepoPath, "file2.txt"), "v2 from server");
+            await serverRepo.StageAsync("file2.txt");
+            await serverRepo.CommitAsync("Commit 2");
+        }
+
+        // Act: Pull on client
+        var mergeResult = await clientRepo.PullAsync();
+
+        // Assert
+        Assert.True(mergeResult.IsSuccess);
+        Assert.Empty(mergeResult.ConflictedFiles);
+        Assert.True(File.Exists(Path.Combine(cloneDir, "file2.txt")));
+        Assert.Equal("v2 from server", File.ReadAllText(Path.Combine(cloneDir, "file2.txt")));
+    }
+
+    [Fact]
+    public async Task PullAsync_WithMergeConflict_ReportsConflictAndAllowsResolution()
+    {
+        // Arrange
+        CreateServerRepository("conflict-test", new[] { ("conflict.txt", "line 1\nline 2\n") });
+        await StartServerAsync();
+
+        var client = _testServer!.CreateClient();
+        var options = new GitRemoteClientOptions { HttpClient = client };
+        var cloneDir = Path.Combine(_clientWorkingDir, "conflict-clone");
+
+        using var clientRepo = await GitRemoteClientRepository.CloneAsync(
+            "http://localhost/conflict-test.git",
+            cloneDir,
+            options);
+
+        // Server modifies conflict.txt
+        var serverRepoPath = Path.Combine(_serverRepoRoot, "conflict-test.git");
+        using (var serverRepo = GitRepositoryWithIndexAndWorkspace.Open(serverRepoPath))
+        {
+            File.WriteAllText(Path.Combine(serverRepoPath, "conflict.txt"), "server modification\nline 2\n");
+            await serverRepo.StageAsync("conflict.txt");
+            await serverRepo.CommitAsync("Server edit");
+        }
+
+        // Client modifies conflict.txt concurrently
+        File.WriteAllText(Path.Combine(cloneDir, "conflict.txt"), "client modification\nline 2\n");
+        await clientRepo.WorkspaceRepository!.StageAsync("conflict.txt");
+        await clientRepo.WorkspaceRepository!.CommitAsync("Client edit");
+
+        // Act: Pull should encounter conflict
+        var mergeResult = await clientRepo.PullAsync();
+
+        // Assert: Merge conflict reported
+        Assert.False(mergeResult.IsSuccess);
+        Assert.Contains("conflict.txt", mergeResult.ConflictedFiles);
+        Assert.True(await clientRepo.IsMergeInProgressAsync());
+
+        var conflictedFiles = await clientRepo.GetConflictedFilesAsync();
+        Assert.Contains("conflict.txt", conflictedFiles);
+
+        // Resolve conflict
+        File.WriteAllText(Path.Combine(cloneDir, "conflict.txt"), "resolved content\nline 2\n");
+        await clientRepo.ResolveConflictAsync("conflict.txt");
+
+        // Continue merge
+        await clientRepo.ContinueMergeAsync("Merge resolution commit");
+
+        Assert.False(await clientRepo.IsMergeInProgressAsync());
+        Assert.Equal("resolved content\nline 2\n", File.ReadAllText(Path.Combine(cloneDir, "conflict.txt")));
+    }
+
+    [Fact]
+    public async Task PushAsync_LocalCommits_UpdatesServerRepository()
+    {
+        // Arrange
+        CreateServerRepository("push-test", new[] { ("file1.txt", "original") });
+        await StartServerAsync();
+
+        var client = _testServer!.CreateClient();
+        var options = new GitRemoteClientOptions { HttpClient = client };
+        var cloneDir = Path.Combine(_clientWorkingDir, "push-clone");
+
+        using var clientRepo = await GitRemoteClientRepository.CloneAsync(
+            "http://localhost/push-test.git",
+            cloneDir,
+            options);
+
+        // Make local commit
+        File.WriteAllText(Path.Combine(cloneDir, "file1.txt"), "updated by client");
+        File.WriteAllText(Path.Combine(cloneDir, "client-new.txt"), "brand new file");
+        await clientRepo.WorkspaceRepository!.StageAllAsync();
+        var localCommit = await clientRepo.WorkspaceRepository!.CommitAsync("Client new commit");
+
+        // Act: Push
+        await clientRepo.PushAsync();
+
+        // Assert: Verify server repo has the new commit
+        var serverRepoPath = Path.Combine(_serverRepoRoot, "push-test.git");
+        var serverRepo = GitRepository.Open(serverRepoPath);
+        serverRepo.InvalidateCaches();
+        var serverMain = await serverRepo.ReferenceStore.TryResolveReferenceAsync("refs/heads/main");
+
+        Assert.NotNull(serverMain);
+        Assert.Equal(localCommit, serverMain.Value);
+
+        // Verify objects are present on server
+        var commitObj = await serverRepo.ObjectStore.ReadObjectAsync(localCommit);
+        Assert.Equal(GitObjectType.Commit, commitObj.Type);
+
+        // Tracking status should report 0 ahead, 0 behind
+        var status = await clientRepo.GetTrackingStatusAsync();
+        Assert.Equal(0, status.AheadCount);
+        Assert.Equal(0, status.BehindCount);
+    }
+
+    [Fact]
+    public async Task PushAsync_NewBranch_CreatesBranchOnServer()
+    {
+        // Arrange
+        CreateServerRepository("push-branch-test", new[] { ("init.txt", "init") });
+        await StartServerAsync();
+
+        var client = _testServer!.CreateClient();
+        var options = new GitRemoteClientOptions { HttpClient = client };
+        var cloneDir = Path.Combine(_clientWorkingDir, "branch-clone");
+
+        using var clientRepo = await GitRemoteClientRepository.CloneAsync(
+            "http://localhost/push-branch-test.git",
+            cloneDir,
+            options);
+
+        // Create new local branch
+        var headCommit = await clientRepo.LocalRepository.ReferenceStore.ResolveHeadAsync();
+        await clientRepo.LocalRepository.ReferenceStore.CreateReferenceAsync("refs/heads/feature", headCommit, overwrite: true);
+
+        // Switch to branch feature
+        File.WriteAllText(Path.Combine(cloneDir, ".git", "HEAD"), "ref: refs/heads/feature\n");
+        clientRepo.LocalRepository.InvalidateCaches();
+
+        File.WriteAllText(Path.Combine(cloneDir, "feature.txt"), "feature content");
+        await clientRepo.WorkspaceRepository!.StageAsync("feature.txt");
+        var featureCommit = await clientRepo.WorkspaceRepository!.CommitAsync("Feature commit");
+
+        // Act: Push new branch with setUpstream: true
+        await clientRepo.PushAsync(branch: "feature", setUpstream: true);
+
+        // Assert: Server now has refs/heads/feature
+        var serverRepoPath = Path.Combine(_serverRepoRoot, "push-branch-test.git");
+        var serverRepo = GitRepository.Open(serverRepoPath);
+        serverRepo.InvalidateCaches();
+        var serverFeature = await serverRepo.ReferenceStore.TryResolveReferenceAsync("refs/heads/feature");
+
+        Assert.NotNull(serverFeature);
+        Assert.Equal(featureCommit, serverFeature.Value);
+
+        // Local tracking ref created
+        var localTracking = await clientRepo.LocalRepository.ReferenceStore.TryResolveReferenceAsync("refs/remotes/origin/feature");
+        Assert.NotNull(localTracking);
+        Assert.Equal(featureCommit, localTracking.Value);
+
+        // Upstream tracking status
+        var trackingStatus = await clientRepo.GetTrackingStatusAsync("feature");
+        Assert.Equal("origin/feature", trackingStatus.UpstreamBranch);
+        Assert.Equal(0, trackingStatus.AheadCount);
+        Assert.Equal(0, trackingStatus.BehindCount);
+    }
+
+    [Fact]
+    public async Task GitRepositorySynchronizer_WithRemoteClientRepository_SynchronizesChanges()
+    {
+        // Arrange
+        CreateServerRepository("sync-test", new[] { ("file.txt", "v1") });
+        await StartServerAsync();
+
+        var client = _testServer!.CreateClient();
+        var options = new GitRemoteClientOptions { HttpClient = client };
+        var cloneDir = Path.Combine(_clientWorkingDir, "sync-clone");
+
+        using var clientRepo = await GitRemoteClientRepository.CloneAsync(
+            "http://localhost/sync-test.git",
+            cloneDir,
+            options);
+
+        await using var synchronizer = new GitRepositorySynchronizer(
+            clientRepo,
+            (IGitRepositoryCacheInvalidator)clientRepo.LocalRepository,
+            new GitSyncOptions
+            {
+                PushDebounceDelay = TimeSpan.FromMilliseconds(50),
+                PullInterval = TimeSpan.FromMilliseconds(200)
+            });
+
+        synchronizer.Start();
+
+        // Act 1: Make local commit -> should automatically flush / push via synchronizer
+        File.WriteAllText(Path.Combine(cloneDir, "file.txt"), "v2 local");
+        await clientRepo.WorkspaceRepository!.StageAsync("file.txt");
+        var localCommit = await clientRepo.WorkspaceRepository!.CommitAsync("v2 commit");
+
+        await synchronizer.FlushPendingPushAsync();
+
+        // Assert 1: Server has local commit
+        var serverRepoPath = Path.Combine(_serverRepoRoot, "sync-test.git");
+        var serverRepo = GitRepository.Open(serverRepoPath);
+        serverRepo.InvalidateCaches();
+        var serverMain = await serverRepo.ReferenceStore.TryResolveReferenceAsync("refs/heads/main");
+        Assert.Equal(localCommit, serverMain);
+
+        // Act 2: Server commit -> triggered remote pull
+        using (var serverWorkRepo = GitRepositoryWithIndexAndWorkspace.Open(serverRepoPath))
+        {
+            File.WriteAllText(Path.Combine(serverRepoPath, "file.txt"), "v3 server");
+            await serverWorkRepo.StageAsync("file.txt");
+            await serverWorkRepo.CommitAsync("v3 commit");
+        }
+
+        await synchronizer.TriggerRemoteSyncAsync();
+
+        // Assert 2: Client working tree updated with server commit
+        Assert.Equal("v3 server", File.ReadAllText(Path.Combine(cloneDir, "file.txt")));
+    }
+
+    public void Dispose()
+    {
+        _host?.Dispose();
+        _testServer?.Dispose();
+        TestHelper.TryDeleteDirectory(_serverRepoRoot);
+        TestHelper.TryDeleteDirectory(_clientWorkingDir);
+    }
+}
