@@ -741,6 +741,84 @@ public sealed class GitSmartHttpEndToEndTest : IDisposable
         Assert.Contains("Object format mismatch", ex.Message);
     }
 
+    [Fact]
+    public async Task CloneAsync_CreatesRemoteHeadSymbolicRef_AndFetchPrunePreservesIt()
+    {
+        CreateServerRepository("remote-head-server", new[] { ("file.txt", "content") });
+        await StartServerAsync();
+        var client = _testServer!.CreateClient();
+        var options = new GitRemoteClientOptions { HttpClient = client };
+
+        var cloneDir = Path.Combine(_clientWorkingDir, "remote-head-client");
+        using var clientRepo = await GitRemoteClientRepository.CloneAsync("http://localhost/remote-head-server.git", cloneDir, options);
+
+        var remoteHeadPath = Path.Combine(cloneDir, ".git", "refs", "remotes", "origin", "HEAD");
+        Assert.True(File.Exists(remoteHeadPath));
+        var remoteHeadContent = (await File.ReadAllTextAsync(remoteHeadPath)).Trim();
+        Assert.Equal("ref: refs/remotes/origin/main", remoteHeadContent);
+
+        // Resolving refs/remotes/origin/HEAD must resolve to the commit of main
+        var resolvedHead = await clientRepo.LocalRepository.ReferenceStore.TryResolveReferenceAsync("refs/remotes/origin/HEAD");
+        var resolvedMain = await clientRepo.LocalRepository.ReferenceStore.TryResolveReferenceAsync("refs/remotes/origin/main");
+        Assert.NotNull(resolvedHead);
+        Assert.Equal(resolvedMain, resolvedHead);
+
+        // Fetch with prune should NOT delete refs/remotes/origin/HEAD
+        await clientRepo.FetchAsync(prune: true);
+        Assert.True(File.Exists(remoteHeadPath));
+    }
+
+    [Fact]
+    public async Task PushAsync_Tag_PushesTagSuccessfullyWithoutCreatingTrackingRef()
+    {
+        CreateServerRepository("tag-push-server", new[] { ("file.txt", "v1") });
+        await StartServerAsync();
+        var client = _testServer!.CreateClient();
+        var options = new GitRemoteClientOptions { HttpClient = client };
+
+        var cloneDir = Path.Combine(_clientWorkingDir, "tag-push-client");
+        using var clientRepo = await GitRemoteClientRepository.CloneAsync("http://localhost/tag-push-server.git", cloneDir, options);
+
+        // Create local tag refs/tags/v1.0.0
+        var mainCommit = await clientRepo.LocalRepository.ReferenceStore.ResolveHeadAsync();
+        await clientRepo.LocalRepository.ReferenceStore.CreateReferenceAsync("refs/tags/v1.0.0", mainCommit);
+
+        // Push tag to remote
+        await clientRepo.PushAsync(branch: "refs/tags/v1.0.0");
+
+        // Verify remote repository has refs/tags/v1.0.0
+        var serverRepoDir = Path.Combine(_serverRepoRoot, "tag-push-server.git");
+        var serverRepo = GitRepository.Open(serverRepoDir);
+        var serverTagHash = await serverRepo.ReferenceStore.TryResolveReferenceAsync("refs/tags/v1.0.0");
+        Assert.Equal(mainCommit, serverTagHash);
+
+        // Verify local tracking ref was NOT created (tags don't have refs/remotes/origin/v1.0.0)
+        var trackingRef = await clientRepo.LocalRepository.ReferenceStore.TryResolveReferenceAsync("refs/remotes/origin/v1.0.0");
+        Assert.Null(trackingRef);
+
+        // Pushing the same tag again without force should be a no-op (same hash)
+        await clientRepo.PushAsync(branch: "refs/tags/v1.0.0");
+
+        // Create a new commit and update local tag to point to new commit
+        File.WriteAllText(Path.Combine(cloneDir, "file.txt"), "v2");
+        await clientRepo.WorkspaceRepository!.StageAsync("file.txt");
+        var commit2 = await clientRepo.WorkspaceRepository!.CommitAsync("Commit 2");
+        await clientRepo.LocalRepository.ReferenceStore.CreateReferenceAsync("refs/tags/v1.0.0", commit2, overwrite: true);
+
+        // Pushing without force when remote tag differs should fail
+        var ex = await Assert.ThrowsAsync<GitRemoteException>(async () =>
+        {
+            await clientRepo.PushAsync(branch: "refs/tags/v1.0.0", force: false);
+        });
+        Assert.Contains("Remote tag 'refs/tags/v1.0.0' already exists", ex.Message);
+
+        // Pushing with force should succeed
+        await clientRepo.PushAsync(branch: "refs/tags/v1.0.0", force: true);
+        serverRepo.InvalidateCaches(raiseChanged: false);
+        var updatedServerTagHash = await serverRepo.ReferenceStore.TryResolveReferenceAsync("refs/tags/v1.0.0");
+        Assert.Equal(commit2, updatedServerTagHash);
+    }
+
     public void Dispose()
     {
         _host?.Dispose();

@@ -76,3 +76,25 @@ public sealed class GitAccessDeniedException : GitRemoteException
     }
 }
 
+/// <summary>
+/// Exception thrown when a Git remote repository is not found (HTTP 404).
+/// </summary>
+public sealed class GitRepositoryNotFoundException : GitRemoteException
+{
+    /// <summary>
+    /// Gets the HTTP status code returned by the server.
+    /// </summary>
+    public HttpStatusCode StatusCode { get; }
+
+    /// <summary>
+    /// Initializes a new instance of the <see cref="GitRepositoryNotFoundException"/> class.
+    /// </summary>
+    /// <param name="message">The error message.</param>
+    /// <param name="statusCode">The HTTP status code.</param>
+    public GitRepositoryNotFoundException(string message, HttpStatusCode statusCode = HttpStatusCode.NotFound)
+        : base(message)
+    {
+        StatusCode = statusCode;
+    }
+}
+

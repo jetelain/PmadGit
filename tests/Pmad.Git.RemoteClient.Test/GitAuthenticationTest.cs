@@ -230,6 +230,39 @@ public sealed class GitAuthenticationTest : IDisposable
         Assert.Equal(HttpStatusCode.Unauthorized, ex.StatusCode);
     }
 
+    [Fact]
+    public async Task Request_WithCredentialsInUrl_ExtractsBasicAuthAndSucceeds()
+    {
+        CreateServerRepository("auth-url-creds-repo");
+        var expectedAuth = "Basic " + Convert.ToBase64String(Encoding.UTF8.GetBytes("myuser:mypassword"));
+        await StartServerAsync(auth => auth == expectedAuth);
+
+        var httpClient = _testServer!.CreateClient();
+        var options = new GitRemoteClientOptions { HttpClient = httpClient };
+        var clientDir = Path.Combine(_clientWorkingDir, "url-creds");
+
+        using var repo = await GitRemoteClientRepository.CloneAsync("http://myuser:mypassword@localhost/auth-url-creds-repo.git", clientDir, options);
+        Assert.NotNull(repo);
+        Assert.True(File.Exists(Path.Combine(clientDir, "test.txt")));
+    }
+
+    [Fact]
+    public async Task Request_RepositoryNotFound_ThrowsGitRepositoryNotFoundException()
+    {
+        await StartServerAsync((string? _) => true);
+
+        var httpClient = _testServer!.CreateClient();
+        var options = new GitRemoteClientOptions { HttpClient = httpClient };
+        var clientDir = Path.Combine(_clientWorkingDir, "not-found");
+
+        var ex = await Assert.ThrowsAsync<GitRepositoryNotFoundException>(async () =>
+        {
+            await GitRemoteClientRepository.CloneAsync("http://localhost/non-existent-repo.git", clientDir, options);
+        });
+
+        Assert.Equal(HttpStatusCode.NotFound, ex.StatusCode);
+    }
+
     public void Dispose()
     {
         _host?.Dispose();

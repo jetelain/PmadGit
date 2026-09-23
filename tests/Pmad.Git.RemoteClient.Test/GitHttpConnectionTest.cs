@@ -489,6 +489,109 @@ public sealed class GitHttpConnectionTest
         });
     }
 
+    [Fact]
+    public async Task DiscoverReferencesAsync_NotFound404_ThrowsGitRepositoryNotFoundException()
+    {
+        var handler = new MockHttpMessageHandler
+        {
+            Handler = req =>
+            {
+                var response = new HttpResponseMessage(HttpStatusCode.NotFound)
+                {
+                    ReasonPhrase = "Not Found",
+                    RequestMessage = req
+                };
+                return Task.FromResult(response);
+            }
+        };
+
+        var httpClient = new HttpClient(handler);
+        using var connection = new GitHttpConnection(new GitRemoteClientOptions { HttpClient = httpClient });
+
+        var ex = await Assert.ThrowsAsync<GitRepositoryNotFoundException>(async () =>
+        {
+            await connection.DiscoverReferencesAsync(new Uri("http://localhost/missing.git"), "git-upload-pack");
+        });
+
+        Assert.Equal(HttpStatusCode.NotFound, ex.StatusCode);
+    }
+
+    [Fact]
+    public async Task DiscoverReferencesAsync_UrlWithUserInfo_AppliesBasicAuthHeader()
+    {
+        HttpRequestMessage? capturedRequest = null;
+        var handler = new MockHttpMessageHandler
+        {
+            Handler = async req =>
+            {
+                capturedRequest = req;
+                var body = new MemoryStream();
+                await PktLineWriter.WriteStringAsync(body, "# service=git-upload-pack\n", CancellationToken.None);
+                await PktLineWriter.WriteFlushAsync(body, CancellationToken.None);
+                await PktLineWriter.WriteStringAsync(body, "1111111111111111111111111111111111111111 refs/heads/main\n", CancellationToken.None);
+                await PktLineWriter.WriteFlushAsync(body, CancellationToken.None);
+                body.Seek(0, SeekOrigin.Begin);
+
+                var response = new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new StreamContent(body)
+                };
+                response.Content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/x-git-upload-pack-advertisement");
+                return response;
+            }
+        };
+
+        var httpClient = new HttpClient(handler);
+        using var connection = new GitHttpConnection(new GitRemoteClientOptions { HttpClient = httpClient });
+
+        var uri = new Uri("http://testuser:secretpass@localhost/repo.git");
+        var ad = await connection.DiscoverReferencesAsync(uri, "git-upload-pack");
+
+        Assert.NotNull(capturedRequest);
+        Assert.NotNull(capturedRequest.Headers.Authorization);
+        Assert.Equal("Basic", capturedRequest.Headers.Authorization.Scheme);
+        var expectedCredentials = Convert.ToBase64String(Encoding.UTF8.GetBytes("testuser:secretpass"));
+        Assert.Equal(expectedCredentials, capturedRequest.Headers.Authorization.Parameter);
+        // UserInfo must be stripped from RequestUri to avoid leakage in logs
+        Assert.DoesNotContain("testuser:secretpass", capturedRequest.RequestUri!.ToString());
+    }
+
+    [Fact]
+    public async Task DiscoverReferencesAsync_UrlWithExistingQueryString_PreservesQueryString()
+    {
+        HttpRequestMessage? capturedRequest = null;
+        var handler = new MockHttpMessageHandler
+        {
+            Handler = async req =>
+            {
+                capturedRequest = req;
+                var body = new MemoryStream();
+                await PktLineWriter.WriteStringAsync(body, "# service=git-upload-pack\n", CancellationToken.None);
+                await PktLineWriter.WriteFlushAsync(body, CancellationToken.None);
+                await PktLineWriter.WriteStringAsync(body, "1111111111111111111111111111111111111111 refs/heads/main\n", CancellationToken.None);
+                await PktLineWriter.WriteFlushAsync(body, CancellationToken.None);
+                body.Seek(0, SeekOrigin.Begin);
+
+                var response = new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new StreamContent(body)
+                };
+                response.Content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/x-git-upload-pack-advertisement");
+                return response;
+            }
+        };
+
+        var httpClient = new HttpClient(handler);
+        using var connection = new GitHttpConnection(new GitRemoteClientOptions { HttpClient = httpClient });
+
+        var uri = new Uri("http://localhost/repo.git?sasToken=xyz123");
+        await connection.DiscoverReferencesAsync(uri, "git-upload-pack");
+
+        Assert.NotNull(capturedRequest);
+        Assert.Contains("sasToken=xyz123", capturedRequest.RequestUri!.Query);
+        Assert.Contains("service=git-upload-pack", capturedRequest.RequestUri.Query);
+    }
+
     private sealed class StalledStream : Stream
     {
         public override bool CanRead => true;

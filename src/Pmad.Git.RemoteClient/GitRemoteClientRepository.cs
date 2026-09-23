@@ -210,6 +210,16 @@ public sealed class GitRemoteClientRepository : IGitRepositoryWithRemote, IDispo
 
                 // Checkout working tree matching commit
                 await workspace.ResetAsync(targetCommitHash.Value, GitResetMode.Hard, cancellationToken).ConfigureAwait(false);
+
+                // Create remote HEAD symbolic ref pointing to default branch
+                var remoteHeadPath = Path.Combine(workspace.GitDirectory, "refs", "remotes", remoteName, "HEAD");
+                var remoteHeadDir = Path.GetDirectoryName(remoteHeadPath);
+                if (!string.IsNullOrEmpty(remoteHeadDir) && !Directory.Exists(remoteHeadDir))
+                {
+                    Directory.CreateDirectory(remoteHeadDir);
+                }
+                await File.WriteAllTextAsync(remoteHeadPath, $"ref: refs/remotes/{remoteName}/{targetBranch}\n", cancellationToken).ConfigureAwait(false);
+                workspace.ReferenceStore.InvalidateCaches();
             }
 
             return repository;
@@ -344,6 +354,11 @@ public sealed class GitRemoteClientRepository : IGitRepositoryWithRemote, IDispo
             foreach (var trackingRef in existingTrackingRefs.Keys)
             {
                 var branchName = trackingRef[remotePrefix.Length..];
+                if (branchName.Equals("HEAD", StringComparison.Ordinal))
+                {
+                    continue;
+                }
+
                 var remoteBranchRef = $"refs/heads/{branchName}";
                 if (!advertisement.References.ContainsKey(remoteBranchRef))
                 {
@@ -370,18 +385,55 @@ public sealed class GitRemoteClientRepository : IGitRepositoryWithRemote, IDispo
             throw new InvalidOperationException("Cannot push in detached HEAD state without specifying a branch.");
         }
 
-        if (localBranch.StartsWith("refs/heads/", StringComparison.Ordinal))
+        string localRef;
+        string remoteRefName;
+        bool isTag = false;
+
+        if (localBranch.StartsWith("refs/tags/", StringComparison.Ordinal))
+        {
+            ValidateBranchName(localBranch);
+            isTag = true;
+            localRef = localBranch;
+            remoteRefName = localBranch;
+        }
+        else if (localBranch.StartsWith("refs/heads/", StringComparison.Ordinal))
         {
             localBranch = localBranch["refs/heads/".Length..];
+            ValidateBranchName(localBranch);
+            localRef = $"refs/heads/{localBranch}";
+            remoteRefName = localRef;
+        }
+        else
+        {
+            ValidateBranchName(localBranch);
+            var headCommit = await _repo.ReferenceStore.TryResolveReferenceAsync($"refs/heads/{localBranch}", cancellationToken).ConfigureAwait(false);
+            if (headCommit.HasValue)
+            {
+                localRef = $"refs/heads/{localBranch}";
+                remoteRefName = localRef;
+            }
+            else
+            {
+                var tagCommit = await _repo.ReferenceStore.TryResolveReferenceAsync($"refs/tags/{localBranch}", cancellationToken).ConfigureAwait(false);
+                if (tagCommit.HasValue)
+                {
+                    isTag = true;
+                    localRef = $"refs/tags/{localBranch}";
+                    remoteRefName = localRef;
+                }
+                else
+                {
+                    localRef = $"refs/heads/{localBranch}";
+                    remoteRefName = localRef;
+                }
+            }
         }
 
-        ValidateBranchName(localBranch);
-
-        var localRef = $"refs/heads/{localBranch}";
         var localCommit = await _repo.ReferenceStore.TryResolveReferenceAsync(localRef, cancellationToken).ConfigureAwait(false);
         if (!localCommit.HasValue)
         {
-            throw new ArgumentException($"Branch '{localBranch}' does not exist.", nameof(branch));
+            var refKind = isTag ? "Tag" : "Branch";
+            throw new ArgumentException($"{refKind} '{localBranch}' does not exist.", nameof(branch));
         }
 
         var remoteUrl = await ResolveRemoteUrlAsync(targetRemote, cancellationToken).ConfigureAwait(false);
@@ -392,7 +444,6 @@ public sealed class GitRemoteClientRepository : IGitRepositoryWithRemote, IDispo
             throw new GitRemoteException($"Object format mismatch: local repository is {_repo.ObjectFormat.ToFormatName()} but remote repository is {advertisement.ObjectFormat.ToFormatName()}.");
         }
 
-        var remoteRefName = $"refs/heads/{localBranch}";
         GitHash? remoteCommit = advertisement.References.TryGetValue(remoteRefName, out var existingHash)
             ? existingHash
             : null;
@@ -400,7 +451,7 @@ public sealed class GitRemoteClientRepository : IGitRepositoryWithRemote, IDispo
         // If remote ref already equals local commit, nothing to push
         if (remoteCommit.HasValue && remoteCommit.Value.Equals(localCommit.Value))
         {
-            if (setUpstream)
+            if (!isTag && setUpstream)
             {
                 var configPath = Path.Combine(_repo.GitDirectory, "config");
                 var config = await GitConfigFile.ReadFromFileAsync(configPath, cancellationToken).ConfigureAwait(false);
@@ -412,8 +463,15 @@ public sealed class GitRemoteClientRepository : IGitRepositoryWithRemote, IDispo
             return;
         }
 
-        // Validate fast-forward unless force is specified
-        if (remoteCommit.HasValue && !force)
+        // Validate fast-forward unless force is specified (or tag update requires force)
+        if (isTag)
+        {
+            if (remoteCommit.HasValue && !force)
+            {
+                throw new GitRemoteException($"Remote tag '{remoteRefName}' already exists (use force to overwrite).");
+            }
+        }
+        else if (remoteCommit.HasValue && !force)
         {
             var isFastForward = false;
             try
@@ -470,18 +528,21 @@ public sealed class GitRemoteClientRepository : IGitRepositoryWithRemote, IDispo
             }
         }
 
-        // Update local remote-tracking reference
-        var trackingRef = $"refs/remotes/{targetRemote}/{localBranch}";
-        await _repo.ReferenceStore.CreateReferenceAsync(trackingRef, localCommit.Value, overwrite: true, cancellationToken).ConfigureAwait(false);
-
-        // Configure upstream tracking if requested
-        if (setUpstream)
+        if (!isTag)
         {
-            var configPath = Path.Combine(_repo.GitDirectory, "config");
-            var config = await GitConfigFile.ReadFromFileAsync(configPath, cancellationToken).ConfigureAwait(false);
-            config.SetValue("branch", localBranch, "remote", targetRemote);
-            config.SetValue("branch", localBranch, "merge", remoteRefName);
-            await config.WriteToFileAsync(configPath, cancellationToken).ConfigureAwait(false);
+            // Update local remote-tracking reference
+            var trackingRef = $"refs/remotes/{targetRemote}/{localBranch}";
+            await _repo.ReferenceStore.CreateReferenceAsync(trackingRef, localCommit.Value, overwrite: true, cancellationToken).ConfigureAwait(false);
+
+            // Configure upstream tracking if requested
+            if (setUpstream)
+            {
+                var configPath = Path.Combine(_repo.GitDirectory, "config");
+                var config = await GitConfigFile.ReadFromFileAsync(configPath, cancellationToken).ConfigureAwait(false);
+                config.SetValue("branch", localBranch, "remote", targetRemote);
+                config.SetValue("branch", localBranch, "merge", remoteRefName);
+                await config.WriteToFileAsync(configPath, cancellationToken).ConfigureAwait(false);
+            }
         }
 
         _repo.InvalidateCaches(raiseChanged: true);

@@ -52,8 +52,7 @@ public sealed class GitHttpConnection : IDisposable
         ArgumentNullException.ThrowIfNull(remoteUrl);
         ArgumentException.ThrowIfNullOrWhiteSpace(service);
 
-        var baseUrl = remoteUrl.ToString().TrimEnd('/');
-        var requestUrl = $"{baseUrl}/info/refs?service={service}";
+        var requestUri = BuildServiceUri(remoteUrl, "info/refs", $"service={service}");
 
         using var timeoutCts = new CancellationTokenSource(_options.Timeout);
         using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeoutCts.Token);
@@ -61,8 +60,8 @@ public sealed class GitHttpConnection : IDisposable
 
         try
         {
-            using var request = new HttpRequestMessage(HttpMethod.Get, requestUrl);
-            ApplyRequestHeaders(request);
+            using var request = new HttpRequestMessage(HttpMethod.Get, requestUri);
+            ApplyRequestHeaders(request, remoteUrl);
 
             using var response = await SendAsync(request, HttpCompletionOption.ResponseHeadersRead, effectiveToken).ConfigureAwait(false);
             EnsureSuccessStatusCode(response);
@@ -73,7 +72,7 @@ public sealed class GitHttpConnection : IDisposable
         }
         catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
         {
-            throw new TimeoutException($"Git HTTP request to '{requestUrl}' timed out after {_options.Timeout}.");
+            throw new TimeoutException($"Git HTTP request to '{requestUri}' timed out after {_options.Timeout}.");
         }
     }
 
@@ -103,8 +102,7 @@ public sealed class GitHttpConnection : IDisposable
             throw new ArgumentException("At least one want hash must be specified.", nameof(wants));
         }
 
-        var baseUrl = remoteUrl.ToString().TrimEnd('/');
-        var requestUrl = $"{baseUrl}/git-upload-pack";
+        var requestUri = BuildServiceUri(remoteUrl, "git-upload-pack");
 
         var timeoutCts = new CancellationTokenSource(_options.Timeout);
         var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeoutCts.Token);
@@ -169,8 +167,8 @@ public sealed class GitHttpConnection : IDisposable
 
             requestBodyStream.Seek(0, SeekOrigin.Begin);
 
-            var request = new HttpRequestMessage(HttpMethod.Post, requestUrl);
-            ApplyRequestHeaders(request);
+            var request = new HttpRequestMessage(HttpMethod.Post, requestUri);
+            ApplyRequestHeaders(request, remoteUrl);
             request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/x-git-upload-pack-result"));
             request.Content = new StreamContent(requestBodyStream);
             request.Content.Headers.ContentType = new MediaTypeHeaderValue("application/x-git-upload-pack-request");
@@ -240,7 +238,7 @@ public sealed class GitHttpConnection : IDisposable
             linkedCts.Dispose();
             timeoutCts.Dispose();
             requestBodyStream.Dispose();
-            throw new TimeoutException($"Git HTTP upload-pack request to '{requestUrl}' timed out after {_options.Timeout}.");
+            throw new TimeoutException($"Git HTTP upload-pack request to '{requestUri}' timed out after {_options.Timeout}.");
         }
         catch
         {
@@ -282,8 +280,7 @@ public sealed class GitHttpConnection : IDisposable
             throw new GitRemoteException("Remote repository does not support 'report-status' capability required for push verification.");
         }
 
-        var baseUrl = remoteUrl.ToString().TrimEnd('/');
-        var requestUrl = $"{baseUrl}/git-receive-pack";
+        var requestUri = BuildServiceUri(remoteUrl, "git-receive-pack");
         var zeroHash = new string('0', hashLengthBytes * 2);
 
         using var timeoutCts = new CancellationTokenSource(_options.Timeout);
@@ -353,8 +350,8 @@ public sealed class GitHttpConnection : IDisposable
                 requestStream = commandsPayload;
             }
 
-            using var request = new HttpRequestMessage(HttpMethod.Post, requestUrl);
-            ApplyRequestHeaders(request);
+            using var request = new HttpRequestMessage(HttpMethod.Post, requestUri);
+            ApplyRequestHeaders(request, remoteUrl);
             request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/x-git-receive-pack-result"));
             request.Content = new StreamContent(requestStream);
             request.Content.Headers.ContentType = new MediaTypeHeaderValue("application/x-git-receive-pack-request");
@@ -368,17 +365,61 @@ public sealed class GitHttpConnection : IDisposable
         }
         catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
         {
-            throw new TimeoutException($"Git HTTP receive-pack request to '{requestUrl}' timed out after {_options.Timeout}.");
+            throw new TimeoutException($"Git HTTP receive-pack request to '{requestUri}' timed out after {_options.Timeout}.");
         }
     }
 
-    private void ApplyRequestHeaders(HttpRequestMessage request)
+    private void ApplyRequestHeaders(HttpRequestMessage request, Uri? remoteUrl = null)
     {
-        _options.Credentials?.Apply(request);
+        if (_options.Credentials != null)
+        {
+            _options.Credentials.Apply(request);
+        }
+        else if (remoteUrl != null && !string.IsNullOrEmpty(remoteUrl.UserInfo))
+        {
+            var userInfo = remoteUrl.UserInfo;
+            var colonIndex = userInfo.IndexOf(':');
+            if (colonIndex >= 0)
+            {
+                var username = Uri.UnescapeDataString(userInfo[..colonIndex]);
+                var password = Uri.UnescapeDataString(userInfo[(colonIndex + 1)..]);
+                GitHttpCredentials.Basic(username, password).Apply(request);
+            }
+            else
+            {
+                var username = Uri.UnescapeDataString(userInfo);
+                GitHttpCredentials.Basic(username, string.Empty).Apply(request);
+            }
+        }
+
         if (!string.IsNullOrEmpty(_options.Agent))
         {
             request.Headers.UserAgent.ParseAdd(_options.Agent);
         }
+    }
+
+    private static Uri BuildServiceUri(Uri remoteUrl, string suffix, string? queryString = null)
+    {
+        var builder = new UriBuilder(remoteUrl);
+        var path = builder.Path.TrimEnd('/');
+        builder.Path = $"{path}/{suffix.TrimStart('/')}";
+        builder.UserName = string.Empty;
+        builder.Password = string.Empty;
+
+        if (!string.IsNullOrEmpty(queryString))
+        {
+            if (string.IsNullOrEmpty(builder.Query))
+            {
+                builder.Query = queryString.TrimStart('?');
+            }
+            else
+            {
+                var existingQuery = builder.Query.TrimStart('?');
+                builder.Query = $"{existingQuery}&{queryString.TrimStart('?')}";
+            }
+        }
+
+        return builder.Uri;
     }
 
     private async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, HttpCompletionOption completionOption, CancellationToken cancellationToken)
@@ -409,6 +450,11 @@ public sealed class GitHttpConnection : IDisposable
         if (statusCode == HttpStatusCode.Forbidden)
         {
             throw new GitAccessDeniedException($"Access denied (403 Forbidden) for '{response.RequestMessage?.RequestUri}'.", statusCode);
+        }
+
+        if (statusCode == HttpStatusCode.NotFound)
+        {
+            throw new GitRepositoryNotFoundException($"Repository not found (404 Not Found) for '{response.RequestMessage?.RequestUri}'.", statusCode);
         }
 
         throw new GitRemoteException($"Git HTTP request to '{response.RequestMessage?.RequestUri}' failed with status {(int)statusCode} ({response.ReasonPhrase}).");
