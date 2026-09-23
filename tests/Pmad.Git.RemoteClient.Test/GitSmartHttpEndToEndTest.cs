@@ -577,6 +577,65 @@ public sealed class GitSmartHttpEndToEndTest : IDisposable
         Assert.Equal(trackingRef, headRef);
     }
 
+    [Fact]
+    public async Task CloneAsync_WhenRemoteBranchNotFound_CleansUpTargetDirectory()
+    {
+        CreateServerRepository("clone-failure-test", new[]
+        {
+            ("README.md", "# Test Readme")
+        });
+
+        await StartServerAsync();
+        var client = _testServer!.CreateClient();
+        var options = new GitRemoteClientOptions { HttpClient = client };
+        var cloneDir = Path.Combine(_clientWorkingDir, "failed-clone-repo");
+
+        var ex = await Assert.ThrowsAsync<GitRemoteException>(async () =>
+        {
+            await GitRemoteClientRepository.CloneAsync(
+                "http://localhost/clone-failure-test.git",
+                cloneDir,
+                options,
+                branch: "nonexistent-branch");
+        });
+
+        Assert.Contains("nonexistent-branch", ex.Message);
+        Assert.False(Directory.Exists(cloneDir));
+    }
+
+    [Fact]
+    public async Task FetchAsync_WhenRemoteHasNoBranchesAndPruneIsTrue_DeletesStaleTrackingRefs()
+    {
+        CreateServerRepository("prune-empty-remote-test", new[]
+        {
+            ("file.txt", "content")
+        });
+
+        await StartServerAsync();
+        var client = _testServer!.CreateClient();
+        var options = new GitRemoteClientOptions { HttpClient = client };
+        var cloneDir = Path.Combine(_clientWorkingDir, "prune-empty-clone");
+
+        using var repo = await GitRemoteClientRepository.CloneAsync(
+            "http://localhost/prune-empty-remote-test.git",
+            cloneDir,
+            options);
+
+        var trackingRefBefore = await repo.LocalRepository.ReferenceStore.TryResolveReferenceAsync("refs/remotes/origin/main");
+        Assert.NotNull(trackingRefBefore);
+
+        // Delete the server's branch so remote advertisement has 0 refs
+        var serverRepoPath = Path.Combine(_serverRepoRoot, "prune-empty-remote-test.git");
+        var serverRepo = GitRepository.Open(serverRepoPath);
+        await serverRepo.ReferenceStore.DeleteReferenceAsync("refs/heads/main");
+
+        // Fetch with prune: true
+        await repo.FetchAsync(prune: true);
+
+        var trackingRefAfter = await repo.LocalRepository.ReferenceStore.TryResolveReferenceAsync("refs/remotes/origin/main");
+        Assert.Null(trackingRefAfter);
+    }
+
     public void Dispose()
     {
         _host?.Dispose();

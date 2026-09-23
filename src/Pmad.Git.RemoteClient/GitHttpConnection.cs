@@ -292,7 +292,7 @@ public sealed class GitHttpConnection : IDisposable
 
         try
         {
-            var commandsPayload = new MemoryStream();
+            using var commandsPayload = new MemoryStream();
 
             // Write command pkt-lines
             for (var i = 0; i < commands.Count; i++)
@@ -586,6 +586,10 @@ public sealed class GitHttpConnection : IDisposable
             }
 
             var line = packet.Value.AsString().TrimEnd('\r', '\n');
+            if (line.StartsWith("ERR ", StringComparison.Ordinal))
+            {
+                throw new GitRemoteException($"Server returned error: {line[4..]}");
+            }
             if (line.StartsWith("ng ", StringComparison.Ordinal))
             {
                 errors.Add(line[3..]);

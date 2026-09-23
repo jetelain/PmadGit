@@ -164,57 +164,69 @@ public sealed class GitRemoteClientRepository : IGitRepositoryWithRemote, IDispo
         }
 
         var fullTargetPath = Path.GetFullPath(targetPath);
+        var targetExisted = Directory.Exists(fullTargetPath);
         var parentDir = Path.GetDirectoryName(fullTargetPath);
         if (!string.IsNullOrEmpty(parentDir) && !Directory.Exists(parentDir))
         {
             Directory.CreateDirectory(parentDir);
         }
 
-        var workspace = GitRepositoryWithIndexAndWorkspace.Init(fullTargetPath, initialBranch: targetBranch, objectFormat: advertisement.ObjectFormat);
-
-        // Configure remote in .git/config
-        var configPath = Path.Combine(workspace.GitDirectory, "config");
-        var config = await GitConfigFile.ReadFromFileAsync(configPath, cancellationToken).ConfigureAwait(false);
-        config.SetValue("remote", remoteName, "url", remoteUrl);
-        config.SetValue("remote", remoteName, "fetch", $"+refs/heads/*:refs/remotes/{remoteName}/*");
-        await config.WriteToFileAsync(configPath, cancellationToken).ConfigureAwait(false);
-
-        var repository = new GitRemoteClientRepository(workspace, remoteUrl, clientOptions);
-
-        // Fetch objects and update remote tracking refs
-        await repository.FetchAsync(remote: remoteName, branch: null, prune: false, cancellationToken: cancellationToken).ConfigureAwait(false);
-
-        // Check if target branch has a commit to check out
-        GitHash? targetCommitHash = null;
-        if (advertisement.References.TryGetValue($"refs/heads/{targetBranch}", out var branchHash))
+        try
         {
-            targetCommitHash = branchHash;
-        }
-        else if (!string.IsNullOrEmpty(branch))
-        {
-            throw new GitRemoteException($"Remote branch '{branch}' not found in upstream '{remoteName}'.");
-        }
-        else if (advertisement.HeadHash.HasValue)
-        {
-            targetCommitHash = advertisement.HeadHash;
-        }
+            var workspace = GitRepositoryWithIndexAndWorkspace.Init(fullTargetPath, initialBranch: targetBranch, objectFormat: advertisement.ObjectFormat);
 
-        if (targetCommitHash.HasValue)
-        {
-            // Point local branch to fetched commit
-            await workspace.ReferenceStore.CreateReferenceAsync($"refs/heads/{targetBranch}", targetCommitHash.Value, overwrite: true, cancellationToken).ConfigureAwait(false);
-
-            // Configure upstream tracking
-            config = await GitConfigFile.ReadFromFileAsync(configPath, cancellationToken).ConfigureAwait(false);
-            config.SetValue("branch", targetBranch, "remote", remoteName);
-            config.SetValue("branch", targetBranch, "merge", $"refs/heads/{targetBranch}");
+            // Configure remote in .git/config
+            var configPath = Path.Combine(workspace.GitDirectory, "config");
+            var config = await GitConfigFile.ReadFromFileAsync(configPath, cancellationToken).ConfigureAwait(false);
+            config.SetValue("remote", remoteName, "url", remoteUrl);
+            config.SetValue("remote", remoteName, "fetch", $"+refs/heads/*:refs/remotes/{remoteName}/*");
             await config.WriteToFileAsync(configPath, cancellationToken).ConfigureAwait(false);
 
-            // Checkout working tree matching commit
-            await workspace.ResetAsync(targetCommitHash.Value, GitResetMode.Hard, cancellationToken).ConfigureAwait(false);
-        }
+            var repository = new GitRemoteClientRepository(workspace, remoteUrl, clientOptions);
 
-        return repository;
+            // Fetch objects and update remote tracking refs
+            await repository.FetchAsync(remote: remoteName, branch: null, prune: false, cancellationToken: cancellationToken).ConfigureAwait(false);
+
+            // Check if target branch has a commit to check out
+            GitHash? targetCommitHash = null;
+            if (advertisement.References.TryGetValue($"refs/heads/{targetBranch}", out var branchHash))
+            {
+                targetCommitHash = branchHash;
+            }
+            else if (!string.IsNullOrEmpty(branch))
+            {
+                throw new GitRemoteException($"Remote branch '{branch}' not found in upstream '{remoteName}'.");
+            }
+            else if (advertisement.HeadHash.HasValue)
+            {
+                targetCommitHash = advertisement.HeadHash;
+            }
+
+            if (targetCommitHash.HasValue)
+            {
+                // Point local branch to fetched commit
+                await workspace.ReferenceStore.CreateReferenceAsync($"refs/heads/{targetBranch}", targetCommitHash.Value, overwrite: true, cancellationToken).ConfigureAwait(false);
+
+                // Configure upstream tracking
+                config = await GitConfigFile.ReadFromFileAsync(configPath, cancellationToken).ConfigureAwait(false);
+                config.SetValue("branch", targetBranch, "remote", remoteName);
+                config.SetValue("branch", targetBranch, "merge", $"refs/heads/{targetBranch}");
+                await config.WriteToFileAsync(configPath, cancellationToken).ConfigureAwait(false);
+
+                // Checkout working tree matching commit
+                await workspace.ResetAsync(targetCommitHash.Value, GitResetMode.Hard, cancellationToken).ConfigureAwait(false);
+            }
+
+            return repository;
+        }
+        catch
+        {
+            if (!targetExisted && Directory.Exists(fullTargetPath))
+            {
+                TryDeleteDirectory(fullTargetPath);
+            }
+            throw;
+        }
     }
 
     /// <inheritdoc />
@@ -258,65 +270,63 @@ public sealed class GitRemoteClientRepository : IGitRepositoryWithRemote, IDispo
             }
         }
 
-        if (remoteRefsToFetch.Count == 0)
+        if (remoteRefsToFetch.Count > 0)
         {
-            return;
-        }
+            // Determine which objects we need to download (wants)
+            var wants = new List<GitHash>();
+            foreach (var hash in remoteRefsToFetch.Values.Distinct())
+            {
+                var exists = false;
+                try
+                {
+                    await _repo.ObjectStore.ReadObjectAsync(hash, cancellationToken).ConfigureAwait(false);
+                    exists = true;
+                }
+                catch (FileNotFoundException)
+                {
+                    exists = false;
+                }
 
-        // Determine which objects we need to download (wants)
-        var wants = new List<GitHash>();
-        foreach (var hash in remoteRefsToFetch.Values.Distinct())
-        {
-            var exists = false;
-            try
-            {
-                await _repo.ObjectStore.ReadObjectAsync(hash, cancellationToken).ConfigureAwait(false);
-                exists = true;
-            }
-            catch (FileNotFoundException)
-            {
-                exists = false;
-            }
-
-            if (!exists)
-            {
-                wants.Add(hash);
-            }
-        }
-
-        if (wants.Count > 0)
-        {
-            // Collect local commits we already have (haves)
-            var haves = new List<GitHash>();
-            var localRefs = await _repo.ReferenceStore.GetReferencesAsync(cancellationToken).ConfigureAwait(false);
-            foreach (var hash in localRefs.Values.Distinct())
-            {
-                haves.Add(hash);
+                if (!exists)
+                {
+                    wants.Add(hash);
+                }
             }
 
-            await using var uploadPackResponse = await _connection.UploadPackAsync(
-                remoteUrl,
-                wants,
-                haves,
-                advertisement,
-                cancellationToken).ConfigureAwait(false);
-
-            var packReader = new GitPackReader();
-            await packReader.ReadAsync(_repo, uploadPackResponse.PackStream, cancellationToken).ConfigureAwait(false);
-        }
-
-        // Update local remote-tracking references (refs/remotes/{remote}/{branch})
-        foreach (var (refName, hash) in remoteRefsToFetch)
-        {
-            if (refName.StartsWith("refs/heads/", StringComparison.Ordinal))
+            if (wants.Count > 0)
             {
-                var branchName = refName["refs/heads/".Length..];
-                var trackingRef = $"refs/remotes/{targetRemote}/{branchName}";
-                await _repo.ReferenceStore.CreateReferenceAsync(trackingRef, hash, overwrite: true, cancellationToken).ConfigureAwait(false);
+                // Collect local commits we already have (haves)
+                var haves = new List<GitHash>();
+                var localRefs = await _repo.ReferenceStore.GetReferencesAsync(cancellationToken).ConfigureAwait(false);
+                foreach (var hash in localRefs.Values.Distinct())
+                {
+                    haves.Add(hash);
+                }
+
+                await using var uploadPackResponse = await _connection.UploadPackAsync(
+                    remoteUrl,
+                    wants,
+                    haves,
+                    advertisement,
+                    cancellationToken).ConfigureAwait(false);
+
+                var packReader = new GitPackReader();
+                await packReader.ReadAsync(_repo, uploadPackResponse.PackStream, cancellationToken).ConfigureAwait(false);
             }
-            else if (refName.StartsWith("refs/tags/", StringComparison.Ordinal))
+
+            // Update local remote-tracking references (refs/remotes/{remote}/{branch})
+            foreach (var (refName, hash) in remoteRefsToFetch)
             {
-                await _repo.ReferenceStore.CreateReferenceAsync(refName, hash, overwrite: true, cancellationToken).ConfigureAwait(false);
+                if (refName.StartsWith("refs/heads/", StringComparison.Ordinal))
+                {
+                    var branchName = refName["refs/heads/".Length..];
+                    var trackingRef = $"refs/remotes/{targetRemote}/{branchName}";
+                    await _repo.ReferenceStore.CreateReferenceAsync(trackingRef, hash, overwrite: true, cancellationToken).ConfigureAwait(false);
+                }
+                else if (refName.StartsWith("refs/tags/", StringComparison.Ordinal))
+                {
+                    await _repo.ReferenceStore.CreateReferenceAsync(refName, hash, overwrite: true, cancellationToken).ConfigureAwait(false);
+                }
             }
         }
 
@@ -626,6 +636,25 @@ public sealed class GitRemoteClientRepository : IGitRepositoryWithRemote, IDispo
         }
 
         throw new InvalidOperationException($"No remote URL configured for remote '{remoteName}'.");
+    }
+
+    private static void TryDeleteDirectory(string path)
+    {
+        try
+        {
+            if (Directory.Exists(path))
+            {
+                foreach (var file in Directory.EnumerateFiles(path, "*", SearchOption.AllDirectories))
+                {
+                    try { File.SetAttributes(file, FileAttributes.Normal); } catch { }
+                }
+                Directory.Delete(path, recursive: true);
+            }
+        }
+        catch
+        {
+            // Ignore cleanup failure during exception propagation
+        }
     }
 
     /// <inheritdoc />
