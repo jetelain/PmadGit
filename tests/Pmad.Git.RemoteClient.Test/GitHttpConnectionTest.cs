@@ -592,6 +592,105 @@ public sealed class GitHttpConnectionTest
         Assert.Contains("service=git-upload-pack", capturedRequest.RequestUri.Query);
     }
 
+    [Fact]
+    public async Task ReceivePackAsync_UnconfirmedRefUpdate_ThrowsGitRemoteException()
+    {
+        var handler = new MockHttpMessageHandler
+        {
+            Handler = async req =>
+            {
+                var body = new MemoryStream();
+                await PktLineWriter.WriteStringAsync(body, "unpack ok\n", CancellationToken.None);
+                // Deliberately omit "ok refs/heads/main\n" and send flush directly
+                await PktLineWriter.WriteFlushAsync(body, CancellationToken.None);
+
+                body.Seek(0, SeekOrigin.Begin);
+                var response = new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new StreamContent(body)
+                };
+                response.Content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/x-git-receive-pack-result");
+                return response;
+            }
+        };
+
+        var httpClient = new HttpClient(handler);
+        using var connection = new GitHttpConnection(new GitRemoteClientOptions { HttpClient = httpClient });
+
+        var ad = new GitRemoteAdvertisement(
+            new Dictionary<string, GitHash>(),
+            new HashSet<string> { "report-status" },
+            new Dictionary<string, string>(),
+            null,
+            null,
+            GitObjectFormat.Sha1,
+            "test");
+
+        var cmd = new GitRefUpdateCommand(null, new GitHash("1111111111111111111111111111111111111111"), "refs/heads/main");
+
+        var ex = await Assert.ThrowsAsync<GitRemoteException>(async () =>
+        {
+            await connection.ReceivePackAsync(
+                new Uri("http://localhost/test.git"),
+                new[] { cmd },
+                null,
+                ad,
+                20);
+        });
+
+        Assert.Equal("Remote did not confirm reference update for 'refs/heads/main'.", ex.Message);
+    }
+
+    [Fact]
+    public async Task UploadPackAsync_IntermediateAckReady_ConsumesUntilTerminalAck()
+    {
+        var handler = new MockHttpMessageHandler
+        {
+            Handler = async req =>
+            {
+                var body = new MemoryStream();
+                // Send intermediate ACK with "ready"
+                await PktLineWriter.WriteStringAsync(body, "ACK 1111111111111111111111111111111111111111 ready\n", CancellationToken.None);
+                // Send terminal ACK
+                await PktLineWriter.WriteStringAsync(body, "ACK 1111111111111111111111111111111111111111\n", CancellationToken.None);
+                // Send dummy pack data
+                var packData = new byte[] { 0x50, 0x41, 0x43, 0x4B, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x00 };
+                body.Write(packData);
+
+                body.Seek(0, SeekOrigin.Begin);
+                var response = new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new StreamContent(body)
+                };
+                response.Content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/x-git-upload-pack-result");
+                return response;
+            }
+        };
+
+        var httpClient = new HttpClient(handler);
+        using var connection = new GitHttpConnection(new GitRemoteClientOptions { HttpClient = httpClient });
+
+        var ad = new GitRemoteAdvertisement(
+            new Dictionary<string, GitHash> { ["refs/heads/main"] = new("1111111111111111111111111111111111111111") },
+            new HashSet<string>(), // no sideband to test raw stream
+            new Dictionary<string, string>(),
+            "refs/heads/main",
+            new("1111111111111111111111111111111111111111"),
+            GitObjectFormat.Sha1,
+            "test");
+
+        await using var uploadPackResponse = await connection.UploadPackAsync(
+            new Uri("http://localhost/test.git"),
+            new[] { new GitHash("1111111111111111111111111111111111111111") },
+            Array.Empty<GitHash>(),
+            ad);
+
+        var buffer = new byte[4];
+        var read = await uploadPackResponse.PackStream.ReadAsync(buffer, CancellationToken.None);
+        Assert.Equal(4, read);
+        Assert.Equal(new byte[] { 0x50, 0x41, 0x43, 0x4B }, buffer);
+    }
+
     private sealed class StalledStream : Stream
     {
         public override bool CanRead => true;

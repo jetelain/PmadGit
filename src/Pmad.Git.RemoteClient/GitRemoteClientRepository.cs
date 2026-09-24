@@ -326,6 +326,11 @@ public sealed class GitRemoteClientRepository : IGitRepositoryWithRemote, IDispo
             {
                 remoteRefsToFetch[fullRef] = hash;
             }
+            else if (!branch.StartsWith("refs/", StringComparison.Ordinal) &&
+                     advertisement.References.TryGetValue($"refs/tags/{branch}", out var tagHash))
+            {
+                remoteRefsToFetch[$"refs/tags/{branch}"] = tagHash;
+            }
             else
             {
                 throw new GitRemoteException($"Could not find remote ref '{branch}'.");

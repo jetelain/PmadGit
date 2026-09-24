@@ -202,9 +202,10 @@ public sealed class GitHttpConnection : IDisposable
                     }
                     if (line.StartsWith("ACK", StringComparison.Ordinal))
                     {
-                        // Intermediate ACKs end with "continue" or "common"
+                        // Intermediate ACKs end with "continue", "common", or "ready"
                         if (line.EndsWith(" continue", StringComparison.Ordinal) ||
-                            line.EndsWith(" common", StringComparison.Ordinal))
+                            line.EndsWith(" common", StringComparison.Ordinal) ||
+                            line.EndsWith(" ready", StringComparison.Ordinal))
                         {
                             continue;
                         }
@@ -361,7 +362,7 @@ public sealed class GitHttpConnection : IDisposable
             ValidateContentType(response, "application/x-git-receive-pack-result");
 
             await using var responseStream = await response.Content.ReadAsStreamAsync(effectiveToken).ConfigureAwait(false);
-            await ParseReceivePackStatusAsync(responseStream, effectiveToken).ConfigureAwait(false);
+            await ParseReceivePackStatusAsync(responseStream, commands, effectiveToken).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
         {
@@ -603,7 +604,7 @@ public sealed class GitHttpConnection : IDisposable
         return new GitRemoteAdvertisement(references, capabilities, symrefs, headSymrefTarget, headHash, objectFormat, agent);
     }
 
-    private static async Task ParseReceivePackStatusAsync(Stream stream, CancellationToken cancellationToken)
+    private static async Task ParseReceivePackStatusAsync(Stream stream, IReadOnlyList<GitRefUpdateCommand> commands, CancellationToken cancellationToken)
     {
         var reader = new PktLineReader(stream);
 
@@ -627,6 +628,7 @@ public sealed class GitHttpConnection : IDisposable
 
         // Subsequent packets: ok {ref} / ng {ref} {msg}
         var errors = new List<string>();
+        var confirmedRefs = new HashSet<string>(StringComparer.Ordinal);
         while (true)
         {
             var packet = await reader.ReadAsync(cancellationToken).ConfigureAwait(false);
@@ -644,6 +646,11 @@ public sealed class GitHttpConnection : IDisposable
             {
                 continue;
             }
+            if (line.StartsWith("ok ", StringComparison.Ordinal))
+            {
+                confirmedRefs.Add(line[3..].Trim());
+                continue;
+            }
             if (line.StartsWith("ng ", StringComparison.Ordinal))
             {
                 errors.Add(line[3..]);
@@ -653,6 +660,14 @@ public sealed class GitHttpConnection : IDisposable
         if (errors.Count > 0)
         {
             throw new GitRemoteException($"Remote reference updates failed: {string.Join("; ", errors)}");
+        }
+
+        foreach (var cmd in commands)
+        {
+            if (!confirmedRefs.Contains(cmd.RefName))
+            {
+                throw new GitRemoteException($"Remote did not confirm reference update for '{cmd.RefName}'.");
+            }
         }
     }
 
