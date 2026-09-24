@@ -326,6 +326,23 @@ public sealed class GitRepositorySynchronizerServiceTest : IDisposable
     }
 
     [Fact]
+    public async Task SetupSynchronizerAsync_WithCancelledToken_ThrowsOperationCanceledException()
+    {
+        // Arrange
+        var repositoryService = new GitRepositoryService();
+        var service = new GitRepositorySynchronizerService(repositoryService);
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+
+        // Act & Assert
+        await Assert.ThrowsAsync<OperationCanceledException>(() => service.SetupSynchronizerAsync(
+            Path.Combine(_testRoot, "cancelled-repo"),
+            (path, ct) => Task.CompletedTask,
+            repo => repo.CreateSynchronizer(new GitCliSyncOptions()),
+            cts.Token));
+    }
+
+    [Fact]
     public async Task SetupSynchronizerAsync_WithRemoteRepositoryFactory_ShouldCreateAndCacheSynchronizer()
     {
         // Arrange

@@ -71,6 +71,22 @@ public sealed class GitRepositorySynchronizerExtensionsTests : IDisposable
     }
 
     [Fact]
+    public async Task CreateSynchronizer_DoesNotMutateCallerClientOptions()
+    {
+        var callerClientOptions = new GitRemoteClientOptions();
+        var credentials = GitHttpCredentials.Basic("user", "pass");
+        var options = new GitRemoteClientSyncOptions("http://localhost/test.git", credentials)
+        {
+            ClientOptions = callerClientOptions
+        };
+
+        await using var synchronizer = _repository.CreateSynchronizer(options, start: false);
+
+        // The caller's instance must not be modified as a side-effect
+        Assert.Null(callerClientOptions.Credentials);
+    }
+
+    [Fact]
     public void GitRemoteClientSyncOptions_Constructors_And_Properties()
     {
         var defaultOptions = new GitRemoteClientSyncOptions();

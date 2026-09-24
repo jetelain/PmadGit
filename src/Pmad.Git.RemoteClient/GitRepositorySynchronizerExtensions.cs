@@ -24,11 +24,20 @@ public static class GitRepositorySynchronizerExtensions
         ArgumentNullException.ThrowIfNull(repository);
         ArgumentNullException.ThrowIfNull(options);
 
-        var clientOptions = options.ClientOptions ?? new GitRemoteClientOptions();
-        if (options.Credentials != null && clientOptions.Credentials == null)
-        {
-            clientOptions.Credentials = options.Credentials;
-        }
+        var clientOptions = options.ClientOptions != null
+            ? new GitRemoteClientOptions
+            {
+                Credentials = options.Credentials ?? options.ClientOptions.Credentials,
+                HttpClient = options.ClientOptions.HttpClient,
+                Agent = options.ClientOptions.Agent,
+                Timeout = options.ClientOptions.Timeout,
+                OnProgress = options.ClientOptions.OnProgress,
+                SanitizeRemoteUrlInConfig = options.ClientOptions.SanitizeRemoteUrlInConfig
+            }
+            : new GitRemoteClientOptions
+            {
+                Credentials = options.Credentials
+            };
 
         var remoteRepo = new GitRemoteClientRepository(repository, options.Url, clientOptions);
         var synchronizer = new GitRepositorySynchronizer(remoteRepo, repository, options);

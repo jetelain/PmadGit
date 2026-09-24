@@ -544,7 +544,14 @@ internal sealed class GitReferenceStore : IGitReferenceStore
         var refsRoot = Path.Combine(_gitDirectory, "refs");
         if (Directory.Exists(refsRoot))
         {
-            foreach (var file in Directory.EnumerateFiles(refsRoot, "*", SearchOption.AllDirectories))
+            var options = new EnumerationOptions
+            {
+                RecurseSubdirectories = true,
+                IgnoreInaccessible = true,
+                ReturnSpecialDirectories = false
+            };
+
+            foreach (var file in Directory.EnumerateFiles(refsRoot, "*", options))
             {
                 if (file.EndsWith(".tmp", StringComparison.OrdinalIgnoreCase) ||
                     file.EndsWith(".lock", StringComparison.OrdinalIgnoreCase))
@@ -561,7 +568,7 @@ internal sealed class GitReferenceStore : IGitReferenceStore
                         refs[relative] = hash;
                     }
                 }
-                catch (IOException)
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
                 {
                     // File may be concurrently written or deleted; ignore transient lock/missing file
                 }

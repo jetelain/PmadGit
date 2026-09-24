@@ -97,6 +97,8 @@ internal sealed class GitRepositorySynchronizerService : IGitRepositorySynchroni
         Func<IGitRepository, GitRepositorySynchronizer> synchronizerFactory,
         CancellationToken cancellationToken = default)
     {
+        cancellationToken.ThrowIfCancellationRequested();
+
         if (cloneAsync is null)
         {
             throw new ArgumentNullException(nameof(cloneAsync));
