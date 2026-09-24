@@ -3,6 +3,8 @@ using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.Options;
 using Pmad.Git.HttpServer;
 using Pmad.Git.LocalRepositories;
+using Pmad.Git.Protocol;
+using Pmad.Git.Protocol.Pack;
 using System.Diagnostics;
 using System.Text;
 
@@ -795,6 +797,283 @@ public sealed class GitSmartHttpServiceTest : IDisposable
 
     #endregion
 
+    #region Upload-Pack Incremental Fetch (Have Negotiation) Tests
+
+    [Fact]
+    public async Task HandleUploadPackAsync_WithHaves_NegotiatesAndSendsOnlyIncrementalObjects()
+    {
+        // Arrange
+        // Add two commits to the test repository: commit 1 and commit 2
+        var tempWorkDir = Path.Combine(Path.GetTempPath(), "temp-work-negotiation", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempWorkDir);
+        string commit1, commit2;
+        try
+        {
+            RunGitInDirectory(tempWorkDir, "init --quiet --initial-branch=main");
+            RunGitInDirectory(tempWorkDir, "config user.name \"Test\"");
+            RunGitInDirectory(tempWorkDir, "config user.email test@test.com");
+
+            File.WriteAllText(Path.Combine(tempWorkDir, "file1.txt"), "content 1");
+            RunGitInDirectory(tempWorkDir, "add file1.txt");
+            RunGitInDirectory(tempWorkDir, "commit -m \"Commit 1\" --quiet");
+            commit1 = TestHelper.RunGit(tempWorkDir, "rev-parse HEAD").Trim();
+
+            File.WriteAllText(Path.Combine(tempWorkDir, "file2.txt"), "content 2");
+            RunGitInDirectory(tempWorkDir, "add file2.txt");
+            RunGitInDirectory(tempWorkDir, "commit -m \"Commit 2\" --quiet");
+            commit2 = TestHelper.RunGit(tempWorkDir, "rev-parse HEAD").Trim();
+
+            RunGitInDirectory(tempWorkDir, $"remote add origin \"{_testRepoPath}\"");
+            RunGitInDirectory(tempWorkDir, "push -u origin main --quiet");
+        }
+        finally
+        {
+            TestHelper.TryDeleteDirectory(tempWorkDir);
+        }
+
+        var service = CreateService();
+        var context = CreateHttpContext("/test-repo.git/git-upload-pack", repository: "test-repo");
+
+        // Client wants commit 2, has commit 1, with multi_ack_detailed
+        var requestStream = new MemoryStream();
+        await PktLineWriter.WriteStringAsync(requestStream, $"want {commit2} multi_ack_detailed\n", CancellationToken.None);
+        await PktLineWriter.WriteFlushAsync(requestStream, CancellationToken.None);
+        await PktLineWriter.WriteStringAsync(requestStream, $"have {commit1}\n", CancellationToken.None);
+        await PktLineWriter.WriteStringAsync(requestStream, "done\n", CancellationToken.None);
+        requestStream.Position = 0;
+        context.Request.Body = requestStream;
+
+        // Act
+        await service.HandleUploadPackAsync(context);
+
+        // Assert
+        Assert.Equal(StatusCodes.Status200OK, context.Response.StatusCode);
+        context.Response.Body.Position = 0;
+
+        // Verify response contains ACK for commit1, not NAK
+        var reader = new PktLineReader(context.Response.Body);
+        var ackCommonPacket = await reader.ReadAsync(CancellationToken.None);
+        Assert.NotNull(ackCommonPacket);
+        Assert.Equal($"ACK {commit1} common\n", ackCommonPacket.Value.AsString());
+
+        var terminalAckPacket = await reader.ReadAsync(CancellationToken.None);
+        Assert.NotNull(terminalAckPacket);
+        Assert.Equal($"ACK {commit1}\n", terminalAckPacket.Value.AsString());
+
+        // Verify the packfile immediately follows the ACKs and has count = 3 (commit2, tree2, file2 blob)
+        // PACK header: "PACK" (4 bytes) + version (4 bytes, uint32 BE) + object count (4 bytes, uint32 BE)
+        var packHeader = new byte[12];
+        var bytesRead = await context.Response.Body.ReadAsync(packHeader, 0, 12);
+        Assert.Equal(12, bytesRead);
+        Assert.Equal("PACK", Encoding.ASCII.GetString(packHeader, 0, 4));
+        var objectCount = (packHeader[8] << 24) | (packHeader[9] << 16) | (packHeader[10] << 8) | packHeader[11];
+        Assert.Equal(3, objectCount); // Only 3 incremental objects, NOT full history (which would be 6)
+    }
+
+    #endregion
+
+    #region Path Traversal and Device Name Tests
+
+    [Fact]
+    public void ResolveRepositoryPath_WithSiblingDirectory_ThrowsDirectoryNotFoundException()
+    {
+        // Sibling directory named e.g. <_serverRepoRoot>-secret
+        var siblingDir = _serverRepoRoot.TrimEnd(Path.DirectorySeparatorChar) + "-secret";
+        Directory.CreateDirectory(siblingDir);
+        try
+        {
+            var service = CreateService();
+            // Attempt to resolve sibling directory
+            var siblingName = "../" + Path.GetFileName(siblingDir);
+            Assert.Throws<DirectoryNotFoundException>(() => service.ResolveRepositoryPath(siblingName));
+        }
+        finally
+        {
+            TestHelper.TryDeleteDirectory(siblingDir);
+        }
+    }
+
+    [Fact]
+    public async Task HandleInfoRefsAsync_WithPathTraversalSibling_Returns400()
+    {
+        var service = CreateService();
+        var siblingRepo = _serverRepoRoot.TrimEnd(Path.DirectorySeparatorChar) + "-secret";
+        var context = CreateHttpContext("/" + Path.GetFileName(siblingRepo) + ".git/info/refs?service=git-upload-pack", repository: "../" + Path.GetFileName(siblingRepo));
+
+        await service.HandleInfoRefsAsync(context);
+
+        Assert.Equal(StatusCodes.Status400BadRequest, context.Response.StatusCode);
+    }
+
+    [Theory]
+    [InlineData("CON")]
+    [InlineData("AUX")]
+    [InlineData("NUL")]
+    [InlineData("PRN")]
+    [InlineData("COM1")]
+    [InlineData("LPT1")]
+    public async Task HandleInfoRefsAsync_WithWindowsDeviceName_Returns400(string deviceName)
+    {
+        var service = CreateService();
+        var context = CreateHttpContext($"/{deviceName}.git/info/refs?service=git-upload-pack", repository: deviceName);
+
+        await service.HandleInfoRefsAsync(context);
+
+        Assert.Equal(StatusCodes.Status400BadRequest, context.Response.StatusCode);
+    }
+
+    #endregion
+
+    #region Content-Type Enforcement Tests
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("text/plain")]
+    [InlineData("application/json")]
+    [InlineData("application/x-git-receive-pack-request")] // Wrong service
+    public async Task HandleUploadPackAsync_WithInvalidContentType_Returns415(string? contentType)
+    {
+        var service = CreateService();
+        var context = CreateHttpContext("/test-repo.git/git-upload-pack", repository: "test-repo", contentType: contentType);
+
+        await service.HandleUploadPackAsync(context);
+
+        Assert.Equal(StatusCodes.Status415UnsupportedMediaType, context.Response.StatusCode);
+    }
+
+    [Fact]
+    public async Task HandleUploadPackAsync_WithContentTypeParameters_SucceedsValidation()
+    {
+        var service = CreateService();
+        var context = CreateHttpContext("/test-repo.git/git-upload-pack", repository: "test-repo", contentType: "application/x-git-upload-pack-request; charset=utf-8");
+        context.Request.Body = new MemoryStream(); // Empty body will fail at wants parsing (400), showing Content-Type passed
+
+        await service.HandleUploadPackAsync(context);
+
+        // Passed content-type check, failed at wants check (400) rather than 415
+        Assert.Equal(StatusCodes.Status400BadRequest, context.Response.StatusCode);
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("text/plain")]
+    [InlineData("application/json")]
+    [InlineData("application/x-git-upload-pack-request")] // Wrong service
+    public async Task HandleReceivePackAsync_WithInvalidContentType_Returns415(string? contentType)
+    {
+        var service = CreateService();
+        var context = CreateHttpContext("/test-repo.git/git-receive-pack", repository: "test-repo", contentType: contentType);
+
+        await service.HandleReceivePackAsync(context);
+
+        Assert.Equal(StatusCodes.Status415UnsupportedMediaType, context.Response.StatusCode);
+    }
+
+    [Fact]
+    public async Task HandleReceivePackAsync_WithContentTypeParameters_SucceedsValidation()
+    {
+        var service = CreateService();
+        var context = CreateHttpContext("/test-repo.git/git-receive-pack", repository: "test-repo", contentType: "application/x-git-receive-pack-request; charset=utf-8");
+        context.Request.Body = new MemoryStream(new byte[] { 0x30, 0x30, 0x30, 0x30 }); // Flush packet
+
+        await service.HandleReceivePackAsync(context);
+
+        Assert.Equal(StatusCodes.Status200OK, context.Response.StatusCode);
+    }
+
+    #endregion
+
+    #region Report-Status and Cancellation Tests
+
+    [Fact]
+    public async Task HandleReceivePackAsync_WithoutReportStatus_DoesNotWriteStatusReport()
+    {
+        var service = CreateService();
+        var context = CreateHttpContext("/test-repo.git/git-receive-pack", repository: "test-repo");
+        // Flush packet without report-status capability
+        context.Request.Body = new MemoryStream(new byte[] { 0x30, 0x30, 0x30, 0x30 });
+
+        await service.HandleReceivePackAsync(context);
+
+        Assert.Equal(StatusCodes.Status200OK, context.Response.StatusCode);
+        Assert.Equal(0, context.Response.Body.Length); // Nothing written when report-status is not negotiated
+    }
+
+    [Fact]
+    public async Task HandleReceivePackAsync_WhenClientCancels_PropagatesOperationCanceledException()
+    {
+        var service = CreateService();
+        var context = CreateHttpContext("/test-repo.git/git-receive-pack", repository: "test-repo");
+
+        using var cts = new CancellationTokenSource();
+        cts.Cancel(); // Pre-cancelled token
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => service.HandleReceivePackAsync(context, cts.Token));
+        Assert.Equal(0, context.Response.Body.Length);
+    }
+
+    [Fact]
+    public async Task HandleReceivePackAsync_WithOnReceivePackCompleted_ReceivesDetachedContext()
+    {
+        HttpContext? capturedContext = null;
+        string? capturedRepo = null;
+        IReadOnlyList<string>? capturedRefs = null;
+        var tcs = new TaskCompletionSource<bool>();
+
+        var options = Options.Create(new GitSmartHttpOptions
+        {
+            RepositoryRoot = _serverRepoRoot,
+            EnableReceivePack = true,
+            AuthorizeAsync = (_, _, _, _) => ValueTask.FromResult(true),
+            OnReceivePackCompleted = (ctx, repo, refs) =>
+            {
+                capturedContext = ctx;
+                capturedRepo = repo;
+                capturedRefs = refs;
+                tcs.SetResult(true);
+                return ValueTask.CompletedTask;
+            }
+        });
+        var repositoryService = new GitRepositoryService();
+        var service = new GitSmartHttpService(options, repositoryService);
+
+        var context = CreateHttpContext("/test-repo.git/git-receive-pack", repository: "test-repo");
+        context.Request.Headers["X-Custom-Test"] = "CustomValue";
+
+        // Create a commit and reference first, then delete it via receive-pack (requires no pack data)
+        var repo = repositoryService.GetRepositoryByPath(_testRepoPath);
+        var zeroHash = new string('0', repo.HashLengthBytes * 2);
+        var commitData = Encoding.UTF8.GetBytes("tree 4b825dc642cb6eb9a060e54bf8d69288fbee4904\nauthor Test <t@t.com> 0 +0000\ncommitter Test <t@t.com> 0 +0000\n\nInitial\n");
+        var commitHash = await repo.ObjectStore.WriteObjectAsync(GitObjectType.Commit, commitData, CancellationToken.None);
+        await repo.ReferenceStore.CreateReferenceAsync("refs/heads/main", commitHash, overwrite: true, CancellationToken.None);
+
+        var stream = new MemoryStream();
+        await PktLineWriter.WriteStringAsync(stream, $"{commitHash.Value} {zeroHash} refs/heads/main\0report-status delete-refs\n", CancellationToken.None);
+        await PktLineWriter.WriteFlushAsync(stream, CancellationToken.None);
+        stream.Position = 0;
+        context.Request.Body = stream;
+
+        await service.HandleReceivePackAsync(context);
+
+        // Simulate context recycling immediately after HandleReceivePackAsync completes
+        context.Request.Headers.Clear();
+        context.User = null!;
+
+        await tcs.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.NotNull(capturedContext);
+        Assert.NotSame(context, capturedContext);
+        Assert.Equal("CustomValue", capturedContext.Request.Headers["X-Custom-Test"]);
+        Assert.Equal("test-repo", capturedRepo);
+        Assert.NotNull(capturedRefs);
+        Assert.Single(capturedRefs);
+        Assert.Equal("refs/heads/main", capturedRefs[0]);
+    }
+
+    #endregion
+
     #region Helper Methods
 
     private GitSmartHttpService CreateService()
@@ -810,16 +1089,34 @@ public sealed class GitSmartHttpServiceTest : IDisposable
         return new GitSmartHttpService(options, repositoryService);
     }
 
-    private HttpContext CreateHttpContext(string path, string? repository = null)
+    private HttpContext CreateHttpContext(string path, string? repository = null, string? contentType = "__DEFAULT__")
     {
         var context = new DefaultHttpContext();
         context.Request.Path = path;
-        context.Request.Method = "GET";
+        var isUploadPack = path.Contains("upload-pack");
+        var isReceivePack = path.Contains("receive-pack");
+        context.Request.Method = isUploadPack || isReceivePack ? "POST" : "GET";
         context.Request.QueryString = new QueryString(path.Contains('?') ? path.Substring(path.IndexOf('?')) : "");
 
         if (repository != null)
         {
             context.Request.RouteValues["repository"] = repository;
+        }
+
+        if (contentType == "__DEFAULT__")
+        {
+            if (isUploadPack)
+            {
+                context.Request.ContentType = "application/x-git-upload-pack-request";
+            }
+            else if (isReceivePack)
+            {
+                context.Request.ContentType = "application/x-git-receive-pack-request";
+            }
+        }
+        else
+        {
+            context.Request.ContentType = contentType;
         }
 
         context.Response.Body = new MemoryStream();

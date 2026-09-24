@@ -142,6 +142,102 @@ public sealed class GitSmartHttpEndToEndTest : IDisposable
     }
 
     [Fact]
+    public async Task GitFetch_IncrementalFetch_OnlyTransfersIncrementalObjects()
+    {
+        // Arrange: Create initial repository with commit 1
+        var sourceRepo = CreateSourceRepository("incremental-fetch-test", new[] { ("initial.txt", "initial content") });
+        await StartServerAsync();
+
+        var cloneDir = Path.Combine(_clientWorkingDir, "incremental-fetch-clone");
+        RunGit(_clientWorkingDir, $"clone {_serverUrl}/incremental-fetch-test.git {cloneDir}");
+
+        // Add commit 2 to the bare repository
+        var tempWorkDir = Path.Combine(Path.GetTempPath(), "temp-incremental-fetch", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempWorkDir);
+        try
+        {
+            var bareRepoPath = Path.Combine(_serverRepoRoot, "incremental-fetch-test.git");
+            RunGit(tempWorkDir, $"clone \"{bareRepoPath}\" .");
+            RunGit(tempWorkDir, "config user.name \"Test\"");
+            RunGit(tempWorkDir, "config user.email test@test.com");
+
+            File.WriteAllText(Path.Combine(tempWorkDir, "new-file.txt"), "new content");
+            RunGit(tempWorkDir, "add new-file.txt");
+            RunGit(tempWorkDir, "commit -m \"Second commit\" --quiet");
+            RunGit(tempWorkDir, "push origin main --quiet");
+        }
+        finally
+        {
+            TestHelper.TryDeleteDirectory(tempWorkDir);
+        }
+
+        // Before fetch, get pack files in clone
+        var packDir = Path.Combine(cloneDir, ".git", "objects", "pack");
+        var existingPacks = Directory.Exists(packDir) ? Directory.GetFiles(packDir, "*.pack") : Array.Empty<string>();
+
+        // Act: Fetch
+        RunGit(cloneDir, "fetch origin");
+
+        // Assert: New commit is fetched
+        var logOutput = RunGit(cloneDir, "log origin/main --oneline");
+        Assert.Contains("Second commit", logOutput);
+
+        // Find newly downloaded packfile
+        var currentPacks = Directory.GetFiles(packDir, "*.pack");
+        var newPacks = currentPacks.Except(existingPacks).ToList();
+        if (newPacks.Count > 0)
+        {
+            // Verify pack object count using git verify-pack:
+            // An incremental pack for just 1 new file should only contain 3 objects (commit, tree, blob),
+            // not the initial commit/tree/blob.
+            var verifyOutput = RunGit(cloneDir, $"verify-pack -v \"{newPacks[0]}\"");
+            var objectLines = verifyOutput.Split('\n', StringSplitOptions.RemoveEmptyEntries)
+                .Where(line => line.Contains("commit") || line.Contains("tree") || line.Contains("blob"))
+                .ToList();
+            Assert.Equal(3, objectLines.Count);
+        }
+    }
+
+    [Fact]
+    public async Task GitClone_HierarchicalRepository_WithAndWithoutGitSuffix()
+    {
+        // Arrange: Create a hierarchical repository under org/team/project.git
+        var repoDir = Path.Combine(_serverRepoRoot, "org", "team", "project.git");
+        Directory.CreateDirectory(repoDir);
+        RunGit(repoDir, "init --bare --quiet --initial-branch=main");
+
+        var tempWorkDir = Path.Combine(Path.GetTempPath(), "temp-hierarchical-work", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempWorkDir);
+        try
+        {
+            RunGit(tempWorkDir, "init --quiet --initial-branch=main");
+            RunGit(tempWorkDir, "config user.name \"Test\"");
+            RunGit(tempWorkDir, "config user.email test@test.com");
+            File.WriteAllText(Path.Combine(tempWorkDir, "nested.txt"), "hierarchical content");
+            RunGit(tempWorkDir, "add nested.txt");
+            RunGit(tempWorkDir, "commit -m \"Initial commit\" --quiet");
+            RunGit(tempWorkDir, $"remote add origin \"{repoDir}\"");
+            RunGit(tempWorkDir, "push -u origin main --quiet");
+        }
+        finally
+        {
+            TestHelper.TryDeleteDirectory(tempWorkDir);
+        }
+
+        await StartServerAsync();
+
+        // Act 1: Clone with .git suffix
+        var cloneDirWithGit = Path.Combine(_clientWorkingDir, "hierarchical-with-git");
+        RunGit(_clientWorkingDir, $"clone {_serverUrl}/org/team/project.git {cloneDirWithGit}");
+        Assert.True(File.Exists(Path.Combine(cloneDirWithGit, "nested.txt")));
+
+        // Act 2: Clone without .git suffix
+        var cloneDirWithoutGit = Path.Combine(_clientWorkingDir, "hierarchical-without-git");
+        RunGit(_clientWorkingDir, $"clone {_serverUrl}/org/team/project {cloneDirWithoutGit}");
+        Assert.True(File.Exists(Path.Combine(cloneDirWithoutGit, "nested.txt")));
+    }
+
+    [Fact]
     public async Task GitPull_AfterNewCommits_ShouldMergeNewCommits()
     {
         // Arrange: Create initial repository
@@ -768,7 +864,7 @@ public sealed class GitSmartHttpEndToEndTest : IDisposable
         var app = builder.Build();
 
         // Map Git Smart HTTP endpoints
-        app.MapGitSmartHttp("/" + routePrefix + "/{repository}.git");
+        app.MapGitSmartHttp("/" + routePrefix + "/{*repository}.git");
 
         _host = app;
         await _host.StartAsync();

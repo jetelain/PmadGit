@@ -32,6 +32,7 @@ public sealed class GitSmartHttpEndpointRouteBuilderExtensionsTest
         CleanupDirectory(repositoryRoot);
     }
 
+
     [Fact]
     public void MapGitSmartHttp_WithoutDI_ShouldThrowInvalidOperationException()
     {

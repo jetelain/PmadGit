@@ -43,7 +43,7 @@ internal sealed class GitSmartHttpService
             throw new ArgumentException("Repository root must be provided", nameof(options));
         }
 
-        _rootFullPath = Path.GetFullPath(_options.RepositoryRoot);
+        _rootFullPath = Path.TrimEndingDirectorySeparator(Path.GetFullPath(_options.RepositoryRoot)) + Path.DirectorySeparatorChar;
     }
 
     /// <summary>
@@ -113,6 +113,12 @@ internal sealed class GitSmartHttpService
             return;
         }
 
+        if (!ValidateContentType(context.Request, "application/x-git-upload-pack-request"))
+        {
+            await WritePlainErrorAsync(context, StatusCodes.Status415UnsupportedMediaType, "Invalid Content-Type", cancellationToken).ConfigureAwait(false);
+            return;
+        }
+
         var repositoryContext = await TryOpenRepositoryAsync(context, GitOperation.Read, cancellationToken).ConfigureAwait(false);
         if (repositoryContext is null)
         {
@@ -120,21 +126,57 @@ internal sealed class GitSmartHttpService
         }
 
         var (repository, _) = repositoryContext.Value;
-        var wants = await ParseUploadPackRequestAsync(context.Request.Body, repository.HashLengthBytes, cancellationToken).ConfigureAwait(false);
-        if (wants.Count == 0)
+        var request = await ParseUploadPackRequestAsync(context.Request.Body, repository.HashLengthBytes, cancellationToken).ConfigureAwait(false);
+        if (request.Wants.Count == 0)
         {
             await WritePlainErrorAsync(context, StatusCodes.Status400BadRequest, "No want commands provided", cancellationToken).ConfigureAwait(false);
             return;
         }
 
+        var commonHaves = new List<GitHash>();
+        foreach (var have in request.Haves)
+        {
+            if (await ObjectExistsAsync(repository, have, cancellationToken).ConfigureAwait(false))
+            {
+                commonHaves.Add(have);
+            }
+        }
+
         var walker = new GitObjectWalker(repository);
-        var objectClosure = await walker.CollectAsync(wants, cancellationToken).ConfigureAwait(false);
+        var objectClosure = await walker.CollectAsync(request.Wants, request.Haves, cancellationToken).ConfigureAwait(false);
 
         context.Response.StatusCode = StatusCodes.Status200OK;
         context.Response.Headers.CacheControl = "no-cache";
         context.Response.ContentType = "application/x-git-upload-pack-result";
 
-        await PktLineWriter.WriteStringAsync(context.Response.Body, "NAK\n", cancellationToken).ConfigureAwait(false);
+        if (commonHaves.Count > 0)
+        {
+            if (request.Capabilities.Contains("multi_ack_detailed"))
+            {
+                foreach (var have in commonHaves)
+                {
+                    await PktLineWriter.WriteStringAsync(context.Response.Body, $"ACK {have.Value} common\n", cancellationToken).ConfigureAwait(false);
+                }
+                await PktLineWriter.WriteStringAsync(context.Response.Body, $"ACK {commonHaves[^1].Value}\n", cancellationToken).ConfigureAwait(false);
+            }
+            else if (request.Capabilities.Contains("multi_ack"))
+            {
+                foreach (var have in commonHaves)
+                {
+                    await PktLineWriter.WriteStringAsync(context.Response.Body, $"ACK {have.Value} continue\n", cancellationToken).ConfigureAwait(false);
+                }
+                await PktLineWriter.WriteStringAsync(context.Response.Body, $"ACK {commonHaves[^1].Value}\n", cancellationToken).ConfigureAwait(false);
+            }
+            else
+            {
+                await PktLineWriter.WriteStringAsync(context.Response.Body, $"ACK {commonHaves[0].Value}\n", cancellationToken).ConfigureAwait(false);
+            }
+        }
+        else
+        {
+            await PktLineWriter.WriteStringAsync(context.Response.Body, "NAK\n", cancellationToken).ConfigureAwait(false);
+        }
+
         await _packBuilder.WriteAsync(repository, objectClosure, context.Response.Body, cancellationToken).ConfigureAwait(false);
     }
 
@@ -150,6 +192,12 @@ internal sealed class GitSmartHttpService
         if (!_options.EnableReceivePack)
         {
             await WritePlainErrorAsync(context, StatusCodes.Status403Forbidden, "Receive-pack disabled", cancellationToken).ConfigureAwait(false);
+            return;
+        }
+
+        if (!ValidateContentType(context.Request, "application/x-git-receive-pack-request"))
+        {
+            await WritePlainErrorAsync(context, StatusCodes.Status415UnsupportedMediaType, "Invalid Content-Type", cancellationToken).ConfigureAwait(false);
             return;
         }
 
@@ -174,6 +222,10 @@ internal sealed class GitSmartHttpService
                 // Note: GitPackReader.ReadAsync already refreshes object caches internally
                 // (without raising Changed). The Changed notification itself is raised once,
                 // below, only after all reference updates have been applied.
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
             }
             catch (Exception ex)
             {
@@ -224,12 +276,26 @@ internal sealed class GitSmartHttpService
 
             if (successfulUpdates.Count > 0)
             {
+                var detachedContext = new DefaultHttpContext();
+                detachedContext.User = context.User;
+                foreach (var header in context.Request.Headers)
+                {
+                    detachedContext.Request.Headers[header.Key] = header.Value;
+                }
+                detachedContext.RequestServices = context.RequestServices;
+                detachedContext.TraceIdentifier = context.TraceIdentifier;
+                detachedContext.Request.Path = context.Request.Path;
+                detachedContext.Request.Method = context.Request.Method;
+                detachedContext.Request.Scheme = context.Request.Scheme;
+                detachedContext.Request.Host = context.Request.Host;
+                var callback = _options.OnReceivePackCompleted;
+
                 // Execute callback in background without awaiting (fire and forget)
                 _ = Task.Run(async () =>
                 {
                     try
                     {
-                        await _options.OnReceivePackCompleted(context, repositoryName, successfulUpdates).ConfigureAwait(false);
+                        await callback(detachedContext, repositoryName, successfulUpdates).ConfigureAwait(false);
                     }
                     catch
                     {
@@ -289,6 +355,10 @@ internal sealed class GitSmartHttpService
             var repository = _repositoryService.GetRepositoryByPath(repositoryPath);
             return (repository, repositoryName);
         }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
         catch
         {
             await WritePlainErrorAsync(context, StatusCodes.Status404NotFound, "Repository not found", cancellationToken).ConfigureAwait(false);
@@ -302,18 +372,24 @@ internal sealed class GitSmartHttpService
     /// <param name="repositoryName">The normalized repository name.</param>
     /// <returns>The full file system path to the repository.</returns>
     /// <exception cref="DirectoryNotFoundException">Thrown when the repository cannot be found.</exception>
-    private string ResolveRepositoryPath(string repositoryName)
+    internal string ResolveRepositoryPath(string repositoryName)
     {
         var candidates = new[]
         {
-            Path.Combine(_options.RepositoryRoot, repositoryName),
-            Path.Combine(_options.RepositoryRoot, repositoryName + ".git")
+            Path.Combine(_rootFullPath, repositoryName),
+            Path.Combine(_rootFullPath, repositoryName + ".git")
         };
 
         foreach (var candidate in candidates)
         {
             var full = Path.GetFullPath(candidate);
             if (!full.StartsWith(_rootFullPath, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            var relative = Path.GetRelativePath(_rootFullPath, full);
+            if (relative.StartsWith("..", StringComparison.Ordinal) || Path.IsPathRooted(relative))
             {
                 continue;
             }
@@ -543,18 +619,21 @@ internal sealed class GitSmartHttpService
     }
 
     /// <summary>
-    /// Parses an upload-pack request body to extract the list of wanted objects.
+    /// Parses an upload-pack request body to extract the list of wanted objects, have objects, and client capabilities.
     /// </summary>
     /// <param name="body">The request body stream.</param>
     /// <param name="hashLengthBytes">The expected length of hash values in bytes.</param>
     /// <param name="cancellationToken">Token to cancel the operation.</param>
-    /// <returns>A list of wanted object hashes.</returns>
-    private static async Task<List<GitHash>> ParseUploadPackRequestAsync(Stream body, int hashLengthBytes, CancellationToken cancellationToken)
+    /// <returns>An upload-pack request containing wants, haves, and capabilities.</returns>
+    private static async Task<UploadPackRequest> ParseUploadPackRequestAsync(Stream body, int hashLengthBytes, CancellationToken cancellationToken)
     {
         var expectedLength = hashLengthBytes * 2;
         var reader = new PktLineReader(body);
         var wants = new List<GitHash>();
+        var haves = new List<GitHash>();
+        var capabilities = new HashSet<string>(StringComparer.Ordinal);
         var readingWants = true;
+        var firstWant = true;
 
         while (true)
         {
@@ -572,7 +651,7 @@ internal sealed class GitSmartHttpService
                     continue;
                 }
 
-                break;
+                continue;
             }
 
             if (packet.Value.IsDelimiter)
@@ -590,14 +669,35 @@ internal sealed class GitSmartHttpService
                 }
 
                 var hashPart = text[5..];
-                var capsIndex = hashPart.IndexOf('\0');
-                if (capsIndex >= 0)
+                if (firstWant)
                 {
-                    hashPart = hashPart[..capsIndex];
+                    var nullIndex = hashPart.IndexOf('\0');
+                    if (nullIndex >= 0)
+                    {
+                        var caps = hashPart[(nullIndex + 1)..];
+                        foreach (var cap in caps.Split(' ', StringSplitOptions.RemoveEmptyEntries))
+                        {
+                            capabilities.Add(cap);
+                        }
+                        hashPart = hashPart[..nullIndex];
+                    }
+                    else
+                    {
+                        var spaceIndex = hashPart.IndexOf(' ');
+                        if (spaceIndex >= 0)
+                        {
+                            var caps = hashPart[(spaceIndex + 1)..];
+                            foreach (var cap in caps.Split(' ', StringSplitOptions.RemoveEmptyEntries))
+                            {
+                                capabilities.Add(cap);
+                            }
+                            hashPart = hashPart[..spaceIndex];
+                        }
+                    }
+                    firstWant = false;
                 }
                 else
                 {
-                    // Handle space-separated capabilities (modern git)
                     var spaceIndex = hashPart.IndexOf(' ');
                     if (spaceIndex >= 0)
                     {
@@ -610,13 +710,31 @@ internal sealed class GitSmartHttpService
                     wants.Add(hash);
                 }
             }
-            else if (text.Equals("done", StringComparison.Ordinal))
+            else
             {
-                break;
+                if (text.Equals("done", StringComparison.Ordinal))
+                {
+                    break;
+                }
+
+                if (text.StartsWith("have ", StringComparison.Ordinal))
+                {
+                    var hashPart = text[5..].Trim();
+                    var spaceIndex = hashPart.IndexOf(' ');
+                    if (spaceIndex >= 0)
+                    {
+                        hashPart = hashPart[..spaceIndex];
+                    }
+
+                    if (hashPart.Length == expectedLength && GitHash.TryParse(hashPart, out var hash))
+                    {
+                        haves.Add(hash);
+                    }
+                }
             }
         }
 
-        return wants;
+        return new UploadPackRequest(wants, haves, capabilities);
     }
 
     /// <summary>
@@ -782,6 +900,10 @@ internal sealed class GitSmartHttpService
                 snapshot.Remove(normalized);
             }
         }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
         catch (Exception ex)
         {
             return RefStatus.Error(update.Name, SanitizeMessage(ex.Message));
@@ -813,34 +935,67 @@ internal sealed class GitSmartHttpService
     /// <param name="context">The HTTP context.</param>
     /// <param name="unpackStatus">The status of the pack unpacking operation.</param>
     /// <param name="refStatuses">The status of each reference update.</param>
-    /// <param name="includeDetails">Whether to include detailed status for each reference.</param>
+    /// <param name="reportStatus">Whether the client negotiated the report-status capability.</param>
     /// <param name="cancellationToken">Token to cancel the operation.</param>
     /// <returns>A task representing the asynchronous operation.</returns>
     private async Task WriteReceivePackStatusAsync(
         HttpContext context,
         string unpackStatus,
         IReadOnlyList<RefStatus> refStatuses,
-        bool includeDetails,
+        bool reportStatus,
         CancellationToken cancellationToken)
     {
         context.Response.StatusCode = StatusCodes.Status200OK;
         context.Response.Headers.CacheControl = "no-cache";
         context.Response.ContentType = "application/x-git-receive-pack-result";
 
+        if (!reportStatus)
+        {
+            return;
+        }
+
         await PktLineWriter.WriteStringAsync(context.Response.Body, unpackStatus + "\n", cancellationToken).ConfigureAwait(false);
 
-        if (includeDetails)
+        foreach (var status in refStatuses)
         {
-            foreach (var status in refStatuses)
-            {
-                var line = status.Success
-                    ? $"ok {status.ReferenceName}\n"
-                    : $"ng {status.ReferenceName} {status.Message}\n";
-                await PktLineWriter.WriteStringAsync(context.Response.Body, line, cancellationToken).ConfigureAwait(false);
-            }
+            var line = status.Success
+                ? $"ok {status.ReferenceName}\n"
+                : $"ng {status.ReferenceName} {status.Message}\n";
+            await PktLineWriter.WriteStringAsync(context.Response.Body, line, cancellationToken).ConfigureAwait(false);
         }
 
         await PktLineWriter.WriteFlushAsync(context.Response.Body, cancellationToken).ConfigureAwait(false);
+        await context.Response.Body.FlushAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    private static bool ValidateContentType(HttpRequest request, string expectedContentType)
+    {
+        if (string.IsNullOrEmpty(request.ContentType))
+        {
+            return false;
+        }
+
+        var mediaType = request.ContentType;
+        var semicolonIndex = mediaType.IndexOf(';');
+        if (semicolonIndex >= 0)
+        {
+            mediaType = mediaType[..semicolonIndex];
+        }
+
+        return string.Equals(mediaType.Trim(), expectedContentType, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static async Task<bool> ObjectExistsAsync(IGitRepository repository, GitHash hash, CancellationToken cancellationToken)
+    {
+        try
+        {
+            using var stream = await repository.ObjectStore.ReadObjectStreamAsync(hash, cancellationToken).ConfigureAwait(false);
+            return true;
+        }
+        catch (FileNotFoundException)
+        {
+            return false;
+        }
     }
 
     /// <summary>
@@ -927,4 +1082,15 @@ internal sealed class GitSmartHttpService
         /// <returns>A failed status.</returns>
         public static RefStatus Error(string name, string message) => new(name, false, message);
     }
+
+    /// <summary>
+    /// Represents a parsed upload-pack request.
+    /// </summary>
+    /// <param name="Wants">The list of wanted object hashes.</param>
+    /// <param name="Haves">The list of have object hashes.</param>
+    /// <param name="Capabilities">The client capabilities.</param>
+    private sealed record UploadPackRequest(
+        IReadOnlyList<GitHash> Wants,
+        IReadOnlyList<GitHash> Haves,
+        HashSet<string> Capabilities);
 }
