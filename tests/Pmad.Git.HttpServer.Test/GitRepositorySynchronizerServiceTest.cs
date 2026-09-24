@@ -37,7 +37,7 @@ public sealed class GitRepositorySynchronizerServiceTest : IDisposable
     }
 
     [Fact]
-    public async Task SetupCliSynchronizer_ShouldCreateAndCacheSynchronizer()
+    public async Task SetupSynchronizer_WithSynchronizerFactory_ShouldCreateAndCacheSynchronizer()
     {
         // Arrange
         var repository = CreateRepository();
@@ -45,11 +45,54 @@ public sealed class GitRepositorySynchronizerServiceTest : IDisposable
         var service = new GitRepositorySynchronizerService(repositoryService);
 
         // Act
-        var synchronizer = service.SetupCliSynchronizer(repository.WorkingDirectory, new GitCliSyncOptions());
+        var synchronizer = service.SetupSynchronizer(repository.WorkingDirectory, repo => repo.CreateSynchronizer(new GitCliSyncOptions()));
 
         // Assert
         Assert.NotNull(synchronizer);
         Assert.Same(synchronizer, service.GetSynchronizerByPath(repository.WorkingDirectory));
+
+        await synchronizer.DisposeAsync();
+    }
+
+    [Fact]
+    public async Task SetupSynchronizer_WithRemoteRepositoryFactory_ShouldCreateAndCacheSynchronizer()
+    {
+        // Arrange
+        var repository = CreateRepository();
+        var repositoryService = new GitRepositoryService();
+        var service = new GitRepositorySynchronizerService(repositoryService);
+        var options = new GitSyncOptions { Branch = "main" };
+
+        // Act
+        var synchronizer = service.SetupSynchronizer(repository.WorkingDirectory, repo => new FakeRemoteRepository { RootPath = repo.RootPath }, options);
+
+        // Assert
+        Assert.NotNull(synchronizer);
+        Assert.Same(synchronizer, service.GetSynchronizerByPath(repository.WorkingDirectory));
+
+        await synchronizer.DisposeAsync();
+    }
+
+    [Fact]
+    public async Task SetupSynchronizer_GuaranteesSameRepositoryInstanceIsUsed()
+    {
+        // Arrange
+        var repository = CreateRepository();
+        var repositoryService = new GitRepositoryService();
+        var service = new GitRepositorySynchronizerService(repositoryService);
+
+        IGitRepository? passedRepo = null;
+
+        // Act
+        var synchronizer = service.SetupSynchronizer(repository.WorkingDirectory, repo =>
+        {
+            passedRepo = repo;
+            return new FakeRemoteRepository { RootPath = repo.RootPath };
+        });
+
+        // Assert
+        var expectedRepo = repositoryService.GetRepositoryByPath(repository.WorkingDirectory);
+        Assert.Same(expectedRepo, passedRepo);
 
         await synchronizer.DisposeAsync();
     }
@@ -65,7 +108,7 @@ public sealed class GitRepositorySynchronizerServiceTest : IDisposable
         var pathWithSlash = pathWithoutSlash + Path.DirectorySeparatorChar;
 
         // Act
-        var synchronizer = service.SetupCliSynchronizer(pathWithoutSlash, new GitCliSyncOptions());
+        var synchronizer = service.SetupSynchronizer(pathWithoutSlash, repo => repo.CreateSynchronizer(new GitCliSyncOptions()));
 
         // Assert
         Assert.NotNull(synchronizer);
@@ -75,7 +118,7 @@ public sealed class GitRepositorySynchronizerServiceTest : IDisposable
     }
 
     [Fact]
-    public async Task InvalidateSynchronizer_WithTrailingDirectorySeparator_ShouldRemoveCachedSynchronizer()
+    public void InvalidateSynchronizer_WithTrailingDirectorySeparator_ShouldRemoveCachedSynchronizer()
     {
         // Arrange
         var repository = CreateRepository();
@@ -83,7 +126,7 @@ public sealed class GitRepositorySynchronizerServiceTest : IDisposable
         var service = new GitRepositorySynchronizerService(repositoryService);
         var pathWithoutSlash = repository.WorkingDirectory.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
         var pathWithSlash = pathWithoutSlash + Path.DirectorySeparatorChar;
-        service.SetupCliSynchronizer(pathWithoutSlash, new GitCliSyncOptions());
+        service.SetupSynchronizer(pathWithoutSlash, repo => repo.CreateSynchronizer(new GitCliSyncOptions()));
 
         // Act
         service.InvalidateSynchronizer(pathWithSlash);
@@ -91,12 +134,10 @@ public sealed class GitRepositorySynchronizerServiceTest : IDisposable
         // Assert
         Assert.Null(service.GetSynchronizerByPath(pathWithoutSlash));
         Assert.Null(service.GetSynchronizerByPath(pathWithSlash));
-
-        await Task.Delay(10);
     }
 
     [Fact]
-    public async Task SetupCliSynchronizer_CalledTwice_ShouldReplacePreviousInstanceAndDisposeIt()
+    public async Task SetupSynchronizer_CalledTwice_ShouldReplacePreviousInstanceAndDisposeIt()
     {
         // Arrange
         var repository = CreateRepository();
@@ -104,8 +145,8 @@ public sealed class GitRepositorySynchronizerServiceTest : IDisposable
         var service = new GitRepositorySynchronizerService(repositoryService);
 
         // Act
-        var synchronizer1 = service.SetupCliSynchronizer(repository.WorkingDirectory, new GitCliSyncOptions());
-        var synchronizer2 = service.SetupCliSynchronizer(repository.WorkingDirectory, new GitCliSyncOptions());
+        var synchronizer1 = service.SetupSynchronizer(repository.WorkingDirectory, repo => repo.CreateSynchronizer(new GitCliSyncOptions()));
+        var synchronizer2 = service.SetupSynchronizer(repository.WorkingDirectory, repo => repo.CreateSynchronizer(new GitCliSyncOptions()));
 
         // Assert
         Assert.NotSame(synchronizer1, synchronizer2);
@@ -115,7 +156,7 @@ public sealed class GitRepositorySynchronizerServiceTest : IDisposable
     }
 
     [Fact]
-    public void SetupCliSynchronizer_WithNullOptions_ShouldThrowArgumentNullException()
+    public void SetupSynchronizer_WithNullSynchronizerFactory_ShouldThrowArgumentNullException()
     {
         // Arrange
         var repository = CreateRepository();
@@ -123,11 +164,196 @@ public sealed class GitRepositorySynchronizerServiceTest : IDisposable
         var service = new GitRepositorySynchronizerService(repositoryService);
 
         // Act & Assert
-        Assert.Throws<ArgumentNullException>(() => service.SetupCliSynchronizer(repository.WorkingDirectory, null!));
+        Assert.Throws<ArgumentNullException>(() => service.SetupSynchronizer(repository.WorkingDirectory, (Func<IGitRepository, GitRepositorySynchronizer>)null!));
     }
 
     [Fact]
-    public void SetupCliSynchronizer_WithNonExistentPath_ShouldThrowDirectoryNotFoundException()
+    public void SetupSynchronizer_WithNullRemoteRepositoryFactory_ShouldThrowArgumentNullException()
+    {
+        // Arrange
+        var repository = CreateRepository();
+        var repositoryService = new GitRepositoryService();
+        var service = new GitRepositorySynchronizerService(repositoryService);
+
+        // Act & Assert
+        Assert.Throws<ArgumentNullException>(() => service.SetupSynchronizer(repository.WorkingDirectory, (Func<IGitRepository, IGitRepositoryWithRemote>)null!));
+    }
+
+    [Fact]
+    public void SetupSynchronizer_WhenFactoryReturnsNull_ShouldThrowInvalidOperationException()
+    {
+        // Arrange
+        var repository = CreateRepository();
+        var repositoryService = new GitRepositoryService();
+        var service = new GitRepositorySynchronizerService(repositoryService);
+
+        // Act & Assert
+        Assert.Throws<InvalidOperationException>(() => service.SetupSynchronizer(repository.WorkingDirectory, _ => (GitRepositorySynchronizer)null!));
+        Assert.Throws<InvalidOperationException>(() => service.SetupSynchronizer(repository.WorkingDirectory, _ => (IGitRepositoryWithRemote)null!));
+    }
+
+    [Fact]
+    public async Task SetupSynchronizerAsync_WhenRepositoryDoesNotExist_InvokesCloneAsyncAndSetsUpSynchronizer()
+    {
+        // Arrange
+        var repositoryService = new GitRepositoryService();
+        var service = new GitRepositorySynchronizerService(repositoryService);
+        var repoPath = Path.Combine(_testRoot, "cloned-repo");
+        var cloneInvoked = false;
+
+        // Act
+        var synchronizer = await service.SetupSynchronizerAsync(
+            repoPath,
+            (path, ct) =>
+            {
+                cloneInvoked = true;
+                GitRepository.Init(path);
+                return Task.CompletedTask;
+            },
+            repo => repo.CreateSynchronizer(new GitCliSyncOptions()));
+
+        // Assert
+        Assert.True(cloneInvoked);
+        Assert.NotNull(synchronizer);
+        Assert.Same(synchronizer, service.GetSynchronizerByPath(repoPath));
+
+        await synchronizer.DisposeAsync();
+    }
+
+    [Fact]
+    public async Task SetupSynchronizerAsync_WhenEmptyDirectoryExists_InvokesCloneAsyncAndSetsUpSynchronizer()
+    {
+        // Arrange
+        var repositoryService = new GitRepositoryService();
+        var service = new GitRepositorySynchronizerService(repositoryService);
+        var repoPath = Path.Combine(_testRoot, "empty-dir");
+        Directory.CreateDirectory(repoPath);
+        var cloneInvoked = false;
+
+        // Act
+        var synchronizer = await service.SetupSynchronizerAsync(
+            repoPath,
+            (path, ct) =>
+            {
+                cloneInvoked = true;
+                GitRepository.Init(path);
+                return Task.CompletedTask;
+            },
+            repo => repo.CreateSynchronizer(new GitCliSyncOptions()));
+
+        // Assert
+        Assert.True(cloneInvoked);
+        Assert.NotNull(synchronizer);
+        Assert.Same(synchronizer, service.GetSynchronizerByPath(repoPath));
+
+        await synchronizer.DisposeAsync();
+    }
+
+    [Fact]
+    public async Task SetupSynchronizerAsync_WhenRepositoryAlreadyExists_DoesNotInvokeCloneAsync()
+    {
+        // Arrange
+        var repository = CreateRepository();
+        var repositoryService = new GitRepositoryService();
+        var service = new GitRepositorySynchronizerService(repositoryService);
+        var cloneInvoked = false;
+
+        // Act
+        var synchronizer = await service.SetupSynchronizerAsync(
+            repository.WorkingDirectory,
+            (path, ct) =>
+            {
+                cloneInvoked = true;
+                return Task.CompletedTask;
+            },
+            repo => repo.CreateSynchronizer(new GitCliSyncOptions()));
+
+        // Assert
+        Assert.False(cloneInvoked);
+        Assert.NotNull(synchronizer);
+        Assert.Same(synchronizer, service.GetSynchronizerByPath(repository.WorkingDirectory));
+
+        await synchronizer.DisposeAsync();
+    }
+
+    [Fact]
+    public async Task SetupSynchronizerAsync_WhenDirectoryExistsAndIsNotEmptyAndNotGitRepo_ThrowsInvalidOperationException()
+    {
+        // Arrange
+        var repositoryService = new GitRepositoryService();
+        var service = new GitRepositorySynchronizerService(repositoryService);
+        var dirPath = Path.Combine(_testRoot, "non-empty-dir");
+        Directory.CreateDirectory(dirPath);
+        File.WriteAllText(Path.Combine(dirPath, "somefile.txt"), "hello");
+        var cloneInvoked = false;
+
+        // Act & Assert
+        await Assert.ThrowsAsync<InvalidOperationException>(() => service.SetupSynchronizerAsync(
+            dirPath,
+            (path, ct) =>
+            {
+                cloneInvoked = true;
+                return Task.CompletedTask;
+            },
+            repo => repo.CreateSynchronizer(new GitCliSyncOptions())));
+
+        Assert.False(cloneInvoked);
+    }
+
+    [Fact]
+    public async Task SetupSynchronizerAsync_WithNullArguments_ThrowsArgumentNullException()
+    {
+        // Arrange
+        var repository = CreateRepository();
+        var repositoryService = new GitRepositoryService();
+        var service = new GitRepositorySynchronizerService(repositoryService);
+
+        // Act & Assert
+        await Assert.ThrowsAsync<ArgumentNullException>(() => service.SetupSynchronizerAsync(
+            repository.WorkingDirectory,
+            null!,
+            repo => repo.CreateSynchronizer(new GitCliSyncOptions())));
+
+        await Assert.ThrowsAsync<ArgumentNullException>(() => service.SetupSynchronizerAsync(
+            repository.WorkingDirectory,
+            (path, ct) => Task.CompletedTask,
+            (Func<IGitRepository, GitRepositorySynchronizer>)null!));
+
+        await Assert.ThrowsAsync<ArgumentNullException>(() => service.SetupSynchronizerAsync(
+            repository.WorkingDirectory,
+            (path, ct) => Task.CompletedTask,
+            (Func<IGitRepository, IGitRepositoryWithRemote>)null!));
+    }
+
+    [Fact]
+    public async Task SetupSynchronizerAsync_WithRemoteRepositoryFactory_ShouldCreateAndCacheSynchronizer()
+    {
+        // Arrange
+        var repositoryService = new GitRepositoryService();
+        var service = new GitRepositorySynchronizerService(repositoryService);
+        var repoPath = Path.Combine(_testRoot, "remote-factory-repo");
+        var options = new GitSyncOptions { Branch = "main" };
+
+        // Act
+        var synchronizer = await service.SetupSynchronizerAsync(
+            repoPath,
+            (path, ct) =>
+            {
+                GitRepository.Init(path);
+                return Task.CompletedTask;
+            },
+            repo => new FakeRemoteRepository { RootPath = repo.RootPath },
+            options);
+
+        // Assert
+        Assert.NotNull(synchronizer);
+        Assert.Same(synchronizer, service.GetSynchronizerByPath(repoPath));
+
+        await synchronizer.DisposeAsync();
+    }
+
+    [Fact]
+    public void SetupSynchronizer_WithNonExistentPath_ShouldThrowDirectoryNotFoundException()
     {
         // Arrange
         var repositoryService = new GitRepositoryService();
@@ -135,7 +361,7 @@ public sealed class GitRepositorySynchronizerServiceTest : IDisposable
         var nonExistentPath = Path.Combine(_testRoot, "non-existent");
 
         // Act & Assert
-        Assert.Throws<DirectoryNotFoundException>(() => service.SetupCliSynchronizer(nonExistentPath, new GitCliSyncOptions()));
+        Assert.Throws<DirectoryNotFoundException>(() => service.SetupSynchronizer(nonExistentPath, repo => repo.CreateSynchronizer(new GitCliSyncOptions())));
     }
 
     [Fact]
@@ -151,21 +377,19 @@ public sealed class GitRepositorySynchronizerServiceTest : IDisposable
     }
 
     [Fact]
-    public async Task InvalidateSynchronizer_ShouldRemoveAndDisposeCachedSynchronizer()
+    public void InvalidateSynchronizer_ShouldRemoveAndDisposeCachedSynchronizer()
     {
         // Arrange
         var repository = CreateRepository();
         var repositoryService = new GitRepositoryService();
         var service = new GitRepositorySynchronizerService(repositoryService);
-        service.SetupCliSynchronizer(repository.WorkingDirectory, new GitCliSyncOptions());
+        service.SetupSynchronizer(repository.WorkingDirectory, repo => repo.CreateSynchronizer(new GitCliSyncOptions()));
 
         // Act
         service.InvalidateSynchronizer(repository.WorkingDirectory);
 
         // Assert
         Assert.Null(service.GetSynchronizerByPath(repository.WorkingDirectory));
-
-        await Task.Delay(10); // allow fire-and-forget DisposeAsync to complete
     }
 
     [Fact]
@@ -207,8 +431,8 @@ public sealed class GitRepositorySynchronizerServiceTest : IDisposable
         var repository2 = CreateRepository();
         var repositoryService = new GitRepositoryService();
         var service = new GitRepositorySynchronizerService(repositoryService);
-        var synchronizer1 = service.SetupCliSynchronizer(repository1.WorkingDirectory, new GitCliSyncOptions());
-        var synchronizer2 = service.SetupCliSynchronizer(repository2.WorkingDirectory, new GitCliSyncOptions());
+        var synchronizer1 = service.SetupSynchronizer(repository1.WorkingDirectory, repo => repo.CreateSynchronizer(new GitCliSyncOptions()));
+        var synchronizer2 = service.SetupSynchronizer(repository2.WorkingDirectory, repo => repo.CreateSynchronizer(new GitCliSyncOptions()));
 
         // Act
         await service.DisposeAsync();
@@ -217,12 +441,9 @@ public sealed class GitRepositorySynchronizerServiceTest : IDisposable
         Assert.Null(service.GetSynchronizerByPath(repository1.WorkingDirectory));
         Assert.Null(service.GetSynchronizerByPath(repository2.WorkingDirectory));
 
-        // Disposed synchronizers should ignore further local-change notifications, confirming
-        // DisposeAsync was actually called on them (NotifyLocalChange is a no-op once disposed).
         synchronizer1.NotifyLocalChange();
         synchronizer2.NotifyLocalChange();
 
-        // Calling DisposeAsync again should be a no-op and not throw.
         await synchronizer1.DisposeAsync();
         await synchronizer2.DisposeAsync();
     }
@@ -245,7 +466,7 @@ public sealed class GitRepositorySynchronizerServiceTest : IDisposable
         var repository = CreateRepository();
         var repositoryService = new GitRepositoryService();
         var service = new GitRepositorySynchronizerService(repositoryService);
-        service.SetupCliSynchronizer(repository.WorkingDirectory, new GitCliSyncOptions());
+        service.SetupSynchronizer(repository.WorkingDirectory, repo => repo.CreateSynchronizer(new GitCliSyncOptions()));
 
         // Act
         await service.DisposeAsync();
@@ -254,109 +475,22 @@ public sealed class GitRepositorySynchronizerServiceTest : IDisposable
         await service.DisposeAsync();
     }
 
-    [Fact]
-    public async Task SetupCliSynchronizerAsync_WithNonExistentPath_ShouldCloneAndCreateSynchronizer()
+    private sealed class FakeRemoteRepository : IGitRepositoryWithRemote
     {
-        // Arrange
-        var remote = CreateRepository();
-        var localPath = Path.Combine(_testRoot, "cloned-non-existent");
-        var repositoryService = new GitRepositoryService();
-        var service = new GitRepositorySynchronizerService(repositoryService);
+        public string RootPath { get; set; } = string.Empty;
 
-        // Act
-        var synchronizer = await service.SetupCliSynchronizerAsync(localPath, remote.WorkingDirectory, new GitCliSyncOptions());
-
-        // Assert
-        Assert.NotNull(synchronizer);
-        Assert.True(Directory.Exists(Path.Combine(localPath, ".git")));
-        Assert.True(File.Exists(Path.Combine(localPath, "README.md")));
-        Assert.Same(synchronizer, service.GetSynchronizerByPath(localPath));
-
-        await synchronizer.DisposeAsync();
-    }
-
-    [Fact]
-    public async Task SetupCliSynchronizerAsync_WithEmptyExistingDirectory_ShouldCloneAndCreateSynchronizer()
-    {
-        // Arrange
-        var remote = CreateRepository();
-        var localPath = Path.Combine(_testRoot, "cloned-empty-dir");
-        Directory.CreateDirectory(localPath);
-        var repositoryService = new GitRepositoryService();
-        var service = new GitRepositorySynchronizerService(repositoryService);
-
-        // Act
-        var synchronizer = await service.SetupCliSynchronizerAsync(localPath, remote.WorkingDirectory, new GitCliSyncOptions());
-
-        // Assert
-        Assert.NotNull(synchronizer);
-        Assert.True(Directory.Exists(Path.Combine(localPath, ".git")));
-
-        await synchronizer.DisposeAsync();
-    }
-
-    [Fact]
-    public async Task SetupCliSynchronizerAsync_WithExistingRepository_ShouldNotCloneAndUseExistingRepository()
-    {
-        // Arrange
-        var repository = CreateRepository();
-        var repositoryService = new GitRepositoryService();
-        var service = new GitRepositorySynchronizerService(repositoryService);
-
-        // Act
-        // An invalid remote URL is passed on purpose: since the repository already exists locally, no clone should be attempted.
-        var synchronizer = await service.SetupCliSynchronizerAsync(repository.WorkingDirectory, "invalid://not-a-real-remote", new GitCliSyncOptions());
-
-        // Assert
-        Assert.NotNull(synchronizer);
-        Assert.Same(synchronizer, service.GetSynchronizerByPath(repository.WorkingDirectory));
-
-        await synchronizer.DisposeAsync();
-    }
-
-    [Fact]
-    public async Task SetupCliSynchronizerAsync_WithNonEmptyDirectoryWithoutRepository_ShouldThrowInvalidOperationException()
-    {
-        // Arrange
-        var remote = CreateRepository();
-        var localPath = Path.Combine(_testRoot, "non-empty-non-repo");
-        Directory.CreateDirectory(localPath);
-        File.WriteAllText(Path.Combine(localPath, "some-file.txt"), "content");
-        var repositoryService = new GitRepositoryService();
-        var service = new GitRepositorySynchronizerService(repositoryService);
-
-        // Act & Assert
-        await Assert.ThrowsAsync<InvalidOperationException>(
-            () => service.SetupCliSynchronizerAsync(localPath, remote.WorkingDirectory, new GitCliSyncOptions()));
-    }
-
-    [Fact]
-    public async Task SetupCliSynchronizerAsync_WithNullOptions_ShouldThrowArgumentNullException()
-    {
-        // Arrange
-        var localPath = Path.Combine(_testRoot, "null-options");
-        var repositoryService = new GitRepositoryService();
-        var service = new GitRepositorySynchronizerService(repositoryService);
-
-        // Act & Assert
-        await Assert.ThrowsAsync<ArgumentNullException>(
-            () => service.SetupCliSynchronizerAsync(localPath, "https://example.com/repo.git", null!));
-    }
-
-    [Theory]
-    [InlineData(null)]
-    [InlineData("")]
-    [InlineData("   ")]
-    public async Task SetupCliSynchronizerAsync_WithNullOrWhitespaceRemoteUrl_ShouldThrowArgumentException(string? remoteUrl)
-    {
-        // Arrange
-        var localPath = Path.Combine(_testRoot, "invalid-remote-url");
-        var repositoryService = new GitRepositoryService();
-        var service = new GitRepositorySynchronizerService(repositoryService);
-
-        // Act & Assert
-        await Assert.ThrowsAsync<ArgumentException>(
-            () => service.SetupCliSynchronizerAsync(localPath, remoteUrl!, new GitCliSyncOptions()));
+        public Task FetchAsync(string? remote = null, string? branch = null, bool prune = false, CancellationToken cancellationToken = default) => Task.CompletedTask;
+        public Task<GitMergeResult> PullAsync(string? remote = null, string? branch = null, bool rebase = false, CancellationToken cancellationToken = default) => Task.FromResult(new GitMergeResult(true, Array.Empty<string>()));
+        public Task PushAsync(string? remote = null, string? branch = null, bool force = false, bool setUpstream = false, CancellationToken cancellationToken = default) => Task.CompletedTask;
+        public Task<GitMergeResult> MergeAsync(string branch, CancellationToken cancellationToken = default) => Task.FromResult(new GitMergeResult(true, Array.Empty<string>()));
+        public Task<bool> IsMergeInProgressAsync(CancellationToken cancellationToken = default) => Task.FromResult(false);
+        public Task<IReadOnlyList<string>> GetConflictedFilesAsync(CancellationToken cancellationToken = default) => Task.FromResult<IReadOnlyList<string>>(Array.Empty<string>());
+        public Task ResolveConflictAsync(string relativeFilePath, CancellationToken cancellationToken = default) => Task.CompletedTask;
+        public Task ContinueMergeAsync(string? commitMessage = null, CancellationToken cancellationToken = default) => Task.CompletedTask;
+        public Task AbortMergeAsync(CancellationToken cancellationToken = default) => Task.CompletedTask;
+        public Task<GitTrackingStatus> GetTrackingStatusAsync(string? branch = null, CancellationToken cancellationToken = default) => Task.FromResult(new GitTrackingStatus("main", "origin/main", 0, 0));
+        public Task<bool> IsCommitPushedAsync(string commitHash, string? remoteBranch = null, CancellationToken cancellationToken = default) => Task.FromResult(true);
+        public Task<bool> IsCommitPushedAsync(GitHash commitHash, string? remoteBranch = null, CancellationToken cancellationToken = default) => Task.FromResult(true);
     }
 
     public void Dispose()

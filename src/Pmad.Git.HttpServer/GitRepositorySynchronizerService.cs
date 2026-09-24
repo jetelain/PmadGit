@@ -1,5 +1,4 @@
 using System.Collections.Concurrent;
-using Pmad.Git.Cli;
 using Pmad.Git.LocalRepositories;
 
 namespace Pmad.Git.HttpServer;
@@ -26,17 +25,104 @@ internal sealed class GitRepositorySynchronizerService : IGitRepositorySynchroni
         return _synchronizers.TryGetValue(normalizedPath, out var synchronizer) ? synchronizer : null;
     }
 
-    public GitRepositorySynchronizer SetupCliSynchronizer(string repositoryPath, GitCliSyncOptions options)
+    public GitRepositorySynchronizer SetupSynchronizer(string repositoryPath, Func<IGitRepository, IGitRepositoryWithRemote> remoteRepositoryFactory, GitSyncOptions? options = null)
     {
-        if (options is null)
+        if (remoteRepositoryFactory is null)
         {
-            throw new ArgumentNullException(nameof(options));
+            throw new ArgumentNullException(nameof(remoteRepositoryFactory));
+        }
+
+        return SetupSynchronizer(repositoryPath, localRepo =>
+        {
+            var remoteRepo = remoteRepositoryFactory(localRepo);
+            if (remoteRepo is null)
+            {
+                throw new InvalidOperationException("The remote repository factory returned null.");
+            }
+
+            var synchronizer = new GitRepositorySynchronizer(remoteRepo, localRepo, options);
+            synchronizer.Start();
+            return synchronizer;
+        });
+    }
+
+    public GitRepositorySynchronizer SetupSynchronizer(string repositoryPath, Func<IGitRepository, GitRepositorySynchronizer> synchronizerFactory)
+    {
+        if (synchronizerFactory is null)
+        {
+            throw new ArgumentNullException(nameof(synchronizerFactory));
         }
 
         var normalizedPath = GitRepositoryService.NormalizeAndValidatePath(repositoryPath);
+        var localRepo = _repositoryService.GetRepositoryByPath(normalizedPath);
 
-        var synchronizer = _repositoryService.GetRepositoryByPath(normalizedPath).CreateSynchronizer(options);
+        var synchronizer = synchronizerFactory(localRepo);
+        if (synchronizer is null)
+        {
+            throw new InvalidOperationException("The synchronizer factory returned null.");
+        }
 
+        return StoreSynchronizer(normalizedPath, synchronizer);
+    }
+
+    public Task<GitRepositorySynchronizer> SetupSynchronizerAsync(
+        string repositoryPath,
+        Func<string, CancellationToken, Task> cloneAsync,
+        Func<IGitRepository, IGitRepositoryWithRemote> remoteRepositoryFactory,
+        GitSyncOptions? options = null,
+        CancellationToken cancellationToken = default)
+    {
+        if (remoteRepositoryFactory is null)
+        {
+            throw new ArgumentNullException(nameof(remoteRepositoryFactory));
+        }
+
+        return SetupSynchronizerAsync(repositoryPath, cloneAsync, localRepo =>
+        {
+            var remoteRepo = remoteRepositoryFactory(localRepo);
+            if (remoteRepo is null)
+            {
+                throw new InvalidOperationException("The remote repository factory returned null.");
+            }
+
+            var synchronizer = new GitRepositorySynchronizer(remoteRepo, localRepo, options);
+            synchronizer.Start();
+            return synchronizer;
+        }, cancellationToken);
+    }
+
+    public async Task<GitRepositorySynchronizer> SetupSynchronizerAsync(
+        string repositoryPath,
+        Func<string, CancellationToken, Task> cloneAsync,
+        Func<IGitRepository, GitRepositorySynchronizer> synchronizerFactory,
+        CancellationToken cancellationToken = default)
+    {
+        if (cloneAsync is null)
+        {
+            throw new ArgumentNullException(nameof(cloneAsync));
+        }
+        if (synchronizerFactory is null)
+        {
+            throw new ArgumentNullException(nameof(synchronizerFactory));
+        }
+
+        var normalizedPath = GitRepositoryService.NormalizePath(repositoryPath);
+
+        if (!GitRepositoryService.IsExistingRepository(normalizedPath))
+        {
+            if (Directory.Exists(normalizedPath) && Directory.EnumerateFileSystemEntries(normalizedPath).Any())
+            {
+                throw new InvalidOperationException($"Directory already exists and is not empty: '{normalizedPath}'.");
+            }
+
+            await cloneAsync(normalizedPath, cancellationToken).ConfigureAwait(false);
+        }
+
+        return SetupSynchronizer(normalizedPath, synchronizerFactory);
+    }
+
+    private GitRepositorySynchronizer StoreSynchronizer(string normalizedPath, GitRepositorySynchronizer synchronizer)
+    {
         GitRepositorySynchronizer? previous = null;
         _synchronizers.AddOrUpdate(normalizedPath, synchronizer, (_, existing) =>
         {
@@ -50,32 +136,6 @@ internal sealed class GitRepositorySynchronizerService : IGitRepositorySynchroni
         }
 
         return synchronizer;
-    }
-
-    public async Task<GitRepositorySynchronizer> SetupCliSynchronizerAsync(string repositoryPath, string remoteUrl, GitCliSyncOptions options, CancellationToken cancellationToken = default)
-    {
-        if (options is null)
-        {
-            throw new ArgumentNullException(nameof(options));
-        }
-        if (string.IsNullOrWhiteSpace(remoteUrl))
-        {
-            throw new ArgumentException("Remote URL cannot be null or whitespace.", nameof(remoteUrl));
-        }
-
-        var normalizedPath = GitRepositoryService.NormalizePath(repositoryPath);
-
-        if (!GitRepositoryService.IsExistingRepository(normalizedPath))
-        {
-            if (Directory.Exists(normalizedPath) && Directory.EnumerateFileSystemEntries(normalizedPath).Any())
-            {
-                throw new InvalidOperationException($"Directory '{normalizedPath}' already exists, is not empty, but does not contain a git repository.");
-            }
-
-            await GitCliRepository.CloneAsync(remoteUrl, normalizedPath, options.Branch, options.Remote, options.GitCliPath, cancellationToken).ConfigureAwait(false);
-        }
-
-        return SetupCliSynchronizer(normalizedPath, options);
     }
 
     public void InvalidateSynchronizer(string repositoryPath)

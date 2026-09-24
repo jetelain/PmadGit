@@ -141,6 +141,23 @@ await workspaceRepo.ResetAsync(baseCommitHash, GitResetMode.Hard);
 - `InvalidateCaches(clearAllData)` clears cached references and loose-object metadata so subsequent operations reflect disk changes.
 - `IsCommitReachableAsync(from, to)` traverses the commit graph to determine if `to` is reachable from `from`.
 
+### Remote Synchronization Architecture (`IGitRepositoryWithRemote` & `GitRepositorySynchronizer`)
+`Pmad.Git.LocalRepositories` defines the core interfaces and state machines for keeping local repositories synchronized with remotes:
+- **`IGitRepositoryWithRemote`**: Standard contract defining remote communication and merge operations:
+  - `FetchAsync`, `PullAsync`, `PushAsync`, `MergeAsync`.
+  - Conflict queries and cooperative resolution: `IsMergeInProgressAsync`, `GetConflictedFilesAsync`, `ResolveConflictAsync`, `ContinueMergeAsync`, `AbortMergeAsync`.
+  - Tracking queries: `GetTrackingStatusAsync`, `IsCommitPushedAsync`.
+- **`GitRepositorySynchronizer`**: Coordinates continuous background synchronization:
+  - Subscribes to local repository `Changed` events to debounce pushes (`PushDebounceDelay`).
+  - Periodically pulls remote updates (`PullInterval`).
+  - Implements a state machine (`Idle`, `Syncing`, `Conflict`).
+  - In case of merge conflicts, halts automatic sync and exposes `Conflict` info, allowing safe resolution via `ResolveConflictAsync` and `CompleteConflictResolutionAsync`.
+- **Pluggable Remote Implementations**:
+  - **`Pmad.Git.RemoteClient`**: 100% managed C# Smart HTTP client without any CLI or native dependencies (`GitRemoteClientRepository`, `GitRemoteClientSyncOptions`).
+  - **`Pmad.Git.Cli`**: Wrapper around system `git` CLI executable (`GitCliRepository`, `GitCliSyncOptions`).
+- **Server-Side Integration (`Pmad.Git.HttpServer`)**:
+  - `IGitRepositorySynchronizerService` manages, caches, and automatically disposes background synchronizers for server-hosted repositories, with factory overloads guaranteeing usage of canonical `IGitRepository` instances and `SetupSynchronizerAsync` for automated initial clone.
+
 ---
 
 ## Testing

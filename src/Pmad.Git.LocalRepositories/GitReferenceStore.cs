@@ -546,11 +546,24 @@ internal sealed class GitReferenceStore : IGitReferenceStore
         {
             foreach (var file in Directory.EnumerateFiles(refsRoot, "*", SearchOption.AllDirectories))
             {
-                var relative = Path.GetRelativePath(_gitDirectory, file).Replace('\\', '/');
-                var content = (await File.ReadAllTextAsync(file).ConfigureAwait(false)).Trim();
-                if (GitHash.TryParse(content, out var hash))
+                if (file.EndsWith(".tmp", StringComparison.OrdinalIgnoreCase) ||
+                    file.EndsWith(".lock", StringComparison.OrdinalIgnoreCase))
                 {
-                    refs[relative] = hash;
+                    continue;
+                }
+
+                var relative = Path.GetRelativePath(_gitDirectory, file).Replace('\\', '/');
+                try
+                {
+                    var content = (await File.ReadAllTextAsync(file).ConfigureAwait(false)).Trim();
+                    if (GitHash.TryParse(content, out var hash))
+                    {
+                        refs[relative] = hash;
+                    }
+                }
+                catch (IOException)
+                {
+                    // File may be concurrently written or deleted; ignore transient lock/missing file
                 }
             }
         }
