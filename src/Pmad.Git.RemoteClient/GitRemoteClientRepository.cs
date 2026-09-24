@@ -556,127 +556,130 @@ public sealed class GitRemoteClientRepository : IGitRepositoryWithRemote, IDispo
             }
         }
 
-        var localCommit = await _repo.ReferenceStore.TryResolveReferenceAsync(localRef, cancellationToken).ConfigureAwait(false);
-        if (!localCommit.HasValue)
+        using (await _repo.LockManager.AcquireReferenceLockAsync(localRef, cancellationToken).ConfigureAwait(false))
         {
-            if (string.IsNullOrEmpty(branch))
+            var localCommit = await _repo.ReferenceStore.TryResolveReferenceAsync(localRef, cancellationToken).ConfigureAwait(false);
+            if (!localCommit.HasValue)
             {
-                throw new InvalidOperationException($"Current branch '{localBranch}' has no commits to push.");
+                if (string.IsNullOrEmpty(branch))
+                {
+                    throw new InvalidOperationException($"Current branch '{localBranch}' has no commits to push.");
+                }
+                var refKind = isTag ? "Tag" : "Branch";
+                throw new ArgumentException($"{refKind} '{localBranch}' does not exist.", nameof(branch));
             }
-            var refKind = isTag ? "Tag" : "Branch";
-            throw new ArgumentException($"{refKind} '{localBranch}' does not exist.", nameof(branch));
-        }
 
-        var remoteUrl = await ResolveRemoteUrlAsync(targetRemote, cancellationToken).ConfigureAwait(false);
-        var advertisement = await _connection.DiscoverReferencesAsync(remoteUrl, "git-receive-pack", cancellationToken).ConfigureAwait(false);
+            var remoteUrl = await ResolveRemoteUrlAsync(targetRemote, cancellationToken).ConfigureAwait(false);
+            var advertisement = await _connection.DiscoverReferencesAsync(remoteUrl, "git-receive-pack", cancellationToken).ConfigureAwait(false);
 
-        if (advertisement.ObjectFormat != _repo.ObjectFormat)
-        {
-            throw new GitRemoteException($"Object format mismatch: local repository is {_repo.ObjectFormat.ToFormatName()} but remote repository is {advertisement.ObjectFormat.ToFormatName()}.");
-        }
-
-        GitHash? remoteCommit = advertisement.References.TryGetValue(remoteRefName, out var existingHash)
-            ? existingHash
-            : null;
-
-        // If remote ref already equals local commit, nothing to push
-        if (remoteCommit.HasValue && remoteCommit.Value.Equals(localCommit.Value))
-        {
-            if (!isTag && setUpstream)
+            if (advertisement.ObjectFormat != _repo.ObjectFormat)
             {
-                var configPath = Path.Combine(_repo.GitDirectory, "config");
-                var config = await GitConfigFile.ReadFromFileAsync(configPath, cancellationToken).ConfigureAwait(false);
-                config.SetValue("branch", localBranch, "remote", targetRemote);
-                config.SetValue("branch", localBranch, "merge", remoteRefName);
-                await config.WriteToFileAsync(configPath, cancellationToken).ConfigureAwait(false);
-                _repo.InvalidateCaches(raiseChanged: true);
+                throw new GitRemoteException($"Object format mismatch: local repository is {_repo.ObjectFormat.ToFormatName()} but remote repository is {advertisement.ObjectFormat.ToFormatName()}.");
             }
-            return;
-        }
 
-        // Validate fast-forward unless force is specified (or tag update requires force)
-        if (isTag)
-        {
-            if (remoteCommit.HasValue && !force)
+            GitHash? remoteCommit = advertisement.References.TryGetValue(remoteRefName, out var existingHash)
+                ? existingHash
+                : null;
+
+            // If remote ref already equals local commit, nothing to push
+            if (remoteCommit.HasValue && remoteCommit.Value.Equals(localCommit.Value))
             {
-                throw new GitRemoteException($"Remote tag '{remoteRefName}' already exists (use force to overwrite).");
+                if (!isTag && setUpstream)
+                {
+                    var configPath = Path.Combine(_repo.GitDirectory, "config");
+                    var config = await GitConfigFile.ReadFromFileAsync(configPath, cancellationToken).ConfigureAwait(false);
+                    config.SetValue("branch", localBranch, "remote", targetRemote);
+                    config.SetValue("branch", localBranch, "merge", remoteRefName);
+                    await config.WriteToFileAsync(configPath, cancellationToken).ConfigureAwait(false);
+                    _repo.InvalidateCaches(raiseChanged: true);
+                }
+                return;
             }
-        }
-        else if (remoteCommit.HasValue && !force)
-        {
-            var isFastForward = false;
+
+            // Validate fast-forward unless force is specified (or tag update requires force)
+            if (isTag)
+            {
+                if (remoteCommit.HasValue && !force)
+                {
+                    throw new GitRemoteException($"Remote tag '{remoteRefName}' already exists (use force to overwrite).");
+                }
+            }
+            else if (remoteCommit.HasValue && !force)
+            {
+                var isFastForward = false;
+                try
+                {
+                    isFastForward = await _repo.IsCommitReachableAsync(from: localCommit.Value, to: remoteCommit.Value, cancellationToken).ConfigureAwait(false);
+                }
+                catch (Exception ex) when (ex is FileNotFoundException or InvalidOperationException)
+                {
+                    isFastForward = false;
+                }
+
+                if (!isFastForward)
+                {
+                    throw new GitRemoteException("Non-fast-forward push rejected (use force to overwrite).");
+                }
+            }
+
+            // Collect objects to send, excluding objects already present on remote
+            var walker = new GitObjectWalker(_repo);
+            var objectsToSend = await walker.CollectAsync(
+                roots: new[] { localCommit.Value },
+                excludes: advertisement.References.Values,
+                cancellationToken: cancellationToken).ConfigureAwait(false);
+
+            // Always send a packfile for non-delete updates (even an empty pack if objects already exist on remote).
+            // Use a temporary file stream so large packs are not buffered in memory.
+            var tempFilePath = Path.Combine(Path.GetTempPath(), $"pmad_git_pack_{Guid.NewGuid():N}.tmp");
+            FileStream? packDataStream = null;
             try
             {
-                isFastForward = await _repo.IsCommitReachableAsync(from: localCommit.Value, to: remoteCommit.Value, cancellationToken).ConfigureAwait(false);
+                packDataStream = new FileStream(tempFilePath, FileMode.Create, FileAccess.ReadWrite, FileShare.None, 65536, FileOptions.DeleteOnClose);
+                var packBuilder = new GitPackBuilder();
+                await packBuilder.WriteAsync(_repo, objectsToSend, packDataStream, cancellationToken).ConfigureAwait(false);
+                packDataStream.Seek(0, SeekOrigin.Begin);
+
+                var command = new GitRefUpdateCommand(remoteCommit, localCommit.Value, remoteRefName);
+                await _connection.ReceivePackAsync(
+                    remoteUrl,
+                    new[] { command },
+                    packDataStream,
+                    advertisement,
+                    _repo.HashLengthBytes,
+                    cancellationToken).ConfigureAwait(false);
             }
-            catch (Exception ex) when (ex is FileNotFoundException or InvalidOperationException)
+            finally
             {
-                isFastForward = false;
+                if (packDataStream != null)
+                {
+                    await packDataStream.DisposeAsync().ConfigureAwait(false);
+                }
+                if (File.Exists(tempFilePath))
+                {
+                    try { File.Delete(tempFilePath); } catch { }
+                }
             }
 
-            if (!isFastForward)
+            if (!isTag)
             {
-                throw new GitRemoteException("Non-fast-forward push rejected (use force to overwrite).");
+                // Update local remote-tracking reference
+                var trackingRef = $"refs/remotes/{targetRemote}/{localBranch}";
+                await _repo.ReferenceStore.CreateReferenceAsync(trackingRef, localCommit.Value, overwrite: true, cancellationToken).ConfigureAwait(false);
+
+                // Configure upstream tracking if requested
+                if (setUpstream)
+                {
+                    var configPath = Path.Combine(_repo.GitDirectory, "config");
+                    var config = await GitConfigFile.ReadFromFileAsync(configPath, cancellationToken).ConfigureAwait(false);
+                    config.SetValue("branch", localBranch, "remote", targetRemote);
+                    config.SetValue("branch", localBranch, "merge", remoteRefName);
+                    await config.WriteToFileAsync(configPath, cancellationToken).ConfigureAwait(false);
+                }
             }
+
+            _repo.InvalidateCaches(raiseChanged: true);
         }
-
-        // Collect objects to send, excluding objects already present on remote
-        var walker = new GitObjectWalker(_repo);
-        var objectsToSend = await walker.CollectAsync(
-            roots: new[] { localCommit.Value },
-            excludes: advertisement.References.Values,
-            cancellationToken: cancellationToken).ConfigureAwait(false);
-
-        // Always send a packfile for non-delete updates (even an empty pack if objects already exist on remote).
-        // Use a temporary file stream so large packs are not buffered in memory.
-        var tempFilePath = Path.Combine(Path.GetTempPath(), $"pmad_git_pack_{Guid.NewGuid():N}.tmp");
-        FileStream? packDataStream = null;
-        try
-        {
-            packDataStream = new FileStream(tempFilePath, FileMode.Create, FileAccess.ReadWrite, FileShare.None, 65536, FileOptions.DeleteOnClose);
-            var packBuilder = new GitPackBuilder();
-            await packBuilder.WriteAsync(_repo, objectsToSend, packDataStream, cancellationToken).ConfigureAwait(false);
-            packDataStream.Seek(0, SeekOrigin.Begin);
-
-            var command = new GitRefUpdateCommand(remoteCommit, localCommit.Value, remoteRefName);
-            await _connection.ReceivePackAsync(
-                remoteUrl,
-                new[] { command },
-                packDataStream,
-                advertisement,
-                _repo.HashLengthBytes,
-                cancellationToken).ConfigureAwait(false);
-        }
-        finally
-        {
-            if (packDataStream != null)
-            {
-                await packDataStream.DisposeAsync().ConfigureAwait(false);
-            }
-            if (File.Exists(tempFilePath))
-            {
-                try { File.Delete(tempFilePath); } catch { }
-            }
-        }
-
-        if (!isTag)
-        {
-            // Update local remote-tracking reference
-            var trackingRef = $"refs/remotes/{targetRemote}/{localBranch}";
-            await _repo.ReferenceStore.CreateReferenceAsync(trackingRef, localCommit.Value, overwrite: true, cancellationToken).ConfigureAwait(false);
-
-            // Configure upstream tracking if requested
-            if (setUpstream)
-            {
-                var configPath = Path.Combine(_repo.GitDirectory, "config");
-                var config = await GitConfigFile.ReadFromFileAsync(configPath, cancellationToken).ConfigureAwait(false);
-                config.SetValue("branch", localBranch, "remote", targetRemote);
-                config.SetValue("branch", localBranch, "merge", remoteRefName);
-                await config.WriteToFileAsync(configPath, cancellationToken).ConfigureAwait(false);
-            }
-        }
-
-        _repo.InvalidateCaches(raiseChanged: true);
     }
 
     /// <inheritdoc />

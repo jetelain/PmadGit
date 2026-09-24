@@ -6,15 +6,16 @@ using Pmad.Git.RemoteClient;
 
 namespace Pmad.Git.RemoteClient.Test;
 
+internal sealed class MockHttpMessageHandler : HttpMessageHandler
+{
+    public Func<HttpRequestMessage, Task<HttpResponseMessage>> Handler { get; set; } = _ => Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK));
+
+    protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        => Handler(request);
+}
+
 public sealed class GitHttpConnectionTest
 {
-    private sealed class MockHttpMessageHandler : HttpMessageHandler
-    {
-        public Func<HttpRequestMessage, Task<HttpResponseMessage>> Handler { get; set; } = _ => Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK));
-
-        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
-            => Handler(request);
-    }
 
     [Fact]
     public async Task DiscoverReferencesAsync_ValidResponse_ParsesReferencesAndCapabilities()
@@ -707,16 +708,85 @@ public sealed class GitHttpConnectionTest
         Assert.Equal("Remote did not confirm reference update for 'refs/heads/main'.", ex.Message);
     }
 
+    [Theory]
+    [InlineData("git-upload-pack&extra=123")]
+    [InlineData("git-receive-pack;rm")]
+    [InlineData("invalid-service")]
+    [InlineData("git-upload-pack-v2")]
+    public async Task DiscoverReferencesAsync_InvalidService_ThrowsArgumentException(string invalidService)
+    {
+        using var connection = new GitHttpConnection();
+        await Assert.ThrowsAsync<ArgumentException>(async () =>
+        {
+            await connection.DiscoverReferencesAsync(new Uri("http://localhost/test.git"), invalidService);
+        });
+    }
+
     [Fact]
-    public async Task UploadPackAsync_IntermediateAckReady_ConsumesUntilTerminalAck()
+    public async Task UploadPackAsync_TerminalAckReady_ImmediatelyBeginsPackStream()
     {
         var handler = new MockHttpMessageHandler
         {
             Handler = async req =>
             {
                 var body = new MemoryStream();
-                // Send intermediate ACK with "ready"
+                // Send terminal ACK with "ready" per multi-ack-detailed protocol - pack data immediately follows
                 await PktLineWriter.WriteStringAsync(body, "ACK 1111111111111111111111111111111111111111 ready\n", CancellationToken.None);
+                // Send dummy pack data immediately after ACK ready
+                var packData = new byte[] { 0x50, 0x41, 0x43, 0x4B, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x00 };
+                body.Write(packData);
+
+                body.Seek(0, SeekOrigin.Begin);
+                var response = new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new StreamContent(body)
+                };
+                response.Content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/x-git-upload-pack-result");
+                return response;
+            }
+        };
+
+        var httpClient = new HttpClient(handler);
+        using var connection = new GitHttpConnection(new GitRemoteClientOptions { HttpClient = httpClient });
+
+        var ad = new GitRemoteAdvertisement(
+            new Dictionary<string, GitHash> { ["refs/heads/main"] = new("1111111111111111111111111111111111111111") },
+            new HashSet<string> { "multi_ack_detailed" }, // no sideband to test raw stream
+            new Dictionary<string, string>(),
+            "refs/heads/main",
+            new("1111111111111111111111111111111111111111"),
+            GitObjectFormat.Sha1,
+            "test");
+
+        await using var uploadPackResponse = await connection.UploadPackAsync(
+            new Uri("http://localhost/test.git"),
+            new[] { new GitHash("1111111111111111111111111111111111111111") },
+            Array.Empty<GitHash>(),
+            ad);
+
+        var buffer = new byte[4];
+        var read = await uploadPackResponse.PackStream.ReadAsync(buffer, CancellationToken.None);
+        Assert.Equal(4, read);
+        Assert.Equal(new byte[] { 0x50, 0x41, 0x43, 0x4B }, buffer);
+    }
+
+    [Fact]
+    public async Task UploadPackAsync_IntermediateAckContinueAndCommon_ConsumesUntilTerminalAck()
+    {
+        string? capturedBody = null;
+        var handler = new MockHttpMessageHandler
+        {
+            Handler = async req =>
+            {
+                if (req.Content != null)
+                {
+                    capturedBody = await req.Content.ReadAsStringAsync();
+                }
+
+                var body = new MemoryStream();
+                // Send intermediate ACKs with "common" and "continue"
+                await PktLineWriter.WriteStringAsync(body, "ACK 2222222222222222222222222222222222222222 common\n", CancellationToken.None);
+                await PktLineWriter.WriteStringAsync(body, "ACK 3333333333333333333333333333333333333333 continue\n", CancellationToken.None);
                 // Send terminal ACK
                 await PktLineWriter.WriteStringAsync(body, "ACK 1111111111111111111111111111111111111111\n", CancellationToken.None);
                 // Send dummy pack data
@@ -738,7 +808,7 @@ public sealed class GitHttpConnectionTest
 
         var ad = new GitRemoteAdvertisement(
             new Dictionary<string, GitHash> { ["refs/heads/main"] = new("1111111111111111111111111111111111111111") },
-            new HashSet<string>(), // no sideband to test raw stream
+            new HashSet<string> { "multi_ack_detailed" },
             new Dictionary<string, string>(),
             "refs/heads/main",
             new("1111111111111111111111111111111111111111"),
@@ -750,6 +820,9 @@ public sealed class GitHttpConnectionTest
             new[] { new GitHash("1111111111111111111111111111111111111111") },
             Array.Empty<GitHash>(),
             ad);
+
+        Assert.NotNull(capturedBody);
+        Assert.Contains("multi_ack_detailed", capturedBody);
 
         var buffer = new byte[4];
         var read = await uploadPackResponse.PackStream.ReadAsync(buffer, CancellationToken.None);

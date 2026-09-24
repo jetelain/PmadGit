@@ -1,5 +1,7 @@
+using System.Net;
 using Pmad.Git.LocalRepositories;
 using Pmad.Git.LocalRepositories.Config;
+using Pmad.Git.Protocol;
 using Pmad.Git.RemoteClient;
 
 namespace Pmad.Git.RemoteClient.Test;
@@ -180,6 +182,88 @@ public sealed class GitRemoteClientRepositoryTest : IDisposable
         {
             await clientRepo.PullAsync();
         });
+    }
+
+    [Fact]
+    public async Task PushAsync_HoldsReferenceLock_BlocksConcurrentCommit()
+    {
+        var repo = GitRepositoryWithIndexAndWorkspace.Init(_workingDir);
+        File.WriteAllText(Path.Combine(_workingDir, "file.txt"), "hello");
+        await repo.StageAsync("file.txt");
+        var firstCommit = await repo.CommitAsync("Initial commit");
+
+        var pushPausedTcs = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var pushResumeTcs = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        var handler = new MockHttpMessageHandler
+        {
+            Handler = async req =>
+            {
+                if (req.RequestUri!.PathAndQuery.Contains("info/refs"))
+                {
+                    var body = new MemoryStream();
+                    await PktLineWriter.WriteStringAsync(body, "# service=git-receive-pack\n", CancellationToken.None);
+                    await PktLineWriter.WriteFlushAsync(body, CancellationToken.None);
+                    await PktLineWriter.WriteStringAsync(body, "0000000000000000000000000000000000000000 capabilities^{}\0report-status\n", CancellationToken.None);
+                    await PktLineWriter.WriteFlushAsync(body, CancellationToken.None);
+                    body.Seek(0, SeekOrigin.Begin);
+
+                    var response = new HttpResponseMessage(HttpStatusCode.OK)
+                    {
+                        Content = new StreamContent(body)
+                    };
+                    response.Content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/x-git-receive-pack-advertisement");
+                    return response;
+                }
+                else
+                {
+                    // Inside receive-pack POST: signal that push is in-flight and hold until resumed
+                    pushPausedTcs.TrySetResult();
+                    await pushResumeTcs.Task;
+
+                    var body = new MemoryStream();
+                    await PktLineWriter.WriteStringAsync(body, "unpack ok\n", CancellationToken.None);
+                    await PktLineWriter.WriteStringAsync(body, "ok refs/heads/main\n", CancellationToken.None);
+                    await PktLineWriter.WriteFlushAsync(body, CancellationToken.None);
+                    body.Seek(0, SeekOrigin.Begin);
+
+                    var response = new HttpResponseMessage(HttpStatusCode.OK)
+                    {
+                        Content = new StreamContent(body)
+                    };
+                    response.Content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/x-git-receive-pack-result");
+                    return response;
+                }
+            }
+        };
+
+        var httpClient = new HttpClient(handler);
+        var options = new GitRemoteClientOptions { HttpClient = httpClient };
+        using var clientRepo = new GitRemoteClientRepository(repo, "http://localhost/test.git", options);
+
+        var pushTask = Task.Run(async () => await clientRepo.PushAsync());
+
+        // Wait until push is inside the HTTP receive-pack call (holding the reference lock)
+        await pushPausedTcs.Task;
+
+        // Try to commit concurrently on the same branch
+        File.WriteAllText(Path.Combine(_workingDir, "file.txt"), "updated during push");
+        await repo.StageAsync("file.txt");
+        var commitTask = Task.Run(async () => await repo.CommitAsync("Concurrent commit"));
+
+        // Give a short delay to verify commitTask cannot complete while lock is held
+        var completed = await Task.WhenAny(commitTask, Task.Delay(150));
+        Assert.NotSame(commitTask, completed);
+        Assert.False(commitTask.IsCompleted);
+
+        // Resume push
+        pushResumeTcs.TrySetResult();
+
+        // Now both should complete successfully
+        await pushTask;
+        var secondCommit = await commitTask;
+
+        Assert.NotEqual(firstCommit, secondCommit);
     }
 
     public void Dispose()

@@ -52,6 +52,11 @@ public sealed class GitHttpConnection : IDisposable
         ArgumentNullException.ThrowIfNull(remoteUrl);
         ArgumentException.ThrowIfNullOrWhiteSpace(service);
 
+        if (service != "git-upload-pack" && service != "git-receive-pack")
+        {
+            throw new ArgumentException($"Invalid Git service '{service}'. Expected 'git-upload-pack' or 'git-receive-pack'.", nameof(service));
+        }
+
         var requestUri = BuildServiceUri(remoteUrl, "info/refs", $"service={service}");
 
         using var timeoutCts = new CancellationTokenSource(_options.Timeout);
@@ -115,7 +120,11 @@ public sealed class GitHttpConnection : IDisposable
 
             // Negotiate client capabilities to include in first want line
             var clientCapabilities = new List<string>();
-            if (advertisement.Capabilities.Contains("multi_ack"))
+            if (advertisement.Capabilities.Contains("multi_ack_detailed"))
+            {
+                clientCapabilities.Add("multi_ack_detailed");
+            }
+            else if (advertisement.Capabilities.Contains("multi_ack"))
             {
                 clientCapabilities.Add("multi_ack");
             }
@@ -202,15 +211,14 @@ public sealed class GitHttpConnection : IDisposable
                     }
                     if (line.StartsWith("ACK", StringComparison.Ordinal))
                     {
-                        // Intermediate ACKs end with "continue", "common", or "ready"
+                        // Intermediate ACKs end with "continue" or "common"
                         if (line.EndsWith(" continue", StringComparison.Ordinal) ||
-                            line.EndsWith(" common", StringComparison.Ordinal) ||
-                            line.EndsWith(" ready", StringComparison.Ordinal))
+                            line.EndsWith(" common", StringComparison.Ordinal))
                         {
                             continue;
                         }
 
-                        // Terminal ACK
+                        // Terminal ACK (including "ACK <oid>" or "ACK <oid> ready")
                         break;
                     }
                 }
