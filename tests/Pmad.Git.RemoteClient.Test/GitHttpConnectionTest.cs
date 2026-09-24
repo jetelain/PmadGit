@@ -549,6 +549,40 @@ public sealed class GitHttpConnectionTest
     }
 
     [Fact]
+    public async Task DiscoverReferencesAsync_ServerReturnsErrPacket_ThrowsGitRemoteException()
+    {
+        var handler = new MockHttpMessageHandler
+        {
+            Handler = async req =>
+            {
+                var body = new MemoryStream();
+                await PktLineWriter.WriteStringAsync(body, "# service=git-upload-pack\n", CancellationToken.None);
+                await PktLineWriter.WriteFlushAsync(body, CancellationToken.None);
+                await PktLineWriter.WriteStringAsync(body, "ERR repository not exported\n", CancellationToken.None);
+                await PktLineWriter.WriteFlushAsync(body, CancellationToken.None);
+                body.Seek(0, SeekOrigin.Begin);
+
+                var response = new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new StreamContent(body)
+                };
+                response.Content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/x-git-upload-pack-advertisement");
+                return response;
+            }
+        };
+
+        var httpClient = new HttpClient(handler);
+        using var connection = new GitHttpConnection(new GitRemoteClientOptions { HttpClient = httpClient });
+
+        var ex = await Assert.ThrowsAsync<GitRemoteException>(async () =>
+        {
+            await connection.DiscoverReferencesAsync(new Uri("http://localhost/repo.git"), "git-upload-pack");
+        });
+
+        Assert.Equal("Server returned error: repository not exported", ex.Message);
+    }
+
+    [Fact]
     public async Task DiscoverReferencesAsync_UrlWithUserInfo_AppliesBasicAuthHeader()
     {
         HttpRequestMessage? capturedRequest = null;

@@ -551,6 +551,11 @@ public sealed class GitHttpConnection : IDisposable
                 continue;
             }
 
+            if (text.StartsWith("ERR ", StringComparison.Ordinal))
+            {
+                throw new GitRemoteException($"Server returned error: {text[4..]}");
+            }
+
             if (first)
             {
                 first = false;

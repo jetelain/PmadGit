@@ -1,4 +1,5 @@
 using Pmad.Git.LocalRepositories;
+using Pmad.Git.LocalRepositories.Config;
 using Pmad.Git.RemoteClient;
 
 namespace Pmad.Git.RemoteClient.Test;
@@ -94,6 +95,90 @@ public sealed class GitRemoteClientRepositoryTest : IDisposable
         await Assert.ThrowsAsync<ArgumentException>(async () =>
         {
             await GitRemoteClientRepository.CloneAsync("http://localhost/test.git", Path.Combine(_workingDir, "clone"), remoteName: invalidName);
+        });
+    }
+
+    [Theory]
+    [InlineData("ssh://git@github.com/owner/repo.git")]
+    [InlineData("git@github.com:owner/repo.git")]
+    [InlineData("file:///C:/repos/test.git")]
+    [InlineData("ftp://example.com/repo.git")]
+    public async Task CloneAsync_UnsupportedScheme_ThrowsNotSupportedException(string unsupportedUrl)
+    {
+        var targetDir = Path.Combine(_workingDir, "clone-unsupported");
+        await Assert.ThrowsAsync<NotSupportedException>(async () =>
+        {
+            await GitRemoteClientRepository.CloneAsync(unsupportedUrl, targetDir);
+        });
+    }
+
+    [Theory]
+    [InlineData("refs/tags/v1.0")]
+    [InlineData("refs/remotes/origin/main")]
+    [InlineData("refs/pull/1/head")]
+    public async Task CloneAsync_NonHeadRef_ThrowsArgumentException(string nonHeadRef)
+    {
+        var targetDir = Path.Combine(_workingDir, "clone-ref");
+        await Assert.ThrowsAsync<ArgumentException>(async () =>
+        {
+            await GitRemoteClientRepository.CloneAsync("http://localhost/test.git", targetDir, branch: nonHeadRef);
+        });
+    }
+
+    [Fact]
+    public async Task PushAsync_EmptyBranchWithoutCommit_ThrowsInvalidOperationException()
+    {
+        var repo = GitRepositoryWithIndexAndWorkspace.Init(_workingDir);
+        using var clientRepo = new GitRemoteClientRepository(repo, "http://localhost/test.git");
+
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(async () =>
+        {
+            await clientRepo.PushAsync();
+        });
+
+        Assert.Contains("has no commits to push", ex.Message);
+    }
+
+    [Fact]
+    public async Task FetchAsync_UnsupportedConfiguredRemoteUrl_ThrowsNotSupportedException()
+    {
+        var repo = GitRepositoryWithIndexAndWorkspace.Init(_workingDir);
+        var configPath = Path.Combine(repo.GitDirectory, "config");
+        var config = await GitConfigFile.ReadFromFileAsync(configPath);
+        config.SetValue("remote", "origin", "url", "git@github.com:owner/repo.git");
+        await config.WriteToFileAsync(configPath);
+
+        using var clientRepo = new GitRemoteClientRepository(repo);
+
+        var ex = await Assert.ThrowsAsync<NotSupportedException>(async () =>
+        {
+            await clientRepo.FetchAsync();
+        });
+
+        Assert.Contains("only supports HTTP and HTTPS", ex.Message);
+    }
+
+    [Fact]
+    public async Task PullAsync_RebaseTrue_ThrowsNotSupportedException()
+    {
+        var repo = GitRepositoryWithIndexAndWorkspace.Init(_workingDir);
+        using var clientRepo = new GitRemoteClientRepository(repo);
+
+        await Assert.ThrowsAsync<NotSupportedException>(async () =>
+        {
+            await clientRepo.PullAsync(rebase: true);
+        });
+    }
+
+    [Fact]
+    public async Task PullAsync_BareRepoWithoutWorkspace_ThrowsInvalidOperationException()
+    {
+        var repo = GitRepository.Init(_workingDir, bare: true);
+        using var clientRepo = new GitRemoteClientRepository(repo);
+
+        await Assert.ThrowsAsync<InvalidOperationException>(async () =>
+        {
+            await clientRepo.PullAsync();
         });
     }
 

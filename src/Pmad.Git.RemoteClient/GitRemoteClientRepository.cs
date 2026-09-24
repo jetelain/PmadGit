@@ -134,7 +134,21 @@ public sealed class GitRemoteClientRepository : IGitRepositoryWithRemote, IDispo
         }
 
         remoteName ??= "origin";
-        var remoteUri = new Uri(remoteUrl);
+
+        if (!Uri.TryCreate(remoteUrl, UriKind.Absolute, out var remoteUri) ||
+            (remoteUri.Scheme != Uri.UriSchemeHttp && remoteUri.Scheme != Uri.UriSchemeHttps))
+        {
+            throw new NotSupportedException($"Unsupported remote URL '{remoteUrl}'. The managed Git remote client only supports HTTP and HTTPS protocols.");
+        }
+
+        if (!string.IsNullOrEmpty(branch))
+        {
+            ValidateBranchName(branch);
+            if (branch.StartsWith("refs/", StringComparison.Ordinal) && !branch.StartsWith("refs/heads/", StringComparison.Ordinal))
+            {
+                throw new ArgumentException($"Cannot clone reference '{branch}'. Only branch names or 'refs/heads/<name>' are supported.", nameof(branch));
+            }
+        }
 
         var clientOptions = options != null
             ? new GitRemoteClientOptions
@@ -173,7 +187,6 @@ public sealed class GitRemoteClientRepository : IGitRepositoryWithRemote, IDispo
         string targetBranch;
         if (!string.IsNullOrEmpty(branch))
         {
-            ValidateBranchName(branch);
             targetBranch = branch.StartsWith("refs/heads/", StringComparison.Ordinal)
                 ? branch["refs/heads/".Length..]
                 : branch;
@@ -185,13 +198,27 @@ public sealed class GitRemoteClientRepository : IGitRepositoryWithRemote, IDispo
         }
         else if (advertisement.HeadHash.HasValue)
         {
-            var matchingRef = advertisement.References.FirstOrDefault(r =>
-                r.Key.StartsWith("refs/heads/", StringComparison.Ordinal) &&
-                r.Value.Equals(advertisement.HeadHash.Value));
+            var matchingRefs = advertisement.References
+                .Where(r => r.Key.StartsWith("refs/heads/", StringComparison.Ordinal) && r.Value.Equals(advertisement.HeadHash.Value))
+                .Select(r => r.Key["refs/heads/".Length..])
+                .ToList();
 
-            targetBranch = !string.IsNullOrEmpty(matchingRef.Key)
-                ? matchingRef.Key["refs/heads/".Length..]
-                : "main";
+            if (matchingRefs.Contains("main"))
+            {
+                targetBranch = "main";
+            }
+            else if (matchingRefs.Contains("master"))
+            {
+                targetBranch = "master";
+            }
+            else if (matchingRefs.Count > 0)
+            {
+                targetBranch = matchingRefs[0];
+            }
+            else
+            {
+                targetBranch = "main";
+            }
         }
         else
         {
@@ -442,6 +469,18 @@ public sealed class GitRemoteClientRepository : IGitRepositoryWithRemote, IDispo
                     continue;
                 }
 
+                if (!string.IsNullOrEmpty(branch))
+                {
+                    var cleanBranch = branch.StartsWith("refs/heads/", StringComparison.Ordinal)
+                        ? branch["refs/heads/".Length..]
+                        : branch;
+
+                    if (!branchName.Equals(cleanBranch, StringComparison.Ordinal))
+                    {
+                        continue;
+                    }
+                }
+
                 var remoteBranchRef = $"refs/heads/{branchName}";
                 if (!advertisement.References.ContainsKey(remoteBranchRef))
                 {
@@ -467,7 +506,7 @@ public sealed class GitRemoteClientRepository : IGitRepositoryWithRemote, IDispo
         }
 
         var targetRemote = remote ?? await ResolveRemoteNameAsync(branch, cancellationToken).ConfigureAwait(false);
-        var localBranch = branch ?? await _repo.ReferenceStore.GetCurrentBranchNameAsync(cancellationToken).ConfigureAwait(false);
+        var localBranch = branch ?? await GetCurrentBranchOrUnbornBranchAsync(cancellationToken).ConfigureAwait(false);
         if (string.IsNullOrEmpty(localBranch))
         {
             throw new InvalidOperationException("Cannot push in detached HEAD state without specifying a branch.");
@@ -520,6 +559,10 @@ public sealed class GitRemoteClientRepository : IGitRepositoryWithRemote, IDispo
         var localCommit = await _repo.ReferenceStore.TryResolveReferenceAsync(localRef, cancellationToken).ConfigureAwait(false);
         if (!localCommit.HasValue)
         {
+            if (string.IsNullOrEmpty(branch))
+            {
+                throw new InvalidOperationException($"Current branch '{localBranch}' has no commits to push.");
+            }
             var refKind = isTag ? "Tag" : "Branch";
             throw new ArgumentException($"{refKind} '{localBranch}' does not exist.", nameof(branch));
         }
@@ -688,6 +731,12 @@ public sealed class GitRemoteClientRepository : IGitRepositoryWithRemote, IDispo
             }
         }
 
+        var remoteCommit = await _repo.ReferenceStore.TryResolveReferenceAsync(targetRemoteBranch, cancellationToken).ConfigureAwait(false);
+        if (!remoteCommit.HasValue)
+        {
+            throw new InvalidOperationException($"Remote-tracking branch '{targetRemoteBranch}' not found. Cannot pull without an existing remote tracking branch.");
+        }
+
         return await MergeAsync(targetRemoteBranch, cancellationToken).ConfigureAwait(false);
     }
 
@@ -759,9 +808,35 @@ public sealed class GitRemoteClientRepository : IGitRepositoryWithRemote, IDispo
         }
     }
 
+    private async Task<string?> GetCurrentBranchOrUnbornBranchAsync(CancellationToken cancellationToken)
+    {
+        var currentBranch = await _repo.ReferenceStore.GetCurrentBranchNameAsync(cancellationToken).ConfigureAwait(false);
+        if (!string.IsNullOrEmpty(currentBranch))
+        {
+            return currentBranch;
+        }
+
+        var headPath = Path.Combine(_repo.GitDirectory, "HEAD");
+        if (File.Exists(headPath))
+        {
+            var content = (await File.ReadAllTextAsync(headPath, cancellationToken).ConfigureAwait(false)).Trim();
+            const string prefix = "ref: refs/heads/";
+            if (content.StartsWith(prefix, StringComparison.Ordinal))
+            {
+                var branch = content[prefix.Length..].Trim();
+                if (!string.IsNullOrEmpty(branch))
+                {
+                    return branch;
+                }
+            }
+        }
+
+        return null;
+    }
+
     private async Task<string> ResolveRemoteNameAsync(string? branch, CancellationToken cancellationToken)
     {
-        var targetBranch = branch ?? await _repo.ReferenceStore.GetCurrentBranchNameAsync(cancellationToken).ConfigureAwait(false);
+        var targetBranch = branch ?? await GetCurrentBranchOrUnbornBranchAsync(cancellationToken).ConfigureAwait(false);
         if (!string.IsNullOrEmpty(targetBranch))
         {
             if (targetBranch.StartsWith("refs/heads/", StringComparison.Ordinal))
@@ -789,6 +864,7 @@ public sealed class GitRemoteClientRepository : IGitRepositoryWithRemote, IDispo
     {
         ValidateRemoteName(remoteName, nameof(remoteName));
 
+        string? urlString = null;
         var configPath = Path.Combine(_repo.GitDirectory, "config");
         if (File.Exists(configPath))
         {
@@ -796,16 +872,27 @@ public sealed class GitRemoteClientRepository : IGitRepositoryWithRemote, IDispo
             var configuredUrl = config.GetValue("remote", remoteName, "url");
             if (!string.IsNullOrEmpty(configuredUrl))
             {
-                return new Uri(configuredUrl);
+                urlString = configuredUrl;
             }
         }
 
-        if (!string.IsNullOrEmpty(DefaultRemoteUrl))
+        if (string.IsNullOrEmpty(urlString) && !string.IsNullOrEmpty(DefaultRemoteUrl))
         {
-            return new Uri(DefaultRemoteUrl);
+            urlString = DefaultRemoteUrl;
         }
 
-        throw new InvalidOperationException($"No remote URL configured for remote '{remoteName}'.");
+        if (string.IsNullOrEmpty(urlString))
+        {
+            throw new InvalidOperationException($"No remote URL configured for remote '{remoteName}'.");
+        }
+
+        if (!Uri.TryCreate(urlString, UriKind.Absolute, out var uri) ||
+            (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps))
+        {
+            throw new NotSupportedException($"Unsupported remote URL '{urlString}'. The managed Git remote client only supports HTTP and HTTPS protocols.");
+        }
+
+        return uri;
     }
 
     private static void TryDeleteDirectory(string path)
