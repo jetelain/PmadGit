@@ -4,6 +4,19 @@ using Pmad.Git.RemoteClient;
 
 namespace Pmad.Git.RemoteClient.Test;
 
+[AttributeUsage(AttributeTargets.Method, AllowMultiple = false)]
+public sealed class GitHubIntegrationFactAttribute : FactAttribute
+{
+    public GitHubIntegrationFactAttribute()
+    {
+        if (Environment.GetEnvironmentVariable("RUN_GITHUB_INTEGRATION_TESTS") != "1")
+        {
+            Skip = "Opt-in live integration test. Set RUN_GITHUB_INTEGRATION_TESTS=1 to run.";
+        }
+    }
+}
+
+[Trait("Category", "Integration")]
 public sealed class GitHubIntegrationTest
 {
     private const string GitHubRepoUrl = "https://github.com/jetelain/PmadGit.git";
@@ -26,11 +39,11 @@ public sealed class GitHubIntegrationTest
     {
         if (!await IsGitHubReachableAsync().ConfigureAwait(false))
         {
-            Assert.Fail($"GitHub repository '{GitHubRepoUrl}' is unreachable. Live integration tests require network access to GitHub.");
+            throw new Xunit.Sdk.XunitException($"GitHub repository '{GitHubRepoUrl}' is unreachable. Live integration tests require network access to GitHub.");
         }
     }
 
-    [Fact]
+    [GitHubIntegrationFact]
     public async Task DiscoverReferencesAsync_FromGitHub_Succeeds()
     {
         await EnsureGitHubReachableAsync();
@@ -49,7 +62,7 @@ public sealed class GitHubIntegrationTest
         Assert.StartsWith("git/github", advertisement.Agent);
     }
 
-    [Fact]
+    [GitHubIntegrationFact]
     public async Task CloneAsync_FromGitHub_ClonesRepositoryAndReadsCommits()
     {
         await EnsureGitHubReachableAsync();
@@ -96,7 +109,7 @@ public sealed class GitHubIntegrationTest
         }
     }
 
-    [Fact]
+    [GitHubIntegrationFact]
     public async Task FetchAsync_FromGitHub_IncrementalFetchSucceeds()
     {
         await EnsureGitHubReachableAsync();

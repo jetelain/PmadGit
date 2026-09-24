@@ -138,7 +138,7 @@ public sealed class GitRemoteClientRepository : IGitRepositoryWithRemote, IDispo
         if (!Uri.TryCreate(remoteUrl, UriKind.Absolute, out var remoteUri) ||
             (remoteUri.Scheme != Uri.UriSchemeHttp && remoteUri.Scheme != Uri.UriSchemeHttps))
         {
-            throw new NotSupportedException($"Unsupported remote URL '{remoteUrl}'. The managed Git remote client only supports HTTP and HTTPS protocols.");
+            throw new NotSupportedException($"Unsupported remote URL '{FormatDiagnosticUrl(remoteUrl)}'. The managed Git remote client only supports HTTP and HTTPS protocols.");
         }
 
         if (!string.IsNullOrEmpty(branch))
@@ -556,6 +556,15 @@ public sealed class GitRemoteClientRepository : IGitRepositoryWithRemote, IDispo
             }
         }
 
+        try
+        {
+            GitReferenceStore.NormalizeAbsoluteReferencePath(remoteRefName);
+        }
+        catch (ArgumentException ex)
+        {
+            throw new ArgumentException($"Invalid reference name to push '{remoteRefName}': {ex.Message}", nameof(branch), ex);
+        }
+
         using (await _repo.LockManager.AcquireReferenceLockAsync(localRef, cancellationToken).ConfigureAwait(false))
         {
             var localCommit = await _repo.ReferenceStore.TryResolveReferenceAsync(localRef, cancellationToken).ConfigureAwait(false);
@@ -892,10 +901,32 @@ public sealed class GitRemoteClientRepository : IGitRepositoryWithRemote, IDispo
         if (!Uri.TryCreate(urlString, UriKind.Absolute, out var uri) ||
             (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps))
         {
-            throw new NotSupportedException($"Unsupported remote URL '{urlString}'. The managed Git remote client only supports HTTP and HTTPS protocols.");
+            throw new NotSupportedException($"Unsupported remote URL '{FormatDiagnosticUrl(urlString)}'. The managed Git remote client only supports HTTP and HTTPS protocols.");
         }
 
         return uri;
+    }
+
+    internal static string FormatDiagnosticUrl(string? url)
+    {
+        if (string.IsNullOrEmpty(url))
+        {
+            return string.Empty;
+        }
+
+        if (Uri.TryCreate(url, UriKind.Absolute, out var uri))
+        {
+            return GitHttpConnection.FormatDiagnosticUri(uri);
+        }
+
+        var atIndex = url.IndexOf('@');
+        var schemeIndex = url.IndexOf("://", StringComparison.Ordinal);
+        if (schemeIndex >= 0 && atIndex > schemeIndex)
+        {
+            return string.Concat(url.AsSpan(0, schemeIndex + 3), url.AsSpan(atIndex + 1));
+        }
+
+        return url;
     }
 
     private static void TryDeleteDirectory(string path)
@@ -924,37 +955,20 @@ public sealed class GitRemoteClientRepository : IGitRepositoryWithRemote, IDispo
             throw new ArgumentException("Branch name cannot be empty.", paramName);
         }
 
-        var clean = branchName;
-        if (clean.StartsWith("refs/heads/", StringComparison.Ordinal))
+        var fullRef = branchName.StartsWith("refs/", StringComparison.Ordinal)
+            ? branchName
+            : $"refs/heads/{branchName}";
+
+        try
         {
-            clean = clean["refs/heads/".Length..];
+            GitReferenceStore.NormalizeAbsoluteReferencePath(fullRef);
         }
-        else if (clean.StartsWith("refs/", StringComparison.Ordinal))
+        catch (ArgumentException ex)
         {
-            clean = clean["refs/".Length..];
+            throw new ArgumentException($"Invalid branch name '{branchName}': {ex.Message}", paramName, ex);
         }
 
-        var segments = clean.Split('/');
-        foreach (var segment in segments)
-        {
-            if (string.IsNullOrEmpty(segment) || segment == "." || segment == "..")
-            {
-                throw new ArgumentException($"Invalid branch name '{branchName}': contains invalid path segments.", paramName);
-            }
-        }
-
-        if (clean.Contains('\\') ||
-            clean.Contains("..") ||
-            clean.Contains(' ') ||
-            clean.Contains('~') ||
-            clean.Contains('^') ||
-            clean.Contains(':') ||
-            clean.Contains('?') ||
-            clean.Contains('*') ||
-            clean.Contains('[') ||
-            clean.Contains("@{") ||
-            clean.EndsWith(".lock", StringComparison.OrdinalIgnoreCase) ||
-            clean.EndsWith('/'))
+        if (branchName.Contains("@{") || branchName.EndsWith('/'))
         {
             throw new ArgumentException($"Invalid branch name '{branchName}'.", paramName);
         }

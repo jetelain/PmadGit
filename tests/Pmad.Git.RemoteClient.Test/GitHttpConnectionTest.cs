@@ -889,4 +889,231 @@ public sealed class GitHttpConnectionTest
         public override void SetLength(long value) => throw new NotSupportedException();
         public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
     }
+
+    [Fact]
+    public async Task DiscoverReferencesAsync_SameOriginRedirect_FollowsAndReappliesCredentials()
+    {
+        var requestCount = 0;
+        var handler = new MockHttpMessageHandler
+        {
+            Handler = async req =>
+            {
+                requestCount++;
+                if (requestCount == 1)
+                {
+                    Assert.NotNull(req.Headers.Authorization);
+                    var redirect = new HttpResponseMessage(HttpStatusCode.MovedPermanently);
+                    redirect.Headers.Location = new Uri("https://server.com/redirected.git/info/refs?service=git-upload-pack");
+                    return redirect;
+                }
+
+                Assert.Equal(2, requestCount);
+                Assert.Equal(new Uri("https://server.com/redirected.git/info/refs?service=git-upload-pack"), req.RequestUri);
+                Assert.NotNull(req.Headers.Authorization);
+                Assert.Equal("Basic", req.Headers.Authorization!.Scheme);
+
+                var body = new MemoryStream();
+                await PktLineWriter.WriteStringAsync(body, "# service=git-upload-pack\n", CancellationToken.None);
+                await PktLineWriter.WriteFlushAsync(body, CancellationToken.None);
+                await PktLineWriter.WriteStringAsync(body, "1111111111111111111111111111111111111111 HEAD\0symref=HEAD:refs/heads/main\n", CancellationToken.None);
+                await PktLineWriter.WriteFlushAsync(body, CancellationToken.None);
+                body.Seek(0, SeekOrigin.Begin);
+
+                var response = new HttpResponseMessage(HttpStatusCode.OK) { Content = new StreamContent(body) };
+                response.Content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/x-git-upload-pack-advertisement");
+                return response;
+            }
+        };
+
+        var httpClient = new HttpClient(handler);
+        var options = new GitRemoteClientOptions
+        {
+            HttpClient = httpClient,
+            Credentials = GitHttpCredentials.Basic("user", "pass")
+        };
+        using var connection = new GitHttpConnection(options);
+
+        var ad = await connection.DiscoverReferencesAsync(new Uri("https://server.com/repo.git"), "git-upload-pack");
+        Assert.NotNull(ad);
+        Assert.Equal(2, requestCount);
+    }
+
+    [Fact]
+    public async Task DiscoverReferencesAsync_CrossOriginRedirect_StripsCredentials()
+    {
+        var requestCount = 0;
+        var handler = new MockHttpMessageHandler
+        {
+            Handler = async req =>
+            {
+                requestCount++;
+                if (requestCount == 1)
+                {
+                    Assert.True(req.Headers.Contains("X-Custom-Auth"));
+                    var redirect = new HttpResponseMessage(HttpStatusCode.Found);
+                    redirect.Headers.Location = new Uri("https://other-server.com/repo.git/info/refs?service=git-upload-pack");
+                    return redirect;
+                }
+
+                Assert.Equal(2, requestCount);
+                Assert.Equal(new Uri("https://other-server.com/repo.git/info/refs?service=git-upload-pack"), req.RequestUri);
+                // Authorization and custom credential headers must NOT be forwarded cross-origin
+                Assert.Null(req.Headers.Authorization);
+                Assert.False(req.Headers.Contains("X-Custom-Auth"));
+
+                var body = new MemoryStream();
+                await PktLineWriter.WriteStringAsync(body, "# service=git-upload-pack\n", CancellationToken.None);
+                await PktLineWriter.WriteFlushAsync(body, CancellationToken.None);
+                await PktLineWriter.WriteStringAsync(body, "1111111111111111111111111111111111111111 HEAD\0symref=HEAD:refs/heads/main\n", CancellationToken.None);
+                await PktLineWriter.WriteFlushAsync(body, CancellationToken.None);
+                body.Seek(0, SeekOrigin.Begin);
+
+                var response = new HttpResponseMessage(HttpStatusCode.OK) { Content = new StreamContent(body) };
+                response.Content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/x-git-upload-pack-advertisement");
+                return response;
+            }
+        };
+
+        var httpClient = new HttpClient(handler);
+        var options = new GitRemoteClientOptions
+        {
+            HttpClient = httpClient,
+            Credentials = GitHttpCredentials.Custom("X-Custom-Auth", "secret-token")
+        };
+        using var connection = new GitHttpConnection(options);
+
+        var ad = await connection.DiscoverReferencesAsync(new Uri("https://server.com/repo.git"), "git-upload-pack");
+        Assert.NotNull(ad);
+        Assert.Equal(2, requestCount);
+    }
+
+    [Fact]
+    public async Task DiscoverReferencesAsync_InsecureRedirect_ThrowsGitRemoteException()
+    {
+        var handler = new MockHttpMessageHandler
+        {
+            Handler = req =>
+            {
+                var redirect = new HttpResponseMessage(HttpStatusCode.Found);
+                redirect.Headers.Location = new Uri("http://server.com/repo.git/info/refs?service=git-upload-pack");
+                return Task.FromResult(redirect);
+            }
+        };
+
+        var httpClient = new HttpClient(handler);
+        using var connection = new GitHttpConnection(new GitRemoteClientOptions { HttpClient = httpClient });
+
+        var ex = await Assert.ThrowsAsync<GitRemoteException>(async () =>
+        {
+            await connection.DiscoverReferencesAsync(new Uri("https://server.com/repo.git"), "git-upload-pack");
+        });
+
+        Assert.Contains("Insecure redirect", ex.Message);
+    }
+
+    [Fact]
+    public async Task DiscoverReferencesAsync_UnsupportedSchemeRedirect_ThrowsNotSupportedException()
+    {
+        var handler = new MockHttpMessageHandler
+        {
+            Handler = req =>
+            {
+                var redirect = new HttpResponseMessage(HttpStatusCode.Found);
+                redirect.Headers.Location = new Uri("ftp://server.com/repo.git");
+                return Task.FromResult(redirect);
+            }
+        };
+
+        var httpClient = new HttpClient(handler);
+        using var connection = new GitHttpConnection(new GitRemoteClientOptions { HttpClient = httpClient });
+
+        var ex = await Assert.ThrowsAsync<NotSupportedException>(async () =>
+        {
+            await connection.DiscoverReferencesAsync(new Uri("https://server.com/repo.git"), "git-upload-pack");
+        });
+
+        Assert.Contains("Unsupported redirect URL scheme", ex.Message);
+    }
+
+    [Fact]
+    public async Task DiscoverReferencesAsync_TooManyRedirects_ThrowsGitRemoteException()
+    {
+        var redirectNum = 0;
+        var handler = new MockHttpMessageHandler
+        {
+            Handler = req =>
+            {
+                redirectNum++;
+                var redirect = new HttpResponseMessage(HttpStatusCode.Found);
+                redirect.Headers.Location = new Uri($"https://server.com/hop{redirectNum}/info/refs?service=git-upload-pack");
+                return Task.FromResult(redirect);
+            }
+        };
+
+        var httpClient = new HttpClient(handler);
+        using var connection = new GitHttpConnection(new GitRemoteClientOptions { HttpClient = httpClient });
+
+        var ex = await Assert.ThrowsAsync<GitRemoteException>(async () =>
+        {
+            await connection.DiscoverReferencesAsync(new Uri("https://server.com/repo.git"), "git-upload-pack");
+        });
+
+        Assert.Contains("Too many redirects", ex.Message);
+    }
+
+    [Fact]
+    public async Task DiscoverReferencesAsync_MissingLocationHeader_ThrowsGitRemoteException()
+    {
+        var handler = new MockHttpMessageHandler
+        {
+            Handler = req => Task.FromResult(new HttpResponseMessage(HttpStatusCode.Found))
+        };
+
+        var httpClient = new HttpClient(handler);
+        using var connection = new GitHttpConnection(new GitRemoteClientOptions { HttpClient = httpClient });
+
+        var ex = await Assert.ThrowsAsync<GitRemoteException>(async () =>
+        {
+            await connection.DiscoverReferencesAsync(new Uri("https://server.com/repo.git"), "git-upload-pack");
+        });
+
+        Assert.Contains("did not include a Location header", ex.Message);
+    }
+
+    [Fact]
+    public async Task UploadPackAsync_PostRedirect301_ThrowsGitRemoteException()
+    {
+        var handler = new MockHttpMessageHandler
+        {
+            Handler = req =>
+            {
+                var redirect = new HttpResponseMessage(HttpStatusCode.MovedPermanently);
+                redirect.Headers.Location = new Uri("https://server.com/redirected/git-upload-pack");
+                return Task.FromResult(redirect);
+            }
+        };
+
+        var httpClient = new HttpClient(handler);
+        using var connection = new GitHttpConnection(new GitRemoteClientOptions { HttpClient = httpClient });
+
+        var ad = new GitRemoteAdvertisement(
+            new Dictionary<string, GitHash> { ["refs/heads/main"] = new GitHash("1111111111111111111111111111111111111111") },
+            new HashSet<string>(),
+            new Dictionary<string, string>(),
+            null,
+            null,
+            GitObjectFormat.Sha1,
+            null);
+
+        var ex = await Assert.ThrowsAsync<GitRemoteException>(async () =>
+        {
+            await connection.UploadPackAsync(
+                new Uri("https://server.com/repo.git"),
+                new[] { new GitHash("1111111111111111111111111111111111111111") },
+                Array.Empty<GitHash>(),
+                ad);
+        });
+
+        Assert.Contains("Server returned redirect 301 for POST request", ex.Message);
+    }
 }

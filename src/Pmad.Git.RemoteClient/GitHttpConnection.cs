@@ -13,10 +13,23 @@ namespace Pmad.Git.RemoteClient;
 /// </summary>
 public sealed class GitHttpConnection : IDisposable
 {
-    private static readonly HttpClient SharedHttpClient = new();
+    private static readonly HttpClient SharedHttpClient = CreateDefaultHttpClient();
     private readonly HttpClient _httpClient;
     private readonly bool _disposeHttpClient;
     private readonly GitRemoteClientOptions _options;
+
+    private static HttpClient CreateDefaultHttpClient()
+    {
+        var handler = new SocketsHttpHandler
+        {
+            AllowAutoRedirect = false,
+            AutomaticDecompression = DecompressionMethods.None
+        };
+        return new HttpClient(handler)
+        {
+            Timeout = Timeout.InfiniteTimeSpan
+        };
+    }
 
     /// <summary>
     /// Initializes a new instance of the <see cref="GitHttpConnection"/> class.
@@ -65,10 +78,17 @@ public sealed class GitHttpConnection : IDisposable
 
         try
         {
-            using var request = new HttpRequestMessage(HttpMethod.Get, requestUri);
-            ApplyRequestHeaders(request, remoteUrl);
+            using var response = await SendWithRedirectsAsync(
+                (uri, sameOrigin) =>
+                {
+                    var req = new HttpRequestMessage(HttpMethod.Get, uri);
+                    ApplyRequestHeaders(req, remoteUrl, includeCredentials: sameOrigin);
+                    return req;
+                },
+                requestUri,
+                HttpCompletionOption.ResponseHeadersRead,
+                effectiveToken).ConfigureAwait(false);
 
-            using var response = await SendAsync(request, HttpCompletionOption.ResponseHeadersRead, effectiveToken).ConfigureAwait(false);
             EnsureSuccessStatusCode(response);
             ValidateContentType(response, $"application/x-{service}-advertisement");
 
@@ -174,15 +194,21 @@ public sealed class GitHttpConnection : IDisposable
             }
             await PktLineWriter.WriteStringAsync(requestBodyStream, "done\n", effectiveToken).ConfigureAwait(false);
 
-            requestBodyStream.Seek(0, SeekOrigin.Begin);
+            var requestBodyBytes = requestBodyStream.ToArray();
 
-            var request = new HttpRequestMessage(HttpMethod.Post, requestUri);
-            ApplyRequestHeaders(request, remoteUrl);
-            request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/x-git-upload-pack-result"));
-            request.Content = new StreamContent(requestBodyStream);
-            request.Content.Headers.ContentType = new MediaTypeHeaderValue("application/x-git-upload-pack-request");
-
-            var response = await SendAsync(request, HttpCompletionOption.ResponseHeadersRead, effectiveToken).ConfigureAwait(false);
+            var response = await SendWithRedirectsAsync(
+                (uri, sameOrigin) =>
+                {
+                    var req = new HttpRequestMessage(HttpMethod.Post, uri);
+                    ApplyRequestHeaders(req, remoteUrl, includeCredentials: sameOrigin);
+                    req.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/x-git-upload-pack-result"));
+                    req.Content = new ByteArrayContent(requestBodyBytes);
+                    req.Content.Headers.ContentType = new MediaTypeHeaderValue("application/x-git-upload-pack-request");
+                    return req;
+                },
+                requestUri,
+                HttpCompletionOption.ResponseHeadersRead,
+                effectiveToken).ConfigureAwait(false);
             try
             {
                 EnsureSuccessStatusCode(response);
@@ -345,27 +371,38 @@ public sealed class GitHttpConnection : IDisposable
             await PktLineWriter.WriteFlushAsync(commandsPayload, effectiveToken).ConfigureAwait(false);
             commandsPayload.Position = 0;
 
-            Stream requestStream;
-            if (packDataStream != null)
-            {
-                if (packDataStream.CanSeek)
+            var commandsPayloadBytes = commandsPayload.ToArray();
+
+            using var response = await SendWithRedirectsAsync(
+                (uri, sameOrigin) =>
                 {
-                    packDataStream.Seek(0, SeekOrigin.Begin);
-                }
-                requestStream = new ConcatenatedStream(commandsPayload, packDataStream, leaveSecondOpen: true);
-            }
-            else
-            {
-                requestStream = commandsPayload;
-            }
+                    var req = new HttpRequestMessage(HttpMethod.Post, uri);
+                    ApplyRequestHeaders(req, remoteUrl, includeCredentials: sameOrigin);
+                    req.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/x-git-receive-pack-result"));
 
-            using var request = new HttpRequestMessage(HttpMethod.Post, requestUri);
-            ApplyRequestHeaders(request, remoteUrl);
-            request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/x-git-receive-pack-result"));
-            request.Content = new StreamContent(requestStream);
-            request.Content.Headers.ContentType = new MediaTypeHeaderValue("application/x-git-receive-pack-request");
+                    var commandsStream = new MemoryStream(commandsPayloadBytes);
+                    Stream requestStream;
+                    if (packDataStream != null)
+                    {
+                        if (packDataStream.CanSeek)
+                        {
+                            packDataStream.Seek(0, SeekOrigin.Begin);
+                        }
+                        requestStream = new ConcatenatedStream(commandsStream, packDataStream, leaveSecondOpen: true);
+                    }
+                    else
+                    {
+                        requestStream = commandsStream;
+                    }
 
-            using var response = await SendAsync(request, HttpCompletionOption.ResponseHeadersRead, effectiveToken).ConfigureAwait(false);
+                    req.Content = new StreamContent(requestStream);
+                    req.Content.Headers.ContentType = new MediaTypeHeaderValue("application/x-git-receive-pack-request");
+                    return req;
+                },
+                requestUri,
+                HttpCompletionOption.ResponseHeadersRead,
+                effectiveToken).ConfigureAwait(false);
+
             EnsureSuccessStatusCode(response);
             ValidateContentType(response, "application/x-git-receive-pack-result");
 
@@ -378,7 +415,7 @@ public sealed class GitHttpConnection : IDisposable
         }
     }
 
-    private static string FormatDiagnosticUri(Uri? uri)
+    internal static string FormatDiagnosticUri(Uri? uri)
     {
         if (uri == null)
         {
@@ -402,26 +439,29 @@ public sealed class GitHttpConnection : IDisposable
         }
     }
 
-    private void ApplyRequestHeaders(HttpRequestMessage request, Uri? remoteUrl = null)
+    private void ApplyRequestHeaders(HttpRequestMessage request, Uri? remoteUrl = null, bool includeCredentials = true)
     {
-        if (_options.Credentials != null)
+        if (includeCredentials)
         {
-            _options.Credentials.Apply(request);
-        }
-        else if (remoteUrl != null && !string.IsNullOrEmpty(remoteUrl.UserInfo))
-        {
-            var userInfo = remoteUrl.UserInfo;
-            var colonIndex = userInfo.IndexOf(':');
-            if (colonIndex >= 0)
+            if (_options.Credentials != null)
             {
-                var username = Uri.UnescapeDataString(userInfo[..colonIndex]);
-                var password = Uri.UnescapeDataString(userInfo[(colonIndex + 1)..]);
-                GitHttpCredentials.Basic(username, password).Apply(request);
+                _options.Credentials.Apply(request);
             }
-            else
+            else if (remoteUrl != null && !string.IsNullOrEmpty(remoteUrl.UserInfo))
             {
-                var username = Uri.UnescapeDataString(userInfo);
-                GitHttpCredentials.Basic(username, string.Empty).Apply(request);
+                var userInfo = remoteUrl.UserInfo;
+                var colonIndex = userInfo.IndexOf(':');
+                if (colonIndex >= 0)
+                {
+                    var username = Uri.UnescapeDataString(userInfo[..colonIndex]);
+                    var password = Uri.UnescapeDataString(userInfo[(colonIndex + 1)..]);
+                    GitHttpCredentials.Basic(username, password).Apply(request);
+                }
+                else
+                {
+                    var username = Uri.UnescapeDataString(userInfo);
+                    GitHttpCredentials.Basic(username, string.Empty).Apply(request);
+                }
             }
         }
 
@@ -455,15 +495,105 @@ public sealed class GitHttpConnection : IDisposable
         return builder.Uri;
     }
 
-    private async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, HttpCompletionOption completionOption, CancellationToken cancellationToken)
+    private static bool IsRedirectStatusCode(HttpStatusCode statusCode) =>
+        statusCode is HttpStatusCode.MovedPermanently or
+                      HttpStatusCode.Found or
+                      HttpStatusCode.SeeOther or
+                      HttpStatusCode.TemporaryRedirect or
+                      (HttpStatusCode)308;
+
+    private static bool IsSameOrigin(Uri a, Uri b) =>
+        string.Equals(a.Scheme, b.Scheme, StringComparison.OrdinalIgnoreCase) &&
+        string.Equals(a.Host, b.Host, StringComparison.OrdinalIgnoreCase) &&
+        a.Port == b.Port;
+
+    private async Task<HttpResponseMessage> SendWithRedirectsAsync(
+        Func<Uri, bool, HttpRequestMessage> requestFactory,
+        Uri initialUri,
+        HttpCompletionOption completionOption,
+        CancellationToken cancellationToken)
     {
-        try
+        const int maxRedirects = 10;
+        var currentUri = initialUri;
+        var redirectCount = 0;
+
+        while (true)
         {
-            return await _httpClient.SendAsync(request, completionOption, cancellationToken).ConfigureAwait(false);
-        }
-        catch (HttpRequestException ex)
-        {
-            throw new GitRemoteException($"Failed to communicate with remote repository '{FormatDiagnosticUri(request.RequestUri)}': {ex.Message}", ex);
+            var isSameOrigin = IsSameOrigin(initialUri, currentUri);
+            var request = requestFactory(currentUri, isSameOrigin);
+
+            HttpResponseMessage response;
+            try
+            {
+                response = await _httpClient.SendAsync(request, completionOption, cancellationToken).ConfigureAwait(false);
+            }
+            catch (HttpRequestException ex)
+            {
+                request.Dispose();
+                throw new GitRemoteException($"Failed to communicate with remote repository '{FormatDiagnosticUri(request.RequestUri)}': {ex.Message}", ex);
+            }
+
+            if (!IsRedirectStatusCode(response.StatusCode))
+            {
+                return response;
+            }
+
+            redirectCount++;
+            if (redirectCount > maxRedirects)
+            {
+                response.Dispose();
+                request.Dispose();
+                throw new GitRemoteException($"Too many redirects when requesting '{FormatDiagnosticUri(initialUri)}'. Maximum allowed is {maxRedirects}.");
+            }
+
+            var location = response.Headers.Location;
+            if (location is null)
+            {
+                var statusCode = (int)response.StatusCode;
+                response.Dispose();
+                request.Dispose();
+                throw new GitRemoteException($"Redirect response {statusCode} from '{FormatDiagnosticUri(currentUri)}' did not include a Location header.");
+            }
+
+            Uri nextUri;
+            try
+            {
+                nextUri = location.IsAbsoluteUri ? location : new Uri(currentUri, location);
+            }
+            catch (Exception ex)
+            {
+                response.Dispose();
+                request.Dispose();
+                throw new GitRemoteException($"Invalid redirect URI '{location}' from '{FormatDiagnosticUri(currentUri)}': {ex.Message}", ex);
+            }
+
+            if (nextUri.Scheme != Uri.UriSchemeHttp && nextUri.Scheme != Uri.UriSchemeHttps)
+            {
+                response.Dispose();
+                request.Dispose();
+                throw new NotSupportedException($"Unsupported redirect URL scheme '{nextUri.Scheme}'. The managed Git remote client only supports HTTP and HTTPS protocols.");
+            }
+
+            if (currentUri.Scheme == Uri.UriSchemeHttps && nextUri.Scheme == Uri.UriSchemeHttp)
+            {
+                response.Dispose();
+                request.Dispose();
+                throw new GitRemoteException($"Insecure redirect from '{FormatDiagnosticUri(currentUri)}' to '{FormatDiagnosticUri(nextUri)}' is not allowed.");
+            }
+
+            if (request.Method == HttpMethod.Post &&
+                response.StatusCode != HttpStatusCode.TemporaryRedirect &&
+                (int)response.StatusCode != 308)
+            {
+                var statusCode = (int)response.StatusCode;
+                response.Dispose();
+                request.Dispose();
+                throw new GitRemoteException($"Server returned redirect {statusCode} for POST request to '{FormatDiagnosticUri(currentUri)}'. Only 307 and 308 redirects are supported for POST operations.");
+            }
+
+            response.Dispose();
+            request.Dispose();
+            currentUri = nextUri;
         }
     }
 

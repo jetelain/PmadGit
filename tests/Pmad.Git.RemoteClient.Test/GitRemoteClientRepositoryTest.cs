@@ -324,6 +324,75 @@ public sealed class GitRemoteClientRepositoryTest : IDisposable
         Assert.Equal(0, changedCount);
     }
 
+    [Fact]
+    public async Task CloneAsync_UnsupportedSchemeWithCredentials_RedactsCredentialsInException()
+    {
+        var ex = await Assert.ThrowsAsync<NotSupportedException>(async () =>
+        {
+            await GitRemoteClientRepository.CloneAsync("ftp://myuser:secretpassword@host/repo.git", _workingDir);
+        });
+
+        Assert.Contains("Unsupported remote URL 'ftp://host/repo.git'", ex.Message);
+        Assert.DoesNotContain("myuser", ex.Message);
+        Assert.DoesNotContain("secretpassword", ex.Message);
+    }
+
+    [Fact]
+    public async Task FetchAsync_ConfiguredRemoteWithUnsupportedSchemeAndCredentials_RedactsCredentialsInException()
+    {
+        var repo = GitRepositoryWithIndexAndWorkspace.Init(_workingDir);
+        var configPath = Path.Combine(_workingDir, ".git", "config");
+        var config = await GitConfigFile.ReadFromFileAsync(configPath);
+        config.SetValue("remote", "origin", "url", "ftp://myuser:secretpassword@host/repo.git");
+        await config.WriteToFileAsync(configPath);
+
+        using var clientRepo = new GitRemoteClientRepository(repo);
+
+        var ex = await Assert.ThrowsAsync<NotSupportedException>(async () =>
+        {
+            await clientRepo.FetchAsync();
+        });
+
+        Assert.Contains("Unsupported remote URL 'ftp://host/repo.git'", ex.Message);
+        Assert.DoesNotContain("myuser", ex.Message);
+        Assert.DoesNotContain("secretpassword", ex.Message);
+    }
+
+    [Theory]
+    [InlineData("foo.lock/bar")]
+    [InlineData(".foo/bar")]
+    [InlineData("feature/test.lock")]
+    [InlineData("feature/\x01invalid")]
+    public async Task PushAsync_InvalidBranchComponent_ThrowsArgumentException(string invalidBranch)
+    {
+        var repo = GitRepositoryWithIndexAndWorkspace.Init(_workingDir);
+        File.WriteAllText(Path.Combine(_workingDir, "file.txt"), "hello");
+        await repo.StageAsync("file.txt");
+        await repo.CommitAsync("Initial commit");
+
+        using var clientRepo = new GitRemoteClientRepository(repo, "http://localhost/test.git");
+
+        var ex = await Assert.ThrowsAsync<ArgumentException>(async () =>
+        {
+            await clientRepo.PushAsync(branch: invalidBranch);
+        });
+
+        Assert.Contains("Invalid branch name", ex.Message);
+    }
+
+    [Theory]
+    [InlineData("foo.lock/bar")]
+    [InlineData(".foo/bar")]
+    public async Task CloneAsync_InvalidBranchComponent_ThrowsArgumentException(string invalidBranch)
+    {
+        var ex = await Assert.ThrowsAsync<ArgumentException>(async () =>
+        {
+            await GitRemoteClientRepository.CloneAsync("http://localhost/test.git", _workingDir, branch: invalidBranch);
+        });
+
+        Assert.Contains("Invalid branch name", ex.Message);
+    }
+
     public void Dispose()
     {
         TestHelper.TryDeleteDirectory(_workingDir);
