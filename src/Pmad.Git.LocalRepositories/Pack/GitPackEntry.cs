@@ -1,4 +1,4 @@
-﻿namespace Pmad.Git.LocalRepositories.Pack;
+namespace Pmad.Git.LocalRepositories.Pack;
 
 internal sealed class GitPackEntry
 {
@@ -35,13 +35,14 @@ internal sealed class GitPackEntry
             return null;
         }
 
-        return await ReadAtOffset(offset, resolve, cancellationToken).ConfigureAwait(false);
+        return await ReadAtOffset(offset, resolve, cancellationToken, 0).ConfigureAwait(false);
     }
 
     private async Task<GitObjectData> ReadAtOffset(
         long offset,
         Func<GitHash, CancellationToken, Task<GitObjectData>> resolveByHash,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        int depth)
     {
         var options = new FileStreamOptions
         {
@@ -52,14 +53,15 @@ internal sealed class GitPackEntry
         };
 
         await using var stream = new FileStream(_packPath, options);
-        return await ReadObject(stream, offset, resolveByHash, cancellationToken).ConfigureAwait(false);
+        return await ReadObject(stream, offset, resolveByHash, cancellationToken, depth).ConfigureAwait(false);
     }
 
     private async Task<GitObjectData> ReadObject(
         FileStream stream,
         long offset,
         Func<GitHash, CancellationToken, Task<GitObjectData>> resolveByHash,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        int depth)
     {
         stream.Position = offset;
         return await GitPackObjectReader.ReadObjectAsync(
@@ -67,8 +69,9 @@ internal sealed class GitPackEntry
             offset,
             _hashLengthBytes,
             resolveByHash,
-            (off, ct) => ReadAtOffset(off, resolveByHash, ct),
-            cancellationToken).ConfigureAwait(false);
+            (off, ct) => ReadAtOffset(off, resolveByHash, ct, depth + 1),
+            cancellationToken,
+            depth).ConfigureAwait(false);
     }
 
     private void ValidatePackFile()

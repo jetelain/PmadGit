@@ -1,4 +1,4 @@
-﻿using System.Buffers;
+using System.Buffers;
 using System.Buffers.Binary;
 
 namespace Pmad.Git.LocalRepositories.Pack;
@@ -75,17 +75,11 @@ internal sealed class GitPackIndex
         var entries = checked((int)fanout[255]);
         var hashes = await ReadHashesAsync(stream, entries, hashLengthBytes, cancellationToken).ConfigureAwait(false);
         stream.Position += (long)entries * 4;
-        var (offsets, largeOffsets) = await ReadOffsetsAsync(stream, entries, cancellationToken).ConfigureAwait(false);
+        var offsets = await ReadOffsetsAsync(stream, entries, hashLengthBytes, cancellationToken).ConfigureAwait(false);
         var map = new Dictionary<GitHash, long>(hashes.Length);
         for (var i = 0; i < hashes.Length; i++)
         {
-            var offset = offsets[i];
-            if (offset < 0)
-            {
-                offset = largeOffsets[unchecked((int)(-offset - 1))];
-            }
-
-            map[hashes[i]] = offset;
+            map[hashes[i]] = offsets[i];
         }
 
         return new GitPackIndex(map);
@@ -173,13 +167,14 @@ internal sealed class GitPackIndex
         return offsets;
     }
 
-    private static async Task<(long[] offsets, List<long> largeOffsets)> ReadOffsetsAsync(
+    private static async Task<long[]> ReadOffsetsAsync(
         Stream stream,
         int entries,
+        int hashLengthBytes,
         CancellationToken cancellationToken)
     {
-        var offsets = new long[entries];
-        var largeOffsets = new List<long>();
+        var rawOffsets = new uint[entries];
+        var hasLargeOffsets = false;
         var buffer = ArrayPool<byte>.Shared.Rent(4);
         try
         {
@@ -187,14 +182,10 @@ internal sealed class GitPackIndex
             {
                 await stream.ReadExactlyAsync(buffer.AsMemory(0, 4), cancellationToken).ConfigureAwait(false);
                 var raw = BinaryPrimitives.ReadUInt32BigEndian(buffer.AsSpan(0, 4));
-                if ((raw & 0x8000_0000) == 0)
+                rawOffsets[i] = raw;
+                if ((raw & 0x8000_0000) != 0)
                 {
-                    offsets[i] = raw;
-                }
-                else
-                {
-                    offsets[i] = -(largeOffsets.Count + 1);
-                    largeOffsets.Add(0);
+                    hasLargeOffsets = true;
                 }
             }
         }
@@ -203,22 +194,59 @@ internal sealed class GitPackIndex
             ArrayPool<byte>.Shared.Return(buffer);
         }
 
-        var largeBuffer = ArrayPool<byte>.Shared.Rent(8);
-        try
+        long[]? largeOffsets = null;
+        if (hasLargeOffsets)
         {
-            for (var i = 0; i < largeOffsets.Count; i++)
+            var trailerLength = 2 * hashLengthBytes;
+            var remainingBytes = stream.Length - stream.Position - trailerLength;
+            if (remainingBytes < 0 || remainingBytes % 8 != 0)
             {
-                await stream.ReadExactlyAsync(largeBuffer.AsMemory(0, 8), cancellationToken).ConfigureAwait(false);
-                var high = BinaryPrimitives.ReadUInt32BigEndian(largeBuffer.AsSpan(0, 4));
-                var low = BinaryPrimitives.ReadUInt32BigEndian(largeBuffer.AsSpan(4, 4));
-                largeOffsets[i] = ((long)high << 32) | low;
+                throw new InvalidDataException("Pack index 64-bit offset table is invalid or corrupt");
+            }
+
+            var largeCount = checked((int)(remainingBytes / 8));
+            largeOffsets = new long[largeCount];
+            var largeBuffer = ArrayPool<byte>.Shared.Rent(8);
+            try
+            {
+                for (var i = 0; i < largeCount; i++)
+                {
+                    await stream.ReadExactlyAsync(largeBuffer.AsMemory(0, 8), cancellationToken).ConfigureAwait(false);
+                    var high = BinaryPrimitives.ReadUInt32BigEndian(largeBuffer.AsSpan(0, 4));
+                    var low = BinaryPrimitives.ReadUInt32BigEndian(largeBuffer.AsSpan(4, 4));
+                    largeOffsets[i] = ((long)high << 32) | low;
+                }
+            }
+            finally
+            {
+                ArrayPool<byte>.Shared.Return(largeBuffer);
             }
         }
-        finally
+
+        var offsets = new long[entries];
+        for (var i = 0; i < entries; i++)
         {
-            ArrayPool<byte>.Shared.Return(largeBuffer);
+            var raw = rawOffsets[i];
+            if ((raw & 0x8000_0000) == 0)
+            {
+                offsets[i] = raw;
+            }
+            else
+            {
+                var largeIndex = (int)(raw & 0x7FFF_FFFF);
+                if (largeOffsets == null || largeIndex < 0 || largeIndex >= largeOffsets.Length)
+                {
+                    throw new InvalidDataException($"Large offset index {largeIndex} is out of bounds");
+                }
+                offsets[i] = largeOffsets[largeIndex];
+            }
+
+            if (offsets[i] < 0)
+            {
+                throw new InvalidDataException($"Pack offset {offsets[i]} cannot be negative");
+            }
         }
 
-        return (offsets, largeOffsets);
+        return offsets;
     }
 }

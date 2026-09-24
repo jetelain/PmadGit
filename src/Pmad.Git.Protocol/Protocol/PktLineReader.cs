@@ -13,7 +13,8 @@ namespace Pmad.Git.Protocol;
 /// <param name="Payload">The binary payload of the packet.</param>
 /// <param name="IsFlush">Indicates whether this is a flush packet (0000).</param>
 /// <param name="IsDelimiter">Indicates whether this is a delimiter packet (0001).</param>
-public readonly record struct PktLine(ReadOnlyMemory<byte> Payload, bool IsFlush, bool IsDelimiter)
+/// <param name="IsResponseEnd">Indicates whether this is a response end packet (0002).</param>
+public readonly record struct PktLine(ReadOnlyMemory<byte> Payload, bool IsFlush, bool IsDelimiter, bool IsResponseEnd = false)
 {
     /// <summary>
     /// Gets a value indicating whether the payload is empty.
@@ -64,23 +65,33 @@ public sealed class PktLineReader
         var length = ParseLength(_headerBuffer);
         if (length == 0)
         {
-            return new PktLine(ReadOnlyMemory<byte>.Empty, IsFlush: true, IsDelimiter: false);
+            return new PktLine(ReadOnlyMemory<byte>.Empty, IsFlush: true, IsDelimiter: false, IsResponseEnd: false);
         }
 
         if (length == 1)
         {
-            return new PktLine(ReadOnlyMemory<byte>.Empty, IsFlush: false, IsDelimiter: true);
+            return new PktLine(ReadOnlyMemory<byte>.Empty, IsFlush: false, IsDelimiter: true, IsResponseEnd: false);
+        }
+
+        if (length == 2)
+        {
+            return new PktLine(ReadOnlyMemory<byte>.Empty, IsFlush: false, IsDelimiter: false, IsResponseEnd: true);
         }
 
         if (length < 4)
         {
-            throw new InvalidDataException("pkt-line length must be at least 4 bytes");
+            throw new InvalidDataException($"pkt-line length {length} is invalid; control packets are 0, 1, or 2, and data packets must be at least 4 bytes");
+        }
+
+        if (length > 65520)
+        {
+            throw new InvalidDataException($"pkt-line length {length} exceeds maximum allowed packet length of 65520 bytes");
         }
 
         var payloadLength = length - 4;
         var payload = new byte[payloadLength];
         await ReadFullyAsync(payload, payloadLength, cancellationToken).ConfigureAwait(false);
-        return new PktLine(payload, IsFlush: false, IsDelimiter: false);
+        return new PktLine(payload, IsFlush: false, IsDelimiter: false, IsResponseEnd: false);
     }
 
     private async Task<int> ReadExactAsync(byte[] buffer, CancellationToken cancellationToken)
