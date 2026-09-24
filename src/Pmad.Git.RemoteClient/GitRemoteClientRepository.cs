@@ -165,7 +165,17 @@ public sealed class GitRemoteClientRepository : IGitRepositoryWithRemote, IDispo
         }
 
         var fullTargetPath = Path.GetFullPath(targetPath);
+        if (File.Exists(fullTargetPath))
+        {
+            throw new ArgumentException($"Target path '{fullTargetPath}' already exists and is not a directory.", nameof(targetPath));
+        }
+
         var targetExisted = Directory.Exists(fullTargetPath);
+        if (targetExisted && Directory.EnumerateFileSystemEntries(fullTargetPath).Any())
+        {
+            throw new ArgumentException($"Target path '{fullTargetPath}' already exists and is not empty.", nameof(targetPath));
+        }
+
         var parentDir = Path.GetDirectoryName(fullTargetPath);
         if (!string.IsNullOrEmpty(parentDir) && !Directory.Exists(parentDir))
         {
@@ -229,6 +239,14 @@ public sealed class GitRemoteClientRepository : IGitRepositoryWithRemote, IDispo
             if (!targetExisted && Directory.Exists(fullTargetPath))
             {
                 TryDeleteDirectory(fullTargetPath);
+            }
+            else if (targetExisted)
+            {
+                var gitDir = Path.Combine(fullTargetPath, ".git");
+                if (Directory.Exists(gitDir))
+                {
+                    TryDeleteDirectory(gitDir);
+                }
             }
             throw;
         }

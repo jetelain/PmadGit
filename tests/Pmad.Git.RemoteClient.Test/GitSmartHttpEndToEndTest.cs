@@ -819,6 +819,67 @@ public sealed class GitSmartHttpEndToEndTest : IDisposable
         Assert.Equal(commit2, updatedServerTagHash);
     }
 
+    [Fact]
+    public async Task CloneAsync_WithExistingNonEmptyTargetPath_ThrowsArgumentException()
+    {
+        CreateServerRepository("nonempty-target-server", new[] { ("server-file.txt", "server content") });
+        await StartServerAsync();
+        var client = _testServer!.CreateClient();
+        var options = new GitRemoteClientOptions { HttpClient = client };
+
+        var targetDir = Path.Combine(_clientWorkingDir, "nonempty-dir");
+        Directory.CreateDirectory(targetDir);
+        var existingFilePath = Path.Combine(targetDir, "existing.txt");
+        await File.WriteAllTextAsync(existingFilePath, "unrelated content");
+
+        var ex = await Assert.ThrowsAsync<ArgumentException>(async () =>
+        {
+            await GitRemoteClientRepository.CloneAsync("http://localhost/nonempty-target-server.git", targetDir, options);
+        });
+
+        Assert.Contains("already exists and is not empty", ex.Message);
+        Assert.True(File.Exists(existingFilePath));
+        Assert.Equal("unrelated content", await File.ReadAllTextAsync(existingFilePath));
+        Assert.False(Directory.Exists(Path.Combine(targetDir, ".git")));
+    }
+
+    [Fact]
+    public async Task CloneAsync_WithExistingEmptyTargetPath_ClonesRepository()
+    {
+        CreateServerRepository("empty-target-server", new[] { ("file.txt", "content") });
+        await StartServerAsync();
+        var client = _testServer!.CreateClient();
+        var options = new GitRemoteClientOptions { HttpClient = client };
+
+        var targetDir = Path.Combine(_clientWorkingDir, "empty-target-dir");
+        Directory.CreateDirectory(targetDir);
+
+        using var clientRepo = await GitRemoteClientRepository.CloneAsync("http://localhost/empty-target-server.git", targetDir, options);
+
+        Assert.True(Directory.Exists(Path.Combine(targetDir, ".git")));
+        Assert.True(File.Exists(Path.Combine(targetDir, "file.txt")));
+    }
+
+    [Fact]
+    public async Task CloneAsync_WithTargetExistingFile_ThrowsArgumentException()
+    {
+        CreateServerRepository("file-target-server", new[] { ("file.txt", "content") });
+        await StartServerAsync();
+        var client = _testServer!.CreateClient();
+        var options = new GitRemoteClientOptions { HttpClient = client };
+
+        var targetFilePath = Path.Combine(_clientWorkingDir, "existing-file.txt");
+        await File.WriteAllTextAsync(targetFilePath, "hello");
+
+        var ex = await Assert.ThrowsAsync<ArgumentException>(async () =>
+        {
+            await GitRemoteClientRepository.CloneAsync("http://localhost/file-target-server.git", targetFilePath, options);
+        });
+
+        Assert.Contains("already exists and is not a directory", ex.Message);
+        Assert.True(File.Exists(targetFilePath));
+    }
+
     public void Dispose()
     {
         _host?.Dispose();
