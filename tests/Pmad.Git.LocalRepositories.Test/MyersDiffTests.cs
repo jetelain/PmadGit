@@ -136,5 +136,84 @@ public class MyersDiffTests
         Assert.Equal(2, result.Count);
         Assert.All(result, c => Assert.Equal(DiffChangeType.Keep, c.Type));
     }
+
+    [Fact]
+    public void Compute_LargeFilesWithModifications_AllocatesUnder50MB()
+    {
+        const int lineCount = 10000;
+        var oldLines = new string[lineCount];
+        var newLines = new string[lineCount];
+
+        for (var i = 0; i < lineCount; i++)
+        {
+            oldLines[i] = $"line_{i:D6}_common_content_payload";
+            // 10% extensive modifications (1,000 modified lines across the file)
+            newLines[i] = (i % 10 == 0)
+                ? $"line_{i:D6}_modified_content_payload"
+                : oldLines[i];
+        }
+
+        // Warm up and force full GC before measuring allocation
+        _ = MyersDiff.Compute(new[] { "a" }, new[] { "b" });
+        System.GC.Collect();
+        System.GC.WaitForPendingFinalizers();
+        System.GC.Collect();
+
+        var allocatedBefore = System.GC.GetAllocatedBytesForCurrentThread();
+        var diff = MyersDiff.Compute(oldLines, newLines);
+        var allocatedAfter = System.GC.GetAllocatedBytesForCurrentThread();
+
+        var totalAllocated = allocatedAfter - allocatedBefore;
+        const long maxAllowedBytes = 50L * 1024 * 1024; // 50 MB
+
+        Assert.True(
+            totalAllocated < maxAllowedBytes,
+            $"Total allocation was {totalAllocated / (1024.0 * 1024.0):F2} MB, which exceeds the 50 MB limit.");
+
+        // Verify diff validity by reconstructing newLines
+        var reconstructed = new List<string>();
+        foreach (var change in diff)
+        {
+            if (change.Type == DiffChangeType.Keep || change.Type == DiffChangeType.Insert)
+            {
+                reconstructed.Add(change.Item);
+            }
+        }
+        Assert.Equal(newLines, reconstructed);
+    }
+
+    [Fact]
+    public void Compute_ExceedingMaxEditDistance_FallsBackGracefully()
+    {
+        const int lineCount = 2000;
+        var oldLines = new string[lineCount];
+        var newLines = new string[lineCount];
+
+        for (var i = 0; i < lineCount; i++)
+        {
+            oldLines[i] = $"old_line_{i}";
+            newLines[i] = $"new_line_{i}";
+        }
+
+        // Limit edit distance to 50 edits
+        var diff = MyersDiff.Compute(oldLines, newLines, maxEditDistance: 50);
+
+        Assert.NotEmpty(diff);
+        // Fallback replaces middle: all deletes then all inserts
+        Assert.Contains(diff, c => c.Type == DiffChangeType.Delete);
+        Assert.Contains(diff, c => c.Type == DiffChangeType.Insert);
+
+        // Verify reconstruction produces newLines
+        var reconstructed = new List<string>();
+        foreach (var change in diff)
+        {
+            if (change.Type == DiffChangeType.Keep || change.Type == DiffChangeType.Insert)
+            {
+                reconstructed.Add(change.Item);
+            }
+        }
+        Assert.Equal(newLines, reconstructed);
+    }
 }
+
 

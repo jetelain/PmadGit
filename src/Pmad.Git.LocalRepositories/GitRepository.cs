@@ -1268,13 +1268,16 @@ public sealed class GitRepository : IGitRepository, IGitRepositoryCacheInvalidat
                             base1.ToString()[..7],
                             base2.ToString()[..7]);
 
-                        var mergedBlobHash = await ObjectStore.WriteObjectAsync(GitObjectType.Blob, mergeResult.MergedBytes, cancellationToken).ConfigureAwait(false);
-                        mergedLeaves[path] = new TreeLeaf(leaf1.Value.Mode, mergedBlobHash);
-                        continue;
+                        if (!mergeResult.HasConflict)
+                        {
+                            var mergedBlobHash = await ObjectStore.WriteObjectAsync(GitObjectType.Blob, mergeResult.MergedBytes, cancellationToken).ConfigureAwait(false);
+                            mergedLeaves[path] = new TreeLeaf(leaf1.Value.Mode, mergedBlobHash);
+                            continue;
+                        }
                     }
                 }
 
-                // Conflict on binary, submodule, or mode: preserve side 1 in virtual base
+                // Conflict on content, binary, submodule, or mode: preserve side 1 in virtual base
                 mergedLeaves[path] = leaf1.Value;
                 continue;
             }
