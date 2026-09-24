@@ -129,10 +129,39 @@ public sealed class GitRemoteClientRepository : IGitRepositoryWithRemote, IDispo
         ArgumentException.ThrowIfNullOrWhiteSpace(targetPath);
 
         remoteName ??= "origin";
-        var clientOptions = options ?? new GitRemoteClientOptions();
+        var remoteUri = new Uri(remoteUrl);
+
+        var clientOptions = options != null
+            ? new GitRemoteClientOptions
+            {
+                Credentials = options.Credentials,
+                HttpClient = options.HttpClient,
+                Agent = options.Agent,
+                Timeout = options.Timeout,
+                OnProgress = options.OnProgress,
+                SanitizeRemoteUrlInConfig = options.SanitizeRemoteUrlInConfig
+            }
+            : new GitRemoteClientOptions();
+
+        if (clientOptions.Credentials == null && !string.IsNullOrEmpty(remoteUri.UserInfo))
+        {
+            var userInfo = remoteUri.UserInfo;
+            var colonIndex = userInfo.IndexOf(':');
+            if (colonIndex >= 0)
+            {
+                var username = Uri.UnescapeDataString(userInfo[..colonIndex]);
+                var password = Uri.UnescapeDataString(userInfo[(colonIndex + 1)..]);
+                clientOptions.Credentials = GitHttpCredentials.Basic(username, password);
+            }
+            else
+            {
+                var username = Uri.UnescapeDataString(userInfo);
+                clientOptions.Credentials = GitHttpCredentials.Basic(username, string.Empty);
+            }
+        }
+
         using var connection = new GitHttpConnection(clientOptions);
 
-        var remoteUri = new Uri(remoteUrl);
         var advertisement = await connection.DiscoverReferencesAsync(remoteUri, "git-upload-pack", cancellationToken).ConfigureAwait(false);
 
         // Determine default branch to initialize
@@ -187,9 +216,20 @@ public sealed class GitRemoteClientRepository : IGitRepositoryWithRemote, IDispo
             var workspace = GitRepositoryWithIndexAndWorkspace.Init(fullTargetPath, initialBranch: targetBranch, objectFormat: advertisement.ObjectFormat);
 
             // Configure remote in .git/config
+            var persistedUrl = remoteUrl;
+            if (clientOptions.SanitizeRemoteUrlInConfig && Uri.TryCreate(remoteUrl, UriKind.Absolute, out var parsedUri) && !string.IsNullOrEmpty(parsedUri.UserInfo))
+            {
+                var builder = new UriBuilder(parsedUri)
+                {
+                    UserName = string.Empty,
+                    Password = string.Empty
+                };
+                persistedUrl = builder.Uri.ToString();
+            }
+
             var configPath = Path.Combine(workspace.GitDirectory, "config");
             var config = await GitConfigFile.ReadFromFileAsync(configPath, cancellationToken).ConfigureAwait(false);
-            config.SetValue("remote", remoteName, "url", remoteUrl);
+            config.SetValue("remote", remoteName, "url", persistedUrl);
             config.SetValue("remote", remoteName, "fetch", $"+refs/heads/*:refs/remotes/{remoteName}/*");
             await config.WriteToFileAsync(configPath, cancellationToken).ConfigureAwait(false);
 

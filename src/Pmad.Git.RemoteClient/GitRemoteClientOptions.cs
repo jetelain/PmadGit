@@ -31,5 +31,12 @@ public sealed class GitRemoteClientOptions
     /// Gets or sets an optional callback invoked with server progress messages (sideband channel 2).
     /// </summary>
     public Action<string>? OnProgress { get; set; }
+
+    /// <summary>
+    /// Gets or sets a value indicating whether credentials embedded in remote URLs
+    /// should be stripped before persisting to .git/config during clone.
+    /// Defaults to <see langword="false"/> to match standard Git CLI behavior.
+    /// </summary>
+    public bool SanitizeRemoteUrlInConfig { get; set; }
 }
 

@@ -8,6 +8,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Pmad.Git.HttpServer;
 using Pmad.Git.LocalRepositories;
+using Pmad.Git.LocalRepositories.Config;
 using Pmad.Git.RemoteClient;
 
 namespace Pmad.Git.RemoteClient.Test;
@@ -244,6 +245,39 @@ public sealed class GitAuthenticationTest : IDisposable
         using var repo = await GitRemoteClientRepository.CloneAsync("http://myuser:mypassword@localhost/auth-url-creds-repo.git", clientDir, options);
         Assert.NotNull(repo);
         Assert.True(File.Exists(Path.Combine(clientDir, "test.txt")));
+
+        // Default behavior matches Git CLI: persist URL as given
+        var configPath = Path.Combine(clientDir, ".git", "config");
+        var config = await GitConfigFile.ReadFromFileAsync(configPath);
+        Assert.Equal("http://myuser:mypassword@localhost/auth-url-creds-repo.git", config.GetValue("remote", "origin", "url"));
+    }
+
+    [Fact]
+    public async Task Request_WithCredentialsInUrl_AndSanitizeOption_StripsCredentialsFromConfig()
+    {
+        CreateServerRepository("auth-url-sanitize-repo");
+        var expectedAuth = "Basic " + Convert.ToBase64String(Encoding.UTF8.GetBytes("myuser:mypassword"));
+        await StartServerAsync(auth => auth == expectedAuth);
+
+        var httpClient = _testServer!.CreateClient();
+        var options = new GitRemoteClientOptions
+        {
+            HttpClient = httpClient,
+            SanitizeRemoteUrlInConfig = true
+        };
+        var clientDir = Path.Combine(_clientWorkingDir, "url-sanitize");
+
+        using var repo = await GitRemoteClientRepository.CloneAsync("http://myuser:mypassword@localhost/auth-url-sanitize-repo.git", clientDir, options);
+        Assert.NotNull(repo);
+        Assert.True(File.Exists(Path.Combine(clientDir, "test.txt")));
+
+        // When SanitizeRemoteUrlInConfig is true, credentials must not be written to .git/config
+        var configPath = Path.Combine(clientDir, ".git", "config");
+        var config = await GitConfigFile.ReadFromFileAsync(configPath);
+        var configuredUrl = config.GetValue("remote", "origin", "url");
+        Assert.Equal("http://localhost/auth-url-sanitize-repo.git", configuredUrl);
+        Assert.DoesNotContain("myuser", configuredUrl);
+        Assert.DoesNotContain("mypassword", configuredUrl);
     }
 
     [Fact]
