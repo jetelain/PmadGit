@@ -22,13 +22,18 @@ public sealed class GitHubIntegrationTest
         }
     }
 
+    private static async Task EnsureGitHubReachableAsync()
+    {
+        if (!await IsGitHubReachableAsync().ConfigureAwait(false))
+        {
+            Assert.Fail($"GitHub repository '{GitHubRepoUrl}' is unreachable. Live integration tests require network access to GitHub.");
+        }
+    }
+
     [Fact]
     public async Task DiscoverReferencesAsync_FromGitHub_Succeeds()
     {
-        if (!await IsGitHubReachableAsync())
-        {
-            return;
-        }
+        await EnsureGitHubReachableAsync();
 
         using var connection = new GitHttpConnection();
         var uri = new Uri(GitHubRepoUrl);
@@ -47,10 +52,7 @@ public sealed class GitHubIntegrationTest
     [Fact]
     public async Task CloneAsync_FromGitHub_ClonesRepositoryAndReadsCommits()
     {
-        if (!await IsGitHubReachableAsync())
-        {
-            return;
-        }
+        await EnsureGitHubReachableAsync();
 
         var tempDir = Path.Combine(Path.GetTempPath(), "pmad_git_github_clone_" + Guid.NewGuid().ToString("N"));
         try
@@ -97,10 +99,7 @@ public sealed class GitHubIntegrationTest
     [Fact]
     public async Task FetchAsync_FromGitHub_IncrementalFetchSucceeds()
     {
-        if (!await IsGitHubReachableAsync())
-        {
-            return;
-        }
+        await EnsureGitHubReachableAsync();
 
         var tempDir = Path.Combine(Path.GetTempPath(), "pmad_git_github_fetch_" + Guid.NewGuid().ToString("N"));
         try

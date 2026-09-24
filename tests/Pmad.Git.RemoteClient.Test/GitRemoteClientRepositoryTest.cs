@@ -266,6 +266,64 @@ public sealed class GitRemoteClientRepositoryTest : IDisposable
         Assert.NotEqual(firstCommit, secondCommit);
     }
 
+    [Fact]
+    public async Task PushAsync_DoesNotRaiseRepositoryChangedEvent()
+    {
+        var repo = GitRepositoryWithIndexAndWorkspace.Init(_workingDir);
+        File.WriteAllText(Path.Combine(_workingDir, "file.txt"), "hello");
+        await repo.StageAsync("file.txt");
+        await repo.CommitAsync("Initial commit");
+
+        var changedCount = 0;
+        repo.Changed += (_, _) => changedCount++;
+
+        var handler = new MockHttpMessageHandler
+        {
+            Handler = async req =>
+            {
+                if (req.RequestUri!.PathAndQuery.Contains("info/refs"))
+                {
+                    var body = new MemoryStream();
+                    await PktLineWriter.WriteStringAsync(body, "# service=git-receive-pack\n", CancellationToken.None);
+                    await PktLineWriter.WriteFlushAsync(body, CancellationToken.None);
+                    await PktLineWriter.WriteStringAsync(body, "0000000000000000000000000000000000000000 capabilities^{}\0report-status\n", CancellationToken.None);
+                    await PktLineWriter.WriteFlushAsync(body, CancellationToken.None);
+                    body.Seek(0, SeekOrigin.Begin);
+
+                    var response = new HttpResponseMessage(HttpStatusCode.OK)
+                    {
+                        Content = new StreamContent(body)
+                    };
+                    response.Content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/x-git-receive-pack-advertisement");
+                    return response;
+                }
+                else
+                {
+                    var body = new MemoryStream();
+                    await PktLineWriter.WriteStringAsync(body, "unpack ok\n", CancellationToken.None);
+                    await PktLineWriter.WriteStringAsync(body, "ok refs/heads/main\n", CancellationToken.None);
+                    await PktLineWriter.WriteFlushAsync(body, CancellationToken.None);
+                    body.Seek(0, SeekOrigin.Begin);
+
+                    var response = new HttpResponseMessage(HttpStatusCode.OK)
+                    {
+                        Content = new StreamContent(body)
+                    };
+                    response.Content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/x-git-receive-pack-result");
+                    return response;
+                }
+            }
+        };
+
+        var httpClient = new HttpClient(handler);
+        var options = new GitRemoteClientOptions { HttpClient = httpClient };
+        using var clientRepo = new GitRemoteClientRepository(repo, "http://localhost/test.git", options);
+
+        await clientRepo.PushAsync();
+
+        Assert.Equal(0, changedCount);
+    }
+
     public void Dispose()
     {
         TestHelper.TryDeleteDirectory(_workingDir);

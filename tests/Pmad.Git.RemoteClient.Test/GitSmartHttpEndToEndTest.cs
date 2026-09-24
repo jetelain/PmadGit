@@ -769,6 +769,40 @@ public sealed class GitSmartHttpEndToEndTest : IDisposable
     }
 
     [Fact]
+    public async Task CloneAsync_WithSpecificBranch_RemoteHeadPointsToRemoteDefaultBranch()
+    {
+        CreateServerRepository("specific-branch-server", new[] { ("file.txt", "main content") });
+        var serverRepoPath = Path.Combine(_serverRepoRoot, "specific-branch-server.git");
+        using (var serverRepo = GitRepositoryWithIndexAndWorkspace.Open(serverRepoPath))
+        {
+            var mainCommit = await serverRepo.ReferenceStore.TryResolveReferenceAsync("refs/heads/main");
+            Assert.NotNull(mainCommit);
+            await serverRepo.ReferenceStore.CreateReferenceAsync("refs/heads/feature", mainCommit.Value);
+        }
+
+        await StartServerAsync();
+        var client = _testServer!.CreateClient();
+        var options = new GitRemoteClientOptions { HttpClient = client };
+
+        var cloneDir = Path.Combine(_clientWorkingDir, "specific-branch-client");
+        using var clientRepo = await GitRemoteClientRepository.CloneAsync(
+            "http://localhost/specific-branch-server.git",
+            cloneDir,
+            options,
+            branch: "feature");
+
+        // Local branch checked out must be feature
+        var currentBranch = await clientRepo.LocalRepository.ReferenceStore.GetCurrentBranchNameAsync();
+        Assert.Equal("feature", currentBranch);
+
+        // Remote HEAD symbolic ref must point to main (remote default branch), NOT feature
+        var remoteHeadPath = Path.Combine(cloneDir, ".git", "refs", "remotes", "origin", "HEAD");
+        Assert.True(File.Exists(remoteHeadPath));
+        var remoteHeadContent = (await File.ReadAllTextAsync(remoteHeadPath)).Trim();
+        Assert.Equal("ref: refs/remotes/origin/main", remoteHeadContent);
+    }
+
+    [Fact]
     public async Task PushAsync_Tag_PushesTagSuccessfullyWithoutCreatingTrackingRef()
     {
         CreateServerRepository("tag-push-server", new[] { ("file.txt", "v1") });

@@ -183,18 +183,12 @@ public sealed class GitRemoteClientRepository : IGitRepositoryWithRemote, IDispo
 
         var advertisement = await connection.DiscoverReferencesAsync(remoteUri, "git-upload-pack", cancellationToken).ConfigureAwait(false);
 
-        // Determine default branch to initialize
-        string targetBranch;
-        if (!string.IsNullOrEmpty(branch))
+        // Determine remote's default branch from advertisement
+        string? remoteDefaultBranch = null;
+        if (!string.IsNullOrEmpty(advertisement.HeadSymrefTarget) &&
+            advertisement.HeadSymrefTarget.StartsWith("refs/heads/", StringComparison.Ordinal))
         {
-            targetBranch = branch.StartsWith("refs/heads/", StringComparison.Ordinal)
-                ? branch["refs/heads/".Length..]
-                : branch;
-        }
-        else if (!string.IsNullOrEmpty(advertisement.HeadSymrefTarget) &&
-                 advertisement.HeadSymrefTarget.StartsWith("refs/heads/", StringComparison.Ordinal))
-        {
-            targetBranch = advertisement.HeadSymrefTarget["refs/heads/".Length..];
+            remoteDefaultBranch = advertisement.HeadSymrefTarget["refs/heads/".Length..];
         }
         else if (advertisement.HeadHash.HasValue)
         {
@@ -205,24 +199,29 @@ public sealed class GitRemoteClientRepository : IGitRepositoryWithRemote, IDispo
 
             if (matchingRefs.Contains("main"))
             {
-                targetBranch = "main";
+                remoteDefaultBranch = "main";
             }
             else if (matchingRefs.Contains("master"))
             {
-                targetBranch = "master";
+                remoteDefaultBranch = "master";
             }
             else if (matchingRefs.Count > 0)
             {
-                targetBranch = matchingRefs[0];
+                remoteDefaultBranch = matchingRefs[0];
             }
-            else
-            {
-                targetBranch = "main";
-            }
+        }
+
+        // Determine local branch to initialize and checkout (defaults to remote's default branch, or "main")
+        string targetBranch;
+        if (!string.IsNullOrEmpty(branch))
+        {
+            targetBranch = branch.StartsWith("refs/heads/", StringComparison.Ordinal)
+                ? branch["refs/heads/".Length..]
+                : branch;
         }
         else
         {
-            targetBranch = "main";
+            targetBranch = remoteDefaultBranch ?? "main";
         }
 
         var fullTargetPath = Path.GetFullPath(targetPath);
@@ -294,13 +293,14 @@ public sealed class GitRemoteClientRepository : IGitRepositoryWithRemote, IDispo
                 await workspace.ResetAsync(targetCommitHash.Value, GitResetMode.Hard, cancellationToken).ConfigureAwait(false);
 
                 // Create remote HEAD symbolic ref pointing to default branch
+                var defaultTrackingBranch = remoteDefaultBranch ?? targetBranch;
                 var remoteHeadPath = Path.Combine(workspace.GitDirectory, "refs", "remotes", remoteName, "HEAD");
                 var remoteHeadDir = Path.GetDirectoryName(remoteHeadPath);
                 if (!string.IsNullOrEmpty(remoteHeadDir) && !Directory.Exists(remoteHeadDir))
                 {
                     Directory.CreateDirectory(remoteHeadDir);
                 }
-                await File.WriteAllTextAsync(remoteHeadPath, $"ref: refs/remotes/{remoteName}/{targetBranch}\n", cancellationToken).ConfigureAwait(false);
+                await File.WriteAllTextAsync(remoteHeadPath, $"ref: refs/remotes/{remoteName}/{defaultTrackingBranch}\n", cancellationToken).ConfigureAwait(false);
                 workspace.ReferenceStore.InvalidateCaches();
             }
 
@@ -591,7 +591,7 @@ public sealed class GitRemoteClientRepository : IGitRepositoryWithRemote, IDispo
                     config.SetValue("branch", localBranch, "remote", targetRemote);
                     config.SetValue("branch", localBranch, "merge", remoteRefName);
                     await config.WriteToFileAsync(configPath, cancellationToken).ConfigureAwait(false);
-                    _repo.InvalidateCaches(raiseChanged: true);
+                    _repo.InvalidateCaches(raiseChanged: false);
                 }
                 return;
             }
@@ -678,7 +678,7 @@ public sealed class GitRemoteClientRepository : IGitRepositoryWithRemote, IDispo
                 }
             }
 
-            _repo.InvalidateCaches(raiseChanged: true);
+            _repo.InvalidateCaches(raiseChanged: false);
         }
     }
 
