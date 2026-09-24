@@ -11,7 +11,7 @@
 		<PackageLicenseExpression>MIT</PackageLicenseExpression>
 		<PackageProjectUrl>https://github.com/jetelain/PmadGit</PackageProjectUrl>
 		<PackageReadmeFile>README.md</PackageReadmeFile>
-		<Description>Lightweight .NET library that lets you inspect local Git repositories and do basic commit operations.</Description>
+		<Description>Managed Git Smart HTTP client library for .NET.</Description>
 		<PublishRepositoryUrl>true</PublishRepositoryUrl>
 		<IncludeSymbols>true</IncludeSymbols>
 		<SymbolPackageFormat>snupkg</SymbolPackageFormat>
@@ -19,18 +19,18 @@
 	</PropertyGroup>
 
 	<ItemGroup>
+		<ProjectReference Include="..\Pmad.Git.LocalRepositories\Pmad.Git.LocalRepositories.csproj" />
+		<ProjectReference Include="..\Pmad.Git.Protocol\Pmad.Git.Protocol.csproj" />
 		<PackageReference Include="Microsoft.SourceLink.GitHub" Version="10.0.102" PrivateAssets="All" />
-		<PackageReference Include="SharpZipLib" Version="1.4.2" />
 	</ItemGroup>
+
 	<ItemGroup>
-		<InternalsVisibleTo Include="Pmad.Git.LocalRepositories.Test" />
-		<InternalsVisibleTo Include="Pmad.Git.HttpServer" />
-		<InternalsVisibleTo Include="Pmad.Git.Protocol" />
-		<InternalsVisibleTo Include="Pmad.Git.RemoteClient" />
 		<InternalsVisibleTo Include="Pmad.Git.RemoteClient.Test" />
 	</ItemGroup>
+
 	<ItemGroup>
 		<None Include="README.md" Pack="true" PackagePath="\" />
 	</ItemGroup>
 
 </Project>
+

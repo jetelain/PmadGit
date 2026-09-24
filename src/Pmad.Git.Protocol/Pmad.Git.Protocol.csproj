@@ -26,6 +26,7 @@
 	<ItemGroup>
 		<InternalsVisibleTo Include="Pmad.Git.HttpServer" />
 		<InternalsVisibleTo Include="Pmad.Git.RemoteClient" />
+		<InternalsVisibleTo Include="Pmad.Git.RemoteClient.Test" />
 		<InternalsVisibleTo Include="Pmad.Git.Protocol.Test" />
 		<InternalsVisibleTo Include="Pmad.Git.HttpServer.Test" />
 	</ItemGroup>

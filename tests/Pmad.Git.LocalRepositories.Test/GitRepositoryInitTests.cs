@@ -437,6 +437,81 @@ public sealed class GitRepositoryInitTests : IDisposable
 		}
 	}
 
+	[Fact]
+	public void Init_WithSha256ObjectFormat_CreatesSha256Repository()
+	{
+		// Arrange
+		var repoPath = Path.Combine(_testRoot, "sha256-repo");
+
+		// Act
+		var repository = GitRepository.Init(repoPath, objectFormat: GitObjectFormat.Sha256);
+
+		// Assert
+		Assert.NotNull(repository);
+		Assert.Equal(GitObjectFormat.Sha256, repository.ObjectFormat);
+		Assert.Equal(32, repository.HashLengthBytes);
+
+		var configContent = File.ReadAllText(Path.Combine(repoPath, ".git", "config"));
+		Assert.Contains("repositoryformatversion = 1", configContent);
+		Assert.Contains("objectformat = sha256", configContent);
+	}
+
+	[Fact]
+	public void Init_WithSha1ObjectFormat_CreatesSha1Repository()
+	{
+		// Arrange
+		var repoPath = Path.Combine(_testRoot, "sha1-repo");
+
+		// Act
+		var repository = GitRepository.Init(repoPath, objectFormat: GitObjectFormat.Sha1);
+
+		// Assert
+		Assert.NotNull(repository);
+		Assert.Equal(GitObjectFormat.Sha1, repository.ObjectFormat);
+		Assert.Equal(20, repository.HashLengthBytes);
+
+		var configContent = File.ReadAllText(Path.Combine(repoPath, ".git", "config"));
+		Assert.Contains("repositoryformatversion = 0", configContent);
+	}
+
+	[Fact]
+	public void WorkspaceInit_WithSha256ObjectFormat_CreatesSha256Repository()
+	{
+		// Arrange
+		var repoPath = Path.Combine(_testRoot, "sha256-workspace-repo");
+
+		// Act
+		using var ws = GitRepositoryWithIndexAndWorkspace.Init(repoPath, objectFormat: GitObjectFormat.Sha256);
+
+		// Assert
+		Assert.NotNull(ws);
+		Assert.Equal(GitObjectFormat.Sha256, ws.ObjectFormat);
+		Assert.Equal(32, ws.HashLengthBytes);
+	}
+
+	[Theory]
+	[InlineData("sha1", true, GitObjectFormat.Sha1)]
+	[InlineData("SHA1", true, GitObjectFormat.Sha1)]
+	[InlineData("sha256", true, GitObjectFormat.Sha256)]
+	[InlineData("SHA256", true, GitObjectFormat.Sha256)]
+	[InlineData("unknown", false, GitObjectFormat.Sha1)]
+	[InlineData(null, false, GitObjectFormat.Sha1)]
+	public void GitObjectFormatExtensions_TryParse_WorksAsExpected(string? input, bool expectedSuccess, GitObjectFormat expectedFormat)
+	{
+		var success = GitObjectFormatExtensions.TryParse(input, out var format);
+		Assert.Equal(expectedSuccess, success);
+		Assert.Equal(expectedFormat, format);
+	}
+
+	[Fact]
+	public void GitObjectFormatExtensions_ToFormatNameAndHashLength_WorksAsExpected()
+	{
+		Assert.Equal("sha1", GitObjectFormat.Sha1.ToFormatName());
+		Assert.Equal("sha256", GitObjectFormat.Sha256.ToFormatName());
+		Assert.Equal(20, GitObjectFormat.Sha1.GetHashLengthBytes());
+		Assert.Equal(32, GitObjectFormat.Sha256.GetHashLengthBytes());
+	}
+
 	public void Dispose()
 	{
         GitTestHelper.TryDeleteDirectory(_testRoot);

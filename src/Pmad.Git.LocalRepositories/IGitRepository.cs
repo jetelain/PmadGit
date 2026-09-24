@@ -21,6 +21,11 @@ public interface IGitRepository : IGitRepositoryCacheInvalidator
     int HashLengthBytes { get; }
 
     /// <summary>
+    /// Gets the object format (hash algorithm) used by this repository.
+    /// </summary>
+    GitObjectFormat ObjectFormat => HashLengthBytes == GitHash.Sha256ByteLength ? GitObjectFormat.Sha256 : GitObjectFormat.Sha1;
+
+    /// <summary>
     /// Gets a value indicating whether this repository is bare (no working directory).
     /// </summary>
     bool IsBare { get; }

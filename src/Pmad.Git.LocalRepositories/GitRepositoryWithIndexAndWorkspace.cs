@@ -42,15 +42,26 @@ public sealed class GitRepositoryWithIndexAndWorkspace : IGitWorkspaceRepository
     }
 
     /// <summary>
-    /// Creates a new git repository with working tree at the specified path.
+    /// Creates a new git repository with working tree at the specified path using the standard SHA-1 object format.
     /// </summary>
     /// <param name="path">Path where the repository should be initialized.</param>
     /// <param name="initialBranch">Name of the initial branch; defaults to "main".</param>
     /// <param name="lockManager">Optional shared lock manager.</param>
     /// <returns>An initialized <see cref="GitRepositoryWithIndexAndWorkspace"/>.</returns>
     public static GitRepositoryWithIndexAndWorkspace Init(string path, string initialBranch = "main", IGitRepositoryLockManager? lockManager = null)
+        => Init(path, GitObjectFormat.Sha1, initialBranch, lockManager);
+
+    /// <summary>
+    /// Creates a new git repository with working tree at the specified path with the specified object format.
+    /// </summary>
+    /// <param name="path">Path where the repository should be initialized.</param>
+    /// <param name="objectFormat">The object format to use.</param>
+    /// <param name="initialBranch">Name of the initial branch; defaults to "main".</param>
+    /// <param name="lockManager">Optional shared lock manager.</param>
+    /// <returns>An initialized <see cref="GitRepositoryWithIndexAndWorkspace"/>.</returns>
+    public static GitRepositoryWithIndexAndWorkspace Init(string path, GitObjectFormat objectFormat, string initialBranch = "main", IGitRepositoryLockManager? lockManager = null)
     {
-        var repo = GitRepository.Init(path, bare: false, initialBranch: initialBranch, lockManager: lockManager);
+        var repo = GitRepository.Init(path, objectFormat, bare: false, initialBranch: initialBranch, lockManager: lockManager);
         return new GitRepositoryWithIndexAndWorkspace(repo);
     }
 
@@ -69,6 +80,9 @@ public sealed class GitRepositoryWithIndexAndWorkspace : IGitWorkspaceRepository
 
     /// <inheritdoc />
     public int HashLengthBytes => _repo.HashLengthBytes;
+
+    /// <inheritdoc />
+    public GitObjectFormat ObjectFormat => _repo.ObjectFormat;
 
     /// <inheritdoc />
     public bool IsBare => false;

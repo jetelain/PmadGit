@@ -57,6 +57,9 @@ public sealed class GitRepository : IGitRepository, IGitRepositoryCacheInvalidat
     public int HashLengthBytes => _objectStore.HashLengthBytes;
 
     /// <inheritdoc />
+    public GitObjectFormat ObjectFormat => _objectStore.HashLengthBytes == GitHash.Sha256ByteLength ? GitObjectFormat.Sha256 : GitObjectFormat.Sha1;
+
+    /// <inheritdoc />
     public bool IsBare => string.Equals(RootPath, GitDirectory, StringComparison.OrdinalIgnoreCase);
 
     private GitIndexManager? _indexManager;
@@ -71,7 +74,7 @@ public sealed class GitRepository : IGitRepository, IGitRepositoryCacheInvalidat
     public IGitReferenceStore ReferenceStore => _referenceStore;
 
     /// <summary>
-    /// Creates a new empty git repository at the specified path.
+    /// Creates a new empty git repository at the specified path using the standard SHA-1 object format.
     /// </summary>
     /// <param name="path">Path where the repository should be created.</param>
     /// <param name="bare">Whether to create a bare repository (no working directory).</param>
@@ -83,6 +86,18 @@ public sealed class GitRepository : IGitRepository, IGitRepositoryCacheInvalidat
     /// </param>
     /// <returns>An initialized <see cref="GitRepository"/>.</returns>
     public static GitRepository Init(string path, bool bare = false, string initialBranch = "main", IGitRepositoryLockManager? lockManager = null)
+        => Init(path, GitObjectFormat.Sha1, bare, initialBranch, lockManager);
+
+    /// <summary>
+    /// Creates a new empty git repository at the specified path with the specified object format.
+    /// </summary>
+    /// <param name="path">Path where the repository should be created.</param>
+    /// <param name="objectFormat">The object format (hash algorithm) to use.</param>
+    /// <param name="bare">Whether to create a bare repository (no working directory).</param>
+    /// <param name="initialBranch">Name of the initial branch; defaults to "main".</param>
+    /// <param name="lockManager">Optional lock manager to use.</param>
+    /// <returns>An initialized <see cref="GitRepository"/>.</returns>
+    public static GitRepository Init(string path, GitObjectFormat objectFormat, bool bare = false, string initialBranch = "main", IGitRepositoryLockManager? lockManager = null)
     {
         if (string.IsNullOrWhiteSpace(path))
         {
@@ -127,9 +142,10 @@ public sealed class GitRepository : IGitRepository, IGitRepositoryCacheInvalidat
         var headRef = $"ref: refs/heads/{initialBranch}";
         File.WriteAllText(Path.Combine(gitDirectory, "HEAD"), headRef + "\n");
 
+        var isSha256 = objectFormat == GitObjectFormat.Sha256;
         var configBuilder = new StringBuilder();
         configBuilder.AppendLine("[core]");
-        configBuilder.AppendLine("\trepositoryformatversion = 0");
+        configBuilder.AppendLine(isSha256 ? "\trepositoryformatversion = 1" : "\trepositoryformatversion = 0");
         configBuilder.AppendLine("\tfilemode = false");
         if (bare)
         {
@@ -138,6 +154,11 @@ public sealed class GitRepository : IGitRepository, IGitRepositoryCacheInvalidat
         else
         {
             configBuilder.AppendLine("\tbare = false");
+        }
+        if (isSha256)
+        {
+            configBuilder.AppendLine("[extensions]");
+            configBuilder.AppendLine("\tobjectformat = sha256");
         }
         File.WriteAllText(Path.Combine(gitDirectory, "config"), configBuilder.ToString());
 

@@ -29,11 +29,72 @@ public sealed class GitObjectWalker
     /// <param name="roots">The root object hashes.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
     /// <returns>A list of all visited unique object hashes in topological order.</returns>
-    public async Task<IReadOnlyList<GitHash>> CollectAsync(IEnumerable<GitHash> roots, CancellationToken cancellationToken)
+    public Task<IReadOnlyList<GitHash>> CollectAsync(IEnumerable<GitHash> roots, CancellationToken cancellationToken)
+        => CollectAsync(roots, null, cancellationToken);
+
+    /// <summary>
+    /// Traverses and collects all reachable objects starting from the specified root hashes,
+    /// excluding objects reachable from the specified exclude roots.
+    /// </summary>
+    /// <param name="roots">The root object hashes.</param>
+    /// <param name="excludes">Optional object hashes to exclude along with their reachable descendants.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>A list of all visited unique object hashes in topological order.</returns>
+    public async Task<IReadOnlyList<GitHash>> CollectAsync(IEnumerable<GitHash> roots, IEnumerable<GitHash>? excludes, CancellationToken cancellationToken)
     {
+        var visited = new HashSet<string>(StringComparer.Ordinal);
+        if (excludes != null)
+        {
+            var excludeStack = new Stack<GitHash>(excludes);
+            while (excludeStack.Count > 0)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                var current = excludeStack.Pop();
+                if (!visited.Add(current.Value))
+                {
+                    continue;
+                }
+
+                GitObjectData data;
+                try
+                {
+                    data = await _repository.ObjectStore.ReadObjectAsync(current, cancellationToken).ConfigureAwait(false);
+                }
+                catch (FileNotFoundException)
+                {
+                    continue;
+                }
+
+                switch (data.Type)
+                {
+                    case GitObjectType.Commit:
+                        var commit = GitCommit.Parse(current, data.Content);
+                        excludeStack.Push(commit.Tree);
+                        for (var i = commit.Parents.Count - 1; i >= 0; i--)
+                        {
+                            excludeStack.Push(commit.Parents[i]);
+                        }
+                        break;
+                    case GitObjectType.Tree:
+                        var tree = GitTree.Parse(current, data.Content, _repository.HashLengthBytes);
+                        for (var i = tree.Entries.Count - 1; i >= 0; i--)
+                        {
+                            excludeStack.Push(tree.Entries[i].Hash);
+                        }
+                        break;
+                    case GitObjectType.Tag:
+                        var target = ParseTagTarget(data.Content);
+                        if (target.HasValue)
+                        {
+                            excludeStack.Push(target.Value);
+                        }
+                        break;
+                }
+            }
+        }
+
         var ordered = new List<GitHash>();
         var stack = new Stack<GitHash>(roots ?? throw new ArgumentNullException(nameof(roots)));
-        var visited = new HashSet<string>(StringComparer.Ordinal);
 
         while (stack.Count > 0)
         {

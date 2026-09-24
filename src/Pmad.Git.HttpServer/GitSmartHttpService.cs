@@ -524,7 +524,7 @@ internal sealed class GitSmartHttpService
 
         capabilities.Add($"agent={_options.Agent}");
 
-        if (repository.HashLengthBytes == 32)
+        if (repository.ObjectFormat == GitObjectFormat.Sha256)
         {
             capabilities.Add("object-format=sha256");
         }

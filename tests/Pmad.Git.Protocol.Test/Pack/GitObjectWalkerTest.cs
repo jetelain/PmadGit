@@ -478,6 +478,40 @@ public sealed class GitObjectWalkerTest : IDisposable
         Assert.True(objects.Count >= 52); // At least 1 commit + 1 tree + 50 blobs
     }
 
+    [Fact]
+    public async Task CollectAsync_WithExcludes_ShouldExcludeReachableObjects()
+    {
+        // Arrange: Base commit with file1
+        CreateFile("file1.txt", "content 1");
+        RunGit("add file1.txt");
+        RunGit("commit -m \"Base commit\" --quiet");
+
+        var repository = GitRepository.Open(_workingDirectory);
+        var baseCommit = await repository.GetCommitAsync();
+
+        // Second commit with file2
+        CreateFile("file2.txt", "content 2");
+        RunGit("add file2.txt");
+        RunGit("commit -m \"Second commit\" --quiet");
+
+        repository.InvalidateCaches();
+        var headCommit = await repository.GetCommitAsync();
+        var walker = new GitObjectWalker(repository);
+
+        // Act: Collect from headCommit excluding baseCommit
+        var objects = await walker.CollectAsync(new[] { headCommit.Id }, new[] { baseCommit.Id }, CancellationToken.None);
+
+        // Assert: Objects must include headCommit, its tree, and file2 blob, but NOT baseCommit or file1 blob
+        Assert.Contains(headCommit.Id, objects);
+        Assert.DoesNotContain(baseCommit.Id, objects);
+
+        var baseTree = await repository.ObjectStore.ReadObjectAsync(baseCommit.Tree);
+        var parsedBaseTree = GitTree.Parse(baseCommit.Tree, baseTree.Content, repository.HashLengthBytes);
+        var file1Hash = parsedBaseTree.Entries.First(e => e.Name == "file1.txt").Hash;
+
+        Assert.DoesNotContain(file1Hash, objects);
+    }
+
     private void CreateFile(string relativePath, string content)
     {
         var fullPath = Path.Combine(_workingDirectory, relativePath.Replace('/', Path.DirectorySeparatorChar));
