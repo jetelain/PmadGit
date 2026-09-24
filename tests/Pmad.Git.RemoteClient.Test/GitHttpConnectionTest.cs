@@ -517,6 +517,38 @@ public sealed class GitHttpConnectionTest
     }
 
     [Fact]
+    public async Task DiagnosticUri_RedactsQueryStringAndCredentials_InExceptions()
+    {
+        var handler = new MockHttpMessageHandler
+        {
+            Handler = req =>
+            {
+                var response = new HttpResponseMessage(HttpStatusCode.NotFound)
+                {
+                    ReasonPhrase = "Not Found",
+                    RequestMessage = req
+                };
+                return Task.FromResult(response);
+            }
+        };
+
+        var httpClient = new HttpClient(handler);
+        using var connection = new GitHttpConnection(new GitRemoteClientOptions { HttpClient = httpClient });
+
+        var uriWithSecretQuery = new Uri("http://user:secretpass@localhost/repo.git?sasToken=SuperSecret123&otherKey=SensitiveValue");
+        var ex = await Assert.ThrowsAsync<GitRepositoryNotFoundException>(async () =>
+        {
+            await connection.DiscoverReferencesAsync(uriWithSecretQuery, "git-upload-pack");
+        });
+
+        Assert.Contains("http://localhost/repo.git/info/refs", ex.Message);
+        Assert.DoesNotContain("SuperSecret123", ex.Message);
+        Assert.DoesNotContain("sasToken", ex.Message);
+        Assert.DoesNotContain("secretpass", ex.Message);
+        Assert.DoesNotContain("user:", ex.Message);
+    }
+
+    [Fact]
     public async Task DiscoverReferencesAsync_UrlWithUserInfo_AppliesBasicAuthHeader()
     {
         HttpRequestMessage? capturedRequest = null;

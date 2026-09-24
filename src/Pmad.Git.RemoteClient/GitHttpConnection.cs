@@ -72,7 +72,7 @@ public sealed class GitHttpConnection : IDisposable
         }
         catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
         {
-            throw new TimeoutException($"Git HTTP request to '{requestUri}' timed out after {_options.Timeout}.");
+            throw new TimeoutException($"Git HTTP request to '{FormatDiagnosticUri(requestUri)}' timed out after {_options.Timeout}.");
         }
     }
 
@@ -239,7 +239,7 @@ public sealed class GitHttpConnection : IDisposable
             linkedCts.Dispose();
             timeoutCts.Dispose();
             requestBodyStream.Dispose();
-            throw new TimeoutException($"Git HTTP upload-pack request to '{requestUri}' timed out after {_options.Timeout}.");
+            throw new TimeoutException($"Git HTTP upload-pack request to '{FormatDiagnosticUri(requestUri)}' timed out after {_options.Timeout}.");
         }
         catch
         {
@@ -366,7 +366,31 @@ public sealed class GitHttpConnection : IDisposable
         }
         catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
         {
-            throw new TimeoutException($"Git HTTP receive-pack request to '{requestUri}' timed out after {_options.Timeout}.");
+            throw new TimeoutException($"Git HTTP receive-pack request to '{FormatDiagnosticUri(requestUri)}' timed out after {_options.Timeout}.");
+        }
+    }
+
+    private static string FormatDiagnosticUri(Uri? uri)
+    {
+        if (uri == null)
+        {
+            return string.Empty;
+        }
+
+        try
+        {
+            var builder = new UriBuilder(uri)
+            {
+                UserName = string.Empty,
+                Password = string.Empty,
+                Query = string.Empty,
+                Fragment = string.Empty
+            };
+            return builder.Uri.ToString();
+        }
+        catch
+        {
+            return uri.GetLeftPart(UriPartial.Path);
         }
     }
 
@@ -431,7 +455,7 @@ public sealed class GitHttpConnection : IDisposable
         }
         catch (HttpRequestException ex)
         {
-            throw new GitRemoteException($"Failed to communicate with remote repository '{request.RequestUri}': {ex.Message}", ex);
+            throw new GitRemoteException($"Failed to communicate with remote repository '{FormatDiagnosticUri(request.RequestUri)}': {ex.Message}", ex);
         }
     }
 
@@ -442,23 +466,24 @@ public sealed class GitHttpConnection : IDisposable
             return;
         }
 
+        var diagnosticUri = FormatDiagnosticUri(response.RequestMessage?.RequestUri);
         var statusCode = response.StatusCode;
         if (statusCode == HttpStatusCode.Unauthorized)
         {
-            throw new GitAuthenticationException($"Authentication failed (401 Unauthorized) for '{response.RequestMessage?.RequestUri}'.", statusCode);
+            throw new GitAuthenticationException($"Authentication failed (401 Unauthorized) for '{diagnosticUri}'.", statusCode);
         }
 
         if (statusCode == HttpStatusCode.Forbidden)
         {
-            throw new GitAccessDeniedException($"Access denied (403 Forbidden) for '{response.RequestMessage?.RequestUri}'.", statusCode);
+            throw new GitAccessDeniedException($"Access denied (403 Forbidden) for '{diagnosticUri}'.", statusCode);
         }
 
         if (statusCode == HttpStatusCode.NotFound)
         {
-            throw new GitRepositoryNotFoundException($"Repository not found (404 Not Found) for '{response.RequestMessage?.RequestUri}'.", statusCode);
+            throw new GitRepositoryNotFoundException($"Repository not found (404 Not Found) for '{diagnosticUri}'.", statusCode);
         }
 
-        throw new GitRemoteException($"Git HTTP request to '{response.RequestMessage?.RequestUri}' failed with status {(int)statusCode} ({response.ReasonPhrase}).");
+        throw new GitRemoteException($"Git HTTP request to '{diagnosticUri}' failed with status {(int)statusCode} ({response.ReasonPhrase}).");
     }
 
     private static void ValidateContentType(HttpResponseMessage response, string expectedMediaType)

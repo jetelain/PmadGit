@@ -59,6 +59,44 @@ public sealed class GitRemoteClientRepositoryTest : IDisposable
         Assert.Empty(await clientRepo.GetConflictedFilesAsync());
     }
 
+    [Theory]
+    [InlineData("bad\"name")]
+    [InlineData("bad\nname")]
+    [InlineData("bad\rname")]
+    [InlineData("bad/name")]
+    [InlineData("bad\\name")]
+    [InlineData("bad name")]
+    [InlineData("..")]
+    [InlineData(".")]
+    [InlineData(".lock")]
+    [InlineData("")]
+    [InlineData("   ")]
+    public async Task RemoteName_Validation_RejectsInvalidNames(string invalidName)
+    {
+        var repo = GitRepositoryWithIndexAndWorkspace.Init(_workingDir);
+        using var clientRepo = new GitRemoteClientRepository(repo);
+
+        await Assert.ThrowsAsync<ArgumentException>(async () =>
+        {
+            await clientRepo.FetchAsync(remote: invalidName);
+        });
+
+        await Assert.ThrowsAsync<ArgumentException>(async () =>
+        {
+            await clientRepo.PushAsync(remote: invalidName);
+        });
+
+        await Assert.ThrowsAsync<ArgumentException>(async () =>
+        {
+            await clientRepo.PullAsync(remote: invalidName);
+        });
+
+        await Assert.ThrowsAsync<ArgumentException>(async () =>
+        {
+            await GitRemoteClientRepository.CloneAsync("http://localhost/test.git", Path.Combine(_workingDir, "clone"), remoteName: invalidName);
+        });
+    }
+
     public void Dispose()
     {
         TestHelper.TryDeleteDirectory(_workingDir);

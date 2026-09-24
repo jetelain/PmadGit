@@ -820,6 +820,46 @@ public sealed class GitSmartHttpEndToEndTest : IDisposable
     }
 
     [Fact]
+    public async Task FetchAsync_ExistingDifferingLocalTag_IsNotOverwritten()
+    {
+        CreateServerRepository("tag-fetch-test", new[] { ("file.txt", "v1") });
+        await StartServerAsync();
+        var client = _testServer!.CreateClient();
+        var options = new GitRemoteClientOptions { HttpClient = client };
+
+        var serverRepoPath = Path.Combine(_serverRepoRoot, "tag-fetch-test.git");
+        using var serverRepo = GitRepositoryWithIndexAndWorkspace.Open(serverRepoPath);
+        var serverCommit1 = await serverRepo.ReferenceStore.TryResolveReferenceAsync("refs/heads/main");
+        await serverRepo.ReferenceStore.CreateReferenceAsync("refs/tags/v1.0", serverCommit1!.Value);
+
+        // Clone repository
+        var cloneDir = Path.Combine(_clientWorkingDir, "tag-fetch-clone");
+        using var clientRepo = await GitRemoteClientRepository.CloneAsync("http://localhost/tag-fetch-test.git", cloneDir, options);
+
+        // Verify initial tag fetched
+        var localTag1 = await clientRepo.LocalRepository.ReferenceStore.TryResolveReferenceAsync("refs/tags/v1.0");
+        Assert.Equal(serverCommit1.Value, localTag1);
+
+        // Server updates tag to a new commit
+        File.WriteAllText(Path.Combine(serverRepoPath, "file.txt"), "v2");
+        await serverRepo.StageAsync("file.txt");
+        var serverCommit2 = await serverRepo.CommitAsync("Commit 2");
+        await serverRepo.ReferenceStore.CreateReferenceAsync("refs/tags/v1.0", serverCommit2, overwrite: true);
+
+        // Act 1: General fetch should NOT overwrite existing local tag
+        await clientRepo.FetchAsync();
+        var localTagAfterFetch = await clientRepo.LocalRepository.ReferenceStore.TryResolveReferenceAsync("refs/tags/v1.0");
+        Assert.Equal(serverCommit1.Value, localTagAfterFetch);
+
+        // Act 2: Explicit tag fetch with differing local tag should throw GitRemoteException
+        var ex = await Assert.ThrowsAsync<GitRemoteException>(async () =>
+        {
+            await clientRepo.FetchAsync(branch: "refs/tags/v1.0");
+        });
+        Assert.Contains("would clobber existing tag", ex.Message);
+    }
+
+    [Fact]
     public async Task CloneAsync_WithExistingNonEmptyTargetPath_ThrowsArgumentException()
     {
         CreateServerRepository("nonempty-target-server", new[] { ("server-file.txt", "server content") });

@@ -128,6 +128,11 @@ public sealed class GitRemoteClientRepository : IGitRepositoryWithRemote, IDispo
         ArgumentException.ThrowIfNullOrWhiteSpace(remoteUrl);
         ArgumentException.ThrowIfNullOrWhiteSpace(targetPath);
 
+        if (remoteName != null)
+        {
+            ValidateRemoteName(remoteName, nameof(remoteName));
+        }
+
         remoteName ??= "origin";
         var remoteUri = new Uri(remoteUrl);
 
@@ -303,6 +308,10 @@ public sealed class GitRemoteClientRepository : IGitRepositoryWithRemote, IDispo
         {
             ValidateBranchName(branch);
         }
+        if (remote != null)
+        {
+            ValidateRemoteName(remote, nameof(remote));
+        }
 
         var targetRemote = remote ?? await ResolveRemoteNameAsync(branch, cancellationToken).ConfigureAwait(false);
         var remoteUrl = await ResolveRemoteUrlAsync(targetRemote, cancellationToken).ConfigureAwait(false);
@@ -403,7 +412,18 @@ public sealed class GitRemoteClientRepository : IGitRepositoryWithRemote, IDispo
                 }
                 else if (refName.StartsWith("refs/tags/", StringComparison.Ordinal))
                 {
-                    await _repo.ReferenceStore.CreateReferenceAsync(refName, hash, overwrite: true, cancellationToken).ConfigureAwait(false);
+                    var existingTag = await _repo.ReferenceStore.TryResolveReferenceAsync(refName, cancellationToken).ConfigureAwait(false);
+                    if (!existingTag.HasValue)
+                    {
+                        await _repo.ReferenceStore.CreateReferenceAsync(refName, hash, overwrite: false, cancellationToken).ConfigureAwait(false);
+                    }
+                    else if (!existingTag.Value.Equals(hash))
+                    {
+                        if (!string.IsNullOrEmpty(branch))
+                        {
+                            throw new GitRemoteException($"Cannot update tag '{refName}': existing local tag points to {existingTag.Value} (would clobber existing tag).");
+                        }
+                    }
                 }
             }
         }
@@ -441,6 +461,11 @@ public sealed class GitRemoteClientRepository : IGitRepositoryWithRemote, IDispo
         bool setUpstream = false,
         CancellationToken cancellationToken = default)
     {
+        if (remote != null)
+        {
+            ValidateRemoteName(remote, nameof(remote));
+        }
+
         var targetRemote = remote ?? await ResolveRemoteNameAsync(branch, cancellationToken).ConfigureAwait(false);
         var localBranch = branch ?? await _repo.ReferenceStore.GetCurrentBranchNameAsync(cancellationToken).ConfigureAwait(false);
         if (string.IsNullOrEmpty(localBranch))
@@ -623,6 +648,11 @@ public sealed class GitRemoteClientRepository : IGitRepositoryWithRemote, IDispo
             throw new NotSupportedException("Rebase is not supported in managed Git remote client; use merge instead.");
         }
 
+        if (remote != null)
+        {
+            ValidateRemoteName(remote, nameof(remote));
+        }
+
         EnsureWorkspace();
 
         await FetchAsync(remote, branch, prune: false, cancellationToken).ConfigureAwait(false);
@@ -746,6 +776,7 @@ public sealed class GitRemoteClientRepository : IGitRepositoryWithRemote, IDispo
                 var configuredRemote = config.GetValue("branch", targetBranch, "remote");
                 if (!string.IsNullOrEmpty(configuredRemote))
                 {
+                    ValidateRemoteName(configuredRemote, "configuredRemote");
                     return configuredRemote;
                 }
             }
@@ -756,6 +787,8 @@ public sealed class GitRemoteClientRepository : IGitRepositoryWithRemote, IDispo
 
     private async Task<Uri> ResolveRemoteUrlAsync(string remoteName, CancellationToken cancellationToken)
     {
+        ValidateRemoteName(remoteName, nameof(remoteName));
+
         var configPath = Path.Combine(_repo.GitDirectory, "config");
         if (File.Exists(configPath))
         {
@@ -834,6 +867,36 @@ public sealed class GitRemoteClientRepository : IGitRepositoryWithRemote, IDispo
             clean.EndsWith('/'))
         {
             throw new ArgumentException($"Invalid branch name '{branchName}'.", paramName);
+        }
+    }
+
+    private static void ValidateRemoteName(string remoteName, string paramName = "remote")
+    {
+        if (string.IsNullOrWhiteSpace(remoteName))
+        {
+            throw new ArgumentException("Remote name cannot be empty or whitespace.", paramName);
+        }
+
+        if (remoteName.Contains('"') ||
+            remoteName.Contains('\n') ||
+            remoteName.Contains('\r') ||
+            remoteName.Contains('\0') ||
+            remoteName.Contains('\\') ||
+            remoteName.Contains('/') ||
+            remoteName.Contains("..") ||
+            remoteName.Contains(' ') ||
+            remoteName.Contains('~') ||
+            remoteName.Contains('^') ||
+            remoteName.Contains(':') ||
+            remoteName.Contains('?') ||
+            remoteName.Contains('*') ||
+            remoteName.Contains('[') ||
+            remoteName.Contains("@{") ||
+            remoteName.StartsWith('.') ||
+            remoteName.EndsWith(".lock", StringComparison.OrdinalIgnoreCase) ||
+            remoteName.EndsWith('.'))
+        {
+            throw new ArgumentException($"Invalid remote name '{remoteName}'.", paramName);
         }
     }
 
