@@ -2,7 +2,7 @@
 
 `Pmad.Git.Cli` is a lightweight .NET library that wraps calls to the Git command-line interface (`git`) for advanced operations not handled in-process, such as remote synchronization (push/pull/fetch), branch management, tracking status inspection, unified diff extraction, and merge conflict resolution.
 
-It also provides `GitRepositorySynchronizer`, which automatically keeps a local repository synchronized with a remote using debounced push-on-change and periodic (or on-demand) pull, exposing a state machine to detect and resolve merge conflicts.
+It also integrates with `GitRepositorySynchronizer` (from `Pmad.Git.LocalRepositories`), which automatically keeps a local repository synchronized with a remote using debounced push-on-change and periodic (or on-demand) pull, exposing a state machine to detect and resolve merge conflicts.
 
 ## Installation
 

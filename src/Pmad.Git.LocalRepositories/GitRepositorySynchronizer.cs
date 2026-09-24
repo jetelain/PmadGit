@@ -461,6 +461,14 @@ public sealed class GitRepositorySynchronizer : IAsyncDisposable
         _gate.Release();
         _lifetimeCts.Dispose();
         _gate.Dispose();
+        if (_remoteRepo is IAsyncDisposable asyncDisposable)
+        {
+            await asyncDisposable.DisposeAsync().ConfigureAwait(false);
+        }
+        else if (_remoteRepo is IDisposable disposable)
+        {
+            disposable.Dispose();
+        }
     }
 }
 

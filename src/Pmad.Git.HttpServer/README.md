@@ -142,4 +142,82 @@ app.MapGitSmartHttp("/git");
 - SHA-1 and SHA-256 repository support through `Pmad.Git.LocalRepositories`.
 - No dependency on the `git` CLI at runtime.
 - Extensible authorization through user-provided callbacks.
+- Pluggable background repository synchronization via `IGitRepositorySynchronizerService`.
+
+## Background Synchronization Service
+
+`Pmad.Git.HttpServer` includes `IGitRepositorySynchronizerService` to manage and cache background `GitRepositorySynchronizer` instances for hosted repositories. It uses a factory pattern to guarantee that synchronizers always wrap the server's canonical, managed `IGitRepository` instance (ensuring shared cache invalidation and reference locks).
+
+### Registering the Service
+
+```csharp
+builder.Services.AddGitRepositorySynchronizerService();
+```
+
+### Setting Up a Synchronizer on an Existing Repository
+
+```csharp
+var syncService = app.Services.GetRequiredService<IGitRepositorySynchronizerService>();
+
+// Using Pmad.Git.RemoteClient (100% managed C#, zero CLI):
+syncService.SetupSynchronizer("/srv/git/my-repo.git", repo => repo.CreateSynchronizer(new GitRemoteClientSyncOptions
+{
+    Url = "https://upstream-git.example.com/my-repo.git",
+    Credentials = GitHttpCredentials.PersonalAccessToken("token"),
+    PushDebounceDelay = TimeSpan.FromSeconds(30),
+    PullInterval = TimeSpan.FromMinutes(5)
+}));
+
+// Or using Pmad.Git.Cli (when native git executable is available):
+syncService.SetupSynchronizer("/srv/git/my-repo.git", repo => repo.CreateSynchronizer(new GitCliSyncOptions
+{
+    PushDebounceDelay = TimeSpan.FromSeconds(30),
+    PullInterval = TimeSpan.FromMinutes(5)
+}));
+```
+
+### Initial Clone and Setup (`SetupSynchronizerAsync`)
+
+`SetupSynchronizerAsync` ensures the local repository exists before setting up the synchronizer. If the repository directory does not exist yet (or is empty), it invokes the provided `cloneAsync` delegate to clone the repository first:
+
+```csharp
+var syncService = app.Services.GetRequiredService<IGitRepositorySynchronizerService>();
+
+// Initial clone + sync using Pmad.Git.RemoteClient:
+var synchronizer = await syncService.SetupSynchronizerAsync(
+    repositoryPath: "/srv/git/my-repo",
+    cloneAsync: (targetPath, ct) => GitRemoteClientRepository.CloneAsync(
+        "https://upstream-git.example.com/my-repo.git",
+        targetPath,
+        new GitRemoteClientOptions { Credentials = GitHttpCredentials.PersonalAccessToken("token") },
+        ct),
+    synchronizerFactory: repo => repo.CreateSynchronizer(new GitRemoteClientSyncOptions
+    {
+        Url = "https://upstream-git.example.com/my-repo.git",
+        Credentials = GitHttpCredentials.PersonalAccessToken("token"),
+        PushDebounceDelay = TimeSpan.FromSeconds(30),
+        PullInterval = TimeSpan.FromMinutes(5)
+    }));
+
+// Or initial clone + sync using Pmad.Git.Cli:
+var synchronizer = await syncService.SetupSynchronizerAsync(
+    repositoryPath: "/srv/git/my-repo",
+    cloneAsync: (targetPath, ct) => GitCliRepository.CloneAsync(
+        "https://upstream-git.example.com/my-repo.git",
+        targetPath,
+        cancellationToken: ct),
+    synchronizerFactory: repo => repo.CreateSynchronizer(new GitCliSyncOptions
+    {
+        PushDebounceDelay = TimeSpan.FromSeconds(30),
+        PullInterval = TimeSpan.FromMinutes(5)
+    }));
+```
+
+### Cache Management & Invalidation
+
+- `GetSynchronizerByPath(path)`: Retrieves the cached synchronizer for a repository path, or `null` if none is configured.
+- `InvalidateSynchronizer(path)`: Disposes and evicts the synchronizer for a specific repository.
+- `DisposeAsync()`: Disposes all cached synchronizers when the application stops.
+
+
 

@@ -9,7 +9,7 @@ namespace Pmad.Git.RemoteClient;
 /// Implements <see cref="IGitRepositoryWithRemote"/> using a pure managed Smart HTTP client
 /// without any external Git CLI dependency.
 /// </summary>
-public sealed class GitRemoteClientRepository : IGitRepositoryWithRemote, IDisposable
+public sealed class GitRemoteClientRepository : IGitRepositoryWithRemote, IDisposable, IAsyncDisposable
 {
     private readonly IGitRepository _repo;
     private readonly IGitWorkspaceRepository? _workspaceRepo;
@@ -1011,5 +1011,12 @@ public sealed class GitRemoteClientRepository : IGitRepositoryWithRemote, IDispo
         {
             _connection.Dispose();
         }
+    }
+
+    /// <inheritdoc />
+    public ValueTask DisposeAsync()
+    {
+        Dispose();
+        return ValueTask.CompletedTask;
     }
 }
