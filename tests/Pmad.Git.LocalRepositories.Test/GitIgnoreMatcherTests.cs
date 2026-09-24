@@ -105,13 +105,26 @@ public sealed class GitIgnoreMatcherTests
     }
 
     [Fact]
-    public void IsIgnored_NegatedRuleInIgnoredDirectory_UnignoresDescendant()
+    public void IsIgnored_NegatedRuleInIgnoredDirectory_CannotReincludeWhenParentDirectoryIsIgnored()
     {
         var matcher = new GitIgnoreMatcher();
         matcher.AddRule("build/");
         matcher.AddRule("!build/keep.txt");
 
         Assert.True(matcher.IsIgnored("build/trash.txt", isDirectory: false));
+        // Per Git spec, cannot re-include a file if its parent directory is excluded
+        Assert.True(matcher.IsIgnored("build/keep.txt", isDirectory: false));
+    }
+
+    [Fact]
+    public void IsIgnored_NegatedRuleInWildcardDirectory_CanReincludeWhenParentDirectoryNotIgnored()
+    {
+        var matcher = new GitIgnoreMatcher();
+        matcher.AddRule("build/*");
+        matcher.AddRule("!build/keep.txt");
+
+        Assert.True(matcher.IsIgnored("build/trash.txt", isDirectory: false));
+        // Since build/ itself was not excluded, !build/keep.txt can re-include it
         Assert.False(matcher.IsIgnored("build/keep.txt", isDirectory: false));
     }
 
@@ -215,6 +228,33 @@ public sealed class GitIgnoreMatcherTests
         {
             return false;
         }
+    }
+
+    [Fact]
+    public void Load_IgnoredDirectoryWithManySubdirectories_DoesNotRecurseAndLoadsQuickly()
+    {
+        using var testRepo = GitTestRepository.Create();
+        var nodeModulesDir = Path.Combine(testRepo.WorkingDirectory, "node_modules");
+        Directory.CreateDirectory(nodeModulesDir);
+
+        // Create mock node_modules subdirectories and a sentinel .gitignore inside
+        for (var i = 0; i < 5000; i++)
+        {
+            Directory.CreateDirectory(Path.Combine(nodeModulesDir, $"pkg_{i}"));
+        }
+        File.WriteAllText(Path.Combine(nodeModulesDir, "pkg_0", ".gitignore"), "*.sentinel_ignore\n");
+
+        File.WriteAllText(Path.Combine(testRepo.WorkingDirectory, ".gitignore"), "node_modules/\n");
+
+        var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+        var matcher = GitIgnoreMatcher.Load(testRepo.WorkingDirectory);
+        stopwatch.Stop();
+
+        Assert.True(matcher.IsIgnored("node_modules/pkg_1/index.js", isDirectory: false));
+        // Sentinel rule inside ignored node_modules must NOT have been loaded
+        Assert.False(matcher.IsIgnored("outside.sentinel_ignore", isDirectory: false));
+        // Must complete very quickly (< 2 seconds) because it skips node_modules enumeration completely
+        Assert.True(stopwatch.ElapsedMilliseconds < 2000, $"Load took {stopwatch.ElapsedMilliseconds} ms");
     }
 }
 

@@ -608,6 +608,52 @@ public sealed class GitIndexManagerTests
             return false;
         }
     }
+
+    [Fact]
+    public async Task StageAsync_ExistingTrackedExecutableFile_PreservesExecutableModeOnWindows()
+    {
+        using var testRepo = GitTestRepository.Create();
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+
+        // Add file directly to index with 100755 mode (33261)
+        var filePath = Path.Combine(testRepo.WorkingDirectory, "script.sh");
+        await File.WriteAllTextAsync(filePath, "#!/bin/sh\necho 'hello'");
+
+        var blobHash = await repo.ObjectStore.WriteObjectAsync(GitObjectType.Blob, Encoding.UTF8.GetBytes("#!/bin/sh\necho 'hello'"), CancellationToken.None);
+        var initialIndex = await GitIndex.ReadAsync(repo.IndexManager.IndexPath, repo.HashLengthBytes);
+        initialIndex.AddOrUpdate(new GitIndexEntry("script.sh", blobHash, fileMode: 33261));
+        await initialIndex.WriteAsync(repo.IndexManager.IndexPath, repo.HashLengthBytes);
+
+        // Commit initial state
+        var metadata = new GitCommitMetadata("Add executable script", new GitCommitSignature("Author", "author@example.com", DateTimeOffset.UtcNow));
+        await repo.CommitAsync("Add executable script", metadata);
+
+        // Now modify the file on disk
+        await File.WriteAllTextAsync(filePath, "#!/bin/sh\necho 'updated'");
+
+        // Stage the modified file
+        await repo.IndexManager.StageAsync("script.sh");
+
+        // Verify index entry preserves 33261 mode
+        var updatedIndex = await GitIndex.ReadAsync(repo.IndexManager.IndexPath, repo.HashLengthBytes);
+        var entry = updatedIndex.FindEntry("script.sh");
+        Assert.NotNull(entry);
+        Assert.Equal(33261, entry.FileMode);
+
+        // Commit and verify tree entry retains mode 33261
+        var commitHash = await repo.CommitAsync("Update executable script", metadata);
+        GitTreeEntry? scriptTreeEntry = null;
+        await foreach (var item in repo.EnumerateCommitTreeAsync(commitHash.Value))
+        {
+            if (item.Path == "script.sh")
+            {
+                scriptTreeEntry = item.Entry;
+                break;
+            }
+        }
+        Assert.NotNull(scriptTreeEntry);
+        Assert.Equal(33261, scriptTreeEntry.Mode);
+    }
 }
 
 

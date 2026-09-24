@@ -11,13 +11,6 @@ public sealed class GitIgnoreMatcher
 {
     private sealed record Rule(Regex Regex, bool IsNegated, bool DirectoryOnly, string BasePrefix, string RawPattern);
 
-    private enum MatchResult
-    {
-        None,
-        Ignored,
-        Unignored
-    }
-
     private readonly List<Rule> _rules = new();
 
     /// <summary>
@@ -76,10 +69,17 @@ public sealed class GitIgnoreMatcher
                     continue;
                 }
 
+                var relPrefix = Path.GetRelativePath(workingDirectory, subDir).Replace('\\', '/');
+
+                // Do not recursively scan inside directories that are already ignored by a parent .gitignore rule
+                if (IsIgnored(relPrefix, isDirectory: true))
+                {
+                    continue;
+                }
+
                 var subIgnore = Path.Combine(subDir, ".gitignore");
                 if (File.Exists(subIgnore))
                 {
-                    var relPrefix = Path.GetRelativePath(workingDirectory, subDir).Replace('\\', '/');
                     AddRulesFromFile(subIgnore, relPrefix);
                 }
 
@@ -185,17 +185,35 @@ public sealed class GitIgnoreMatcher
             return true;
         }
 
+        // Check if any parent directory is ignored per Git spec:
+        // "It is not possible to re-include a file if a parent directory of that file is excluded."
+        var slashIndex = normalized.IndexOf('/');
+        while (slashIndex >= 0)
+        {
+            var parent = normalized[..slashIndex];
+            if (IsDirectlyIgnored(parent, isDirectory: true))
+            {
+                return true;
+            }
+            slashIndex = normalized.IndexOf('/', slashIndex + 1);
+        }
+
+        return IsDirectlyIgnored(normalized, isDirectory);
+    }
+
+    private bool IsDirectlyIgnored(string path, bool isDirectory)
+    {
         var isIgnored = false;
         foreach (var rule in _rules)
         {
-            var match = EvaluateRule(rule, normalized, isDirectory);
-            if (match == MatchResult.Ignored)
+            if (rule.DirectoryOnly && !isDirectory)
             {
-                isIgnored = true;
+                continue;
             }
-            else if (match == MatchResult.Unignored)
+
+            if (MatchesPattern(rule, path, isDirectory))
             {
-                isIgnored = false;
+                isIgnored = !rule.IsNegated;
             }
         }
 
@@ -210,6 +228,11 @@ public sealed class GitIgnoreMatcher
     public bool HasNegatedRuleUnder(string dirRelPath)
     {
         var normalizedDir = dirRelPath.Trim('/', '\\').Replace('\\', '/');
+        if (IsIgnored(normalizedDir, isDirectory: true))
+        {
+            return false;
+        }
+
         foreach (var rule in _rules)
         {
             if (!rule.IsNegated)
@@ -233,32 +256,6 @@ public sealed class GitIgnoreMatcher
             }
         }
         return false;
-    }
-
-    private static MatchResult EvaluateRule(Rule rule, string path, bool isDirectory)
-    {
-        // 1. Direct match on path
-        if (!(rule.DirectoryOnly && !isDirectory))
-        {
-            if (MatchesPattern(rule, path, isDirectory))
-            {
-                return rule.IsNegated ? MatchResult.Unignored : MatchResult.Ignored;
-            }
-        }
-
-        // 2. Parent directory match
-        var slashIndex = path.IndexOf('/');
-        while (slashIndex >= 0)
-        {
-            var parent = path[..slashIndex];
-            if (MatchesPattern(rule, parent, isDirectory: true))
-            {
-                return rule.IsNegated ? MatchResult.Unignored : MatchResult.Ignored;
-            }
-            slashIndex = path.IndexOf('/', slashIndex + 1);
-        }
-
-        return MatchResult.None;
     }
 
     private static bool MatchesPattern(Rule rule, string targetPath, bool isDirectory)

@@ -292,7 +292,13 @@ public sealed class GitIndexManager
                         cancellationToken).ConfigureAwait(false);
                 }
 
-                var entry = GitIndexEntry.FromFileInfo(path, fileInfo, blobHash);
+                var existingEntry = index.FindEntry(path, stage: 0) ??
+                                    index.Entries.FirstOrDefault(e => e.Path.Equals(path.Replace('\\', '/'), StringComparison.Ordinal));
+                int? preserveMode = (OperatingSystem.IsWindows() && existingEntry != null)
+                    ? existingEntry.FileMode
+                    : null;
+
+                var entry = GitIndexEntry.FromFileInfo(path, fileInfo, blobHash, preserveFileMode: preserveMode);
                 // Clear any merge conflict stages
                 index.Remove(path, stage: 1);
                 index.Remove(path, stage: 2);
@@ -706,10 +712,9 @@ public sealed class GitIndexManager
                 continue;
             }
 
-            // If ignored, skip unless index/HEAD tracks files inside this directory or negated rules exist
+            // If ignored, skip unless index/HEAD tracks files inside this directory
             if (ignoreMatcher.IsIgnored(dirRelPath, isDirectory: true) &&
-                !trackedPrefixes.Contains(dirRelPath) &&
-                !ignoreMatcher.HasNegatedRuleUnder(dirRelPath))
+                !trackedPrefixes.Contains(dirRelPath))
             {
                 continue;
             }

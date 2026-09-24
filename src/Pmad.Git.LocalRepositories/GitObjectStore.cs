@@ -300,9 +300,17 @@ internal sealed class GitObjectStore : IGitObjectStore
         var hash = GitHash.FromBytes(hashBytes);
 
         var objectPath = GetPath(hash);
-        if (!File.Exists(objectPath))
+        if (File.Exists(objectPath))
         {
-            Directory.CreateDirectory(Path.GetDirectoryName(objectPath)!);
+            return hash;
+        }
+
+        var objectsDir = Path.Combine(_gitDirectory, "objects");
+        Directory.CreateDirectory(objectsDir);
+        var tempFile = Path.Combine(objectsDir, $"tmp_obj_{Guid.NewGuid():N}.tmp");
+
+        try
+        {
             var options = new FileStreamOptions
             {
                 Mode = FileMode.CreateNew,
@@ -311,19 +319,52 @@ internal sealed class GitObjectStore : IGitObjectStore
                 Options = FileOptions.Asynchronous | FileOptions.SequentialScan
             };
 
+            await using (var stream = new FileStream(tempFile, options))
+            {
+                await using (var zlib = new ZLibStream(stream, CompressionLevel.Optimal, leaveOpen: false))
+                {
+                    await zlib.WriteAsync(buffer, cancellationToken).ConfigureAwait(false);
+                }
+            }
+
+            Directory.CreateDirectory(Path.GetDirectoryName(objectPath)!);
+
+            if (File.Exists(objectPath))
+            {
+                return hash;
+            }
+
             try
             {
-                await using var stream = new FileStream(objectPath, options);
-                await using var zlib = new ZLibStream(stream, CompressionLevel.Optimal, leaveOpen: false);
-                await zlib.WriteAsync(buffer, cancellationToken).ConfigureAwait(false);
+                File.Move(tempFile, objectPath, overwrite: false);
             }
-            catch (IOException) when (File.Exists(objectPath))
+            catch (IOException)
             {
-                // Object already exists; reuse it.
+                // Another thread may have created the object in the meantime.
+                if (File.Exists(objectPath))
+                {
+                    return hash;
+                }
+
+                throw;
+            }
+
+            return hash;
+        }
+        finally
+        {
+            if (File.Exists(tempFile))
+            {
+                try
+                {
+                    File.Delete(tempFile);
+                }
+                catch
+                {
+                    // Ignore deletion failure of temp file
+                }
             }
         }
-
-        return hash;
     }
 
     private static byte[] CreateHeader(GitObjectType type, long length)
@@ -345,7 +386,9 @@ internal sealed class GitObjectStore : IGitObjectStore
     public async Task<GitHash> WriteObjectAsync(GitObjectType type, Stream stream, long contentLength, CancellationToken cancellationToken)
     {
         // Create a temporary file in the same directory to ensure move operation will be atomic
-        var tempFile = Path.Combine(_gitDirectory, "objects", Guid.NewGuid().ToString("N") + ".tmp");
+        var objectsDir = Path.Combine(_gitDirectory, "objects");
+        Directory.CreateDirectory(objectsDir);
+        var tempFile = Path.Combine(objectsDir, $"tmp_obj_{Guid.NewGuid():N}.tmp");
         try
         {
             GitHash hash;
