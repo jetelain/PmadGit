@@ -169,6 +169,18 @@ public sealed class GitReferenceStoreBranchAndCustomRefsTests
     }
 
     [Fact]
+    public async Task GetCurrentBranchNameAsync_WhenBranchDoesNotExistAndAllowUnbornIsTrue_ReturnsBranchName()
+    {
+        using var testRepo = GitTestRepository.Create();
+        testRepo.RunGit("symbolic-ref HEAD refs/heads/missing-branch");
+
+        var repo = GitRepository.Open(testRepo.WorkingDirectory);
+        var branchName = await repo.GetCurrentBranchNameAsync(allowUnborn: true);
+
+        Assert.Equal("missing-branch", branchName);
+    }
+
+    [Fact]
     public async Task GetCurrentBranchNameAsync_WhenBranchIsPacked_ReturnsBranchName()
     {
         using var testRepo = GitTestRepository.Create();

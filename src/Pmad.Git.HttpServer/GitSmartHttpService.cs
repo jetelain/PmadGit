@@ -380,10 +380,15 @@ internal sealed class GitSmartHttpService
             Path.Combine(_rootFullPath, repositoryName + ".git")
         };
 
+        var rootWithSep = _rootFullPath.EndsWith(Path.DirectorySeparatorChar)
+            ? _rootFullPath
+            : _rootFullPath + Path.DirectorySeparatorChar;
+
         foreach (var candidate in candidates)
         {
             var full = Path.GetFullPath(candidate);
-            if (!full.StartsWith(_rootFullPath, StringComparison.OrdinalIgnoreCase))
+            if (!full.StartsWith(rootWithSep, StringComparison.OrdinalIgnoreCase) &&
+                !string.Equals(full, _rootFullPath, StringComparison.OrdinalIgnoreCase))
             {
                 continue;
             }
@@ -613,6 +618,11 @@ internal sealed class GitSmartHttpService
         {
             capabilities.Add("report-status");
             capabilities.Add("delete-refs");
+        }
+        else if (service == GitServiceKind.UploadPack)
+        {
+            capabilities.Add("multi_ack");
+            capabilities.Add("multi_ack_detailed");
         }
 
         return string.Join(' ', capabilities);

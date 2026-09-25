@@ -180,9 +180,9 @@ internal sealed class GitObjectStore : IGitObjectStore
         try
         {
             int headerSize;
-            var headerBuffer = new byte[20];
+            var headerBuffer = new byte[64];
 
-            // First pass: read just the header (header is ~15 bytes max)
+            // First pass: read just the header
             using (var firstZlib = new ZLibStream(fileStream, CompressionMode.Decompress, leaveOpen: true))
             {
                 var position = 0;
@@ -191,7 +191,7 @@ internal sealed class GitObjectStore : IGitObjectStore
                     var read = await firstZlib.ReadAsync(headerBuffer.AsMemory().Slice(position), cancellationToken).ConfigureAwait(false);
                     position += read;
                     headerSize = Array.IndexOf(headerBuffer, (byte)0, 0, position);
-                    if (headerSize < 0 && (position == 20 || read == 0))
+                    if (headerSize < 0 && (position == headerBuffer.Length || read == 0))
                     {
                         throw new InvalidDataException("Invalid loose object: missing header");
                     }

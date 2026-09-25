@@ -58,8 +58,17 @@ public interface IGitReferenceStore
     /// or null if HEAD is detached or points to an invalid ref.
     /// </summary>
     /// <param name="cancellationToken">Token used to cancel the async operation.</param>
-    /// <returns>The active branch name, or null if HEAD is detached.</returns>
     Task<string?> GetCurrentBranchNameAsync(CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Returns the name of the currently checked out branch (e.g. "main"), 
+    /// or null if HEAD is detached or points to an invalid ref.
+    /// </summary>
+    /// <param name="allowUnborn">Whether to return the branch name for unborn branches (references that do not yet exist on disk).</param>
+    /// <param name="cancellationToken">Token used to cancel the async operation.</param>
+    /// <returns>The active branch name, or null if HEAD is detached.</returns>
+    Task<string?> GetCurrentBranchNameAsync(bool allowUnborn, CancellationToken cancellationToken = default)
+        => GetCurrentBranchNameAsync(cancellationToken);
 
     /// <summary>
     /// Checks whether HEAD is detached (points directly to a commit hash rather than a symbolic ref).

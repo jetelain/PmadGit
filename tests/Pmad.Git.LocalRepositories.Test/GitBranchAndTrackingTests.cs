@@ -166,6 +166,35 @@ public sealed class GitBranchAndTrackingTests
     }
 
     [Fact]
+    public async Task GetTrackingStatusAsync_ManyCommitsAheadWithAncestors_HasZeroBehind()
+    {
+        using var repo = GitTestRepository.Create();
+        var git = GitRepository.Open(repo.WorkingDirectory);
+
+        // Create base history with multiple ancestors: R -> A1 -> A2
+        repo.Commit("Ancestor 1", ("init.txt", "1"));
+        var upstreamCommit = repo.Commit("Upstream point", ("init.txt", "2"));
+
+        await git.SetConfigAsync("branch.master.remote", "origin");
+        await git.SetConfigAsync("branch.master.merge", "refs/heads/master");
+        await git.ReferenceStore.CreateReferenceAsync("refs/remotes/origin/master", upstreamCommit, overwrite: true);
+
+        // Add 5 commits ahead on local
+        for (var i = 1; i <= 5; i++)
+        {
+            repo.Commit($"Local commit {i}", ($"file_{i}.txt", $"{i}"));
+        }
+        git.InvalidateCaches();
+
+        var status = await git.GetTrackingStatusAsync();
+        Assert.True(status.HasUnpushedCommits);
+        Assert.False(status.HasUnpulledCommits);
+        Assert.False(status.IsSynchronized);
+        Assert.Equal(5, status.AheadCount);
+        Assert.Equal(0, status.BehindCount);
+    }
+
+    [Fact]
     public async Task IsCommitPushedAsync_ReturnsTrueWhenPushed_FalseWhenNotPushed()
     {
         using var repo = GitTestRepository.Create();

@@ -1377,6 +1377,10 @@ public sealed class GitRepository : IGitRepository, IGitRepositoryCacheInvalidat
         => _referenceStore.GetCurrentBranchNameAsync(cancellationToken);
 
     /// <inheritdoc />
+    public Task<string?> GetCurrentBranchNameAsync(bool allowUnborn, CancellationToken cancellationToken = default)
+        => _referenceStore.GetCurrentBranchNameAsync(allowUnborn, cancellationToken);
+
+    /// <inheritdoc />
     public Task<bool> IsHeadDetachedAsync(CancellationToken cancellationToken = default)
         => _referenceStore.IsHeadDetachedAsync(cancellationToken);
 
@@ -2044,17 +2048,44 @@ public sealed class GitRepository : IGitRepository, IGitRepositoryCacheInvalidat
             return (0, 0);
         }
 
-        var localReachable = new HashSet<GitHash>();
-        var upstreamReachable = new HashSet<GitHash>();
+        const byte FlagLocal = 1;
+        const byte FlagUpstream = 2;
+        const byte FlagCommon = FlagLocal | FlagUpstream; // 3
+
+        var flags = new Dictionary<GitHash, byte>();
+        var parentCache = new Dictionary<GitHash, IReadOnlyList<GitHash>>();
 
         var localQueue = new Queue<GitHash>();
         var upstreamQueue = new Queue<GitHash>();
 
+        flags[local] = FlagLocal;
         localQueue.Enqueue(local);
-        localReachable.Add(local);
 
+        flags[upstream] = FlagUpstream;
         upstreamQueue.Enqueue(upstream);
-        upstreamReachable.Add(upstream);
+
+        void MarkCommon(GitHash start)
+        {
+            var stack = new Stack<GitHash>();
+            stack.Push(start);
+            flags[start] = FlagCommon;
+
+            while (stack.Count > 0)
+            {
+                var cur = stack.Pop();
+                if (parentCache.TryGetValue(cur, out var parents))
+                {
+                    foreach (var p in parents)
+                    {
+                        if (flags.TryGetValue(p, out var f) && f != FlagCommon)
+                        {
+                            flags[p] = FlagCommon;
+                            stack.Push(p);
+                        }
+                    }
+                }
+            }
+        }
 
         while (localQueue.Count > 0 || upstreamQueue.Count > 0)
         {
@@ -2063,14 +2094,21 @@ public sealed class GitRepository : IGitRepository, IGitRepositoryCacheInvalidat
             if (localQueue.Count > 0)
             {
                 var curLocal = localQueue.Dequeue();
-                if (!upstreamReachable.Contains(curLocal))
+                var curFlag = flags[curLocal];
+                if (curFlag != FlagCommon)
                 {
                     var c = await GetCommitAsync(curLocal, cancellationToken).ConfigureAwait(false);
+                    parentCache[curLocal] = c.Parents;
                     foreach (var p in c.Parents)
                     {
-                        if (localReachable.Add(p))
+                        if (!flags.TryGetValue(p, out var pFlag))
                         {
+                            flags[p] = FlagLocal;
                             localQueue.Enqueue(p);
+                        }
+                        else if (pFlag == FlagUpstream)
+                        {
+                            MarkCommon(p);
                         }
                     }
                 }
@@ -2079,14 +2117,21 @@ public sealed class GitRepository : IGitRepository, IGitRepositoryCacheInvalidat
             if (upstreamQueue.Count > 0)
             {
                 var curUpstream = upstreamQueue.Dequeue();
-                if (!localReachable.Contains(curUpstream))
+                var curFlag = flags[curUpstream];
+                if (curFlag != FlagCommon)
                 {
                     var c = await GetCommitAsync(curUpstream, cancellationToken).ConfigureAwait(false);
+                    parentCache[curUpstream] = c.Parents;
                     foreach (var p in c.Parents)
                     {
-                        if (upstreamReachable.Add(p))
+                        if (!flags.TryGetValue(p, out var pFlag))
                         {
+                            flags[p] = FlagUpstream;
                             upstreamQueue.Enqueue(p);
+                        }
+                        else if (pFlag == FlagLocal)
+                        {
+                            MarkCommon(p);
                         }
                     }
                 }
@@ -2094,18 +2139,14 @@ public sealed class GitRepository : IGitRepository, IGitRepositoryCacheInvalidat
         }
 
         var ahead = 0;
-        foreach (var h in localReachable)
+        var behind = 0;
+        foreach (var (_, flag) in flags)
         {
-            if (!upstreamReachable.Contains(h))
+            if (flag == FlagLocal)
             {
                 ahead++;
             }
-        }
-
-        var behind = 0;
-        foreach (var h in upstreamReachable)
-        {
-            if (!localReachable.Contains(h))
+            else if (flag == FlagUpstream)
             {
                 behind++;
             }

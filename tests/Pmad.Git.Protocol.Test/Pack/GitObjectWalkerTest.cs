@@ -512,6 +512,33 @@ public sealed class GitObjectWalkerTest : IDisposable
         Assert.DoesNotContain(file1Hash, objects);
     }
 
+    [Fact]
+    public async Task CollectAsync_WithSubmoduleTreeEntry_SkipsSubmoduleAndDoesNotThrow()
+    {
+        var repository = GitRepository.Open(_workingDirectory);
+        CreateFile("file1.txt", "content 1");
+        RunGit("add file1.txt");
+        RunGit("commit -m \"Initial commit\" --quiet");
+        repository.InvalidateCaches();
+        var headCommit = await repository.GetCommitAsync();
+
+        var fakeSubmoduleHash = new GitHash("1234567890123456789012345678901234567890");
+        using var ms = new MemoryStream();
+        var baseTree = await repository.ObjectStore.ReadObjectAsync(headCommit.Tree);
+        ms.Write(baseTree.Content);
+        var modeAndName = System.Text.Encoding.UTF8.GetBytes("160000 subrepo\0");
+        ms.Write(modeAndName);
+        ms.Write(fakeSubmoduleHash.ToByteArray());
+
+        var customTreeHash = await repository.ObjectStore.WriteObjectAsync(GitObjectType.Tree, ms.ToArray());
+
+        var walker = new GitObjectWalker(repository);
+        var objects = await walker.CollectAsync(new[] { customTreeHash }, Array.Empty<GitHash>(), CancellationToken.None);
+
+        Assert.Contains(customTreeHash, objects);
+        Assert.DoesNotContain(fakeSubmoduleHash, objects);
+    }
+
     private void CreateFile(string relativePath, string content)
     {
         var fullPath = Path.Combine(_workingDirectory, relativePath.Replace('/', Path.DirectorySeparatorChar));

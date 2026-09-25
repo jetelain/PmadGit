@@ -126,7 +126,11 @@ internal sealed class GitReferenceStore : IGitReferenceStore
     }
 
     /// <inheritdoc/>
-    public async Task<string?> GetCurrentBranchNameAsync(CancellationToken cancellationToken = default)
+    public Task<string?> GetCurrentBranchNameAsync(CancellationToken cancellationToken = default)
+        => GetCurrentBranchNameAsync(allowUnborn: false, cancellationToken);
+
+    /// <inheritdoc/>
+    public async Task<string?> GetCurrentBranchNameAsync(bool allowUnborn, CancellationToken cancellationToken = default)
     {
         var headPath = Path.Combine(_gitDirectory, "HEAD");
         if (!File.Exists(headPath))
@@ -144,11 +148,14 @@ internal sealed class GitReferenceStore : IGitReferenceStore
                 return null;
             }
 
-            var refPath = "refs/heads/" + branch;
-            var resolved = await TryResolveReferenceAsync(refPath, cancellationToken).ConfigureAwait(false);
-            if (!resolved.HasValue)
+            if (!allowUnborn)
             {
-                return null;
+                var refPath = "refs/heads/" + branch;
+                var resolved = await TryResolveReferenceAsync(refPath, cancellationToken).ConfigureAwait(false);
+                if (!resolved.HasValue)
+                {
+                    return null;
+                }
             }
 
             return branch;

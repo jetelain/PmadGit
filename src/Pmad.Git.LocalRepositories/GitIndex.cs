@@ -366,7 +366,37 @@ public sealed class GitIndex
         var tempPath = Path.Combine(directory ?? ".", $"{Path.GetFileName(indexPath)}.{Guid.NewGuid():N}.tmp");
         var bytes = ToByteArray(hashLengthBytes);
 
-        await File.WriteAllBytesAsync(tempPath, bytes, cancellationToken).ConfigureAwait(false);
-        File.Move(tempPath, indexPath, overwrite: true);
+        try
+        {
+            await File.WriteAllBytesAsync(tempPath, bytes, cancellationToken).ConfigureAwait(false);
+            const int maxRetries = 5;
+            for (var attempt = 1; ; attempt++)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                try
+                {
+                    File.Move(tempPath, indexPath, overwrite: true);
+                    break;
+                }
+                catch (IOException) when (attempt < maxRetries)
+                {
+                    await Task.Delay(attempt * 20, cancellationToken).ConfigureAwait(false);
+                }
+            }
+        }
+        finally
+        {
+            if (File.Exists(tempPath))
+            {
+                try
+                {
+                    File.Delete(tempPath);
+                }
+                catch
+                {
+                    // Ignore failure to clean up temp file
+                }
+            }
+        }
     }
 }
