@@ -256,5 +256,45 @@ public sealed class GitIgnoreMatcherTests
         // Must complete very quickly (< 2 seconds) because it skips node_modules enumeration completely
         Assert.True(stopwatch.ElapsedMilliseconds < 2000, $"Load took {stopwatch.ElapsedMilliseconds} ms");
     }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("/")]
+    [InlineData("///")]
+    public void IsIgnored_EmptyPathOrRoot_NeverIgnored(string rootPath)
+    {
+        var matcher = new GitIgnoreMatcher();
+        matcher.AddRule("*");
+
+        Assert.False(matcher.IsIgnored(rootPath, isDirectory: true));
+        Assert.False(matcher.IsIgnored(rootPath, isDirectory: false));
+    }
+
+    [Fact]
+    public void IsIgnored_TrailingSlashes_HandledConsistently()
+    {
+        var matcher = new GitIgnoreMatcher();
+        matcher.AddRule("build/");
+
+        Assert.True(matcher.IsIgnored("build", isDirectory: true));
+        Assert.True(matcher.IsIgnored("build/", isDirectory: true));
+        Assert.True(matcher.IsIgnored("dir/build", isDirectory: true));
+        Assert.True(matcher.IsIgnored("dir/build/", isDirectory: true));
+    }
+
+    [Fact]
+    public void IsIgnored_SubdirectoryWithWildcard_DoesNotIgnoreSubdirectoryItself()
+    {
+        var matcher = new GitIgnoreMatcher();
+        matcher.AddRule("*", basePrefix: "sub");
+
+        // The subdirectory itself is never ignored by rules defined inside it
+        Assert.False(matcher.IsIgnored("sub", isDirectory: true));
+        Assert.False(matcher.IsIgnored("sub/", isDirectory: true));
+
+        // But files inside sub are ignored
+        Assert.True(matcher.IsIgnored("sub/file.txt", isDirectory: false));
+        Assert.True(matcher.IsIgnored("sub/nested/file.txt", isDirectory: false));
+    }
 }
 

@@ -99,27 +99,48 @@ internal sealed class GitObjectStore : IGitObjectStore
         {
             Mode = FileMode.Open,
             Access = FileAccess.Read,
-            Share = FileShare.Read,
+            Share = FileShare.ReadWrite | FileShare.Delete,
             Options = FileOptions.Asynchronous | FileOptions.SequentialScan
         };
 
-        await using var stream = new FileStream(path, options);
-        using var zlib = new ZLibStream(stream, CompressionMode.Decompress);
-        using var buffer = new MemoryStream();
-        await zlib.CopyToAsync(buffer, cancellationToken).ConfigureAwait(false);
-
-        var content = buffer.ToArray();
-        var separator = Array.IndexOf(content, (byte)0);
-        if (separator < 0)
+        FileStream? stream = null;
+        for (var attempt = 0; attempt < 5; attempt++)
         {
-            throw new InvalidDataException("Invalid loose object: missing header");
+            try
+            {
+                stream = new FileStream(path, options);
+                break;
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException && attempt < 4)
+            {
+                await Task.Delay(10 * (attempt + 1), cancellationToken).ConfigureAwait(false);
+            }
         }
 
-        ParseHeader(content.AsSpan(0, separator), out var objectType, out _);
+        if (stream == null)
+        {
+            return null;
+        }
 
-        var payload = content[(separator + 1)..];
+        await using (stream)
+        {
+            using var zlib = new ZLibStream(stream, CompressionMode.Decompress);
+            using var buffer = new MemoryStream();
+            await zlib.CopyToAsync(buffer, cancellationToken).ConfigureAwait(false);
 
-        return new GitObjectData(objectType, payload);
+            var content = buffer.ToArray();
+            var separator = Array.IndexOf(content, (byte)0);
+            if (separator < 0)
+            {
+                throw new InvalidDataException("Invalid loose object: missing header");
+            }
+
+            ParseHeader(content.AsSpan(0, separator), out var objectType, out _);
+
+            var payload = content[(separator + 1)..];
+
+            return new GitObjectData(objectType, payload);
+        }
     }
 
     private async Task<GitObjectStream?> TryReadLooseObjectStreamAsync(GitHash hash, CancellationToken cancellationToken)
@@ -134,11 +155,28 @@ internal sealed class GitObjectStore : IGitObjectStore
         {
             Mode = FileMode.Open,
             Access = FileAccess.Read,
-            Share = FileShare.Read,
+            Share = FileShare.ReadWrite | FileShare.Delete,
             Options = FileOptions.Asynchronous | FileOptions.SequentialScan
         };
 
-        var fileStream = new FileStream(path, options);
+        FileStream? fileStream = null;
+        for (var attempt = 0; attempt < 5; attempt++)
+        {
+            try
+            {
+                fileStream = new FileStream(path, options);
+                break;
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException && attempt < 4)
+            {
+                await Task.Delay(10 * (attempt + 1), cancellationToken).ConfigureAwait(false);
+            }
+        }
+
+        if (fileStream == null)
+        {
+            return null;
+        }
         try
         {
             int headerSize;
@@ -346,6 +384,16 @@ internal sealed class GitObjectStore : IGitObjectStore
                     return hash;
                 }
 
+                for (var retry = 0; retry < 5 && !File.Exists(objectPath); retry++)
+                {
+                    await Task.Delay(10 * (retry + 1), cancellationToken).ConfigureAwait(false);
+                }
+
+                if (File.Exists(objectPath))
+                {
+                    return hash;
+                }
+
                 throw;
             }
 
@@ -437,6 +485,17 @@ internal sealed class GitObjectStore : IGitObjectStore
                     return hash;
                 }
 
+                for (var retry = 0; retry < 5 && !File.Exists(objectPath); retry++)
+                {
+                    await Task.Delay(10 * (retry + 1), cancellationToken).ConfigureAwait(false);
+                }
+
+                if (File.Exists(objectPath))
+                {
+                    // Object already exists; reuse it.
+                    return hash;
+                }
+
                 throw;
             }
             return hash;
@@ -445,7 +504,14 @@ internal sealed class GitObjectStore : IGitObjectStore
         {
             if (File.Exists(tempFile))
             {
-                File.Delete(tempFile);
+                try
+                {
+                    File.Delete(tempFile);
+                }
+                catch
+                {
+                    // Ignore deletion failure of temp file
+                }
             }
         }
     }

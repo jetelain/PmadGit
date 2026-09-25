@@ -294,7 +294,7 @@ public sealed class GitBranchAndTrackingTests
                 Environment.SetEnvironmentVariable("GIT_CONFIG_GLOBAL", prevEnv);
                 if (File.Exists(tempGlobal))
                 {
-                    File.Delete(tempGlobal);
+                    try { File.Delete(tempGlobal); } catch { }
                 }
             }
         }
@@ -335,7 +335,7 @@ public sealed class GitBranchAndTrackingTests
                 Environment.SetEnvironmentVariable("GIT_CONFIG_GLOBAL", prevEnv);
                 if (File.Exists(tempGlobal))
                 {
-                    File.Delete(tempGlobal);
+                    try { File.Delete(tempGlobal); } catch { }
                 }
             }
         }
@@ -396,11 +396,7 @@ public sealed class GitBranchAndTrackingTests
                 Environment.SetEnvironmentVariable("GIT_CONFIG_GLOBAL", prevGlobal);
                 Environment.SetEnvironmentVariable("XDG_CONFIG_HOME", prevXdg);
                 Environment.SetEnvironmentVariable("HOME", prevHome);
-
-                if (Directory.Exists(tempDir))
-                {
-                    Directory.Delete(tempDir, true);
-                }
+                TestHelper.TryDeleteDirectory(tempDir);
             }
         }
         finally
@@ -451,7 +447,7 @@ public sealed class GitBranchAndTrackingTests
                 Environment.SetEnvironmentVariable("GIT_CONFIG_GLOBAL", prevGlobal);
                 if (File.Exists(tempGlobal))
                 {
-                    File.Delete(tempGlobal);
+                    try { File.Delete(tempGlobal); } catch { }
                 }
             }
         }

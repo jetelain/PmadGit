@@ -114,6 +114,7 @@ public static class TestHelper
                 UseShellExecute = false,
                 CreateNoWindow = true
             };
+            startInfo.EnvironmentVariables["LC_ALL"] = "C";
 
             using var process = Process.Start(startInfo) ?? throw new InvalidOperationException("Unable to start git process");
             var output = process.StandardOutput.ReadToEnd();

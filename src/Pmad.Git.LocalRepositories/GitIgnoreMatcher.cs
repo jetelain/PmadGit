@@ -178,7 +178,12 @@ public sealed class GitIgnoreMatcher
     /// <returns>True if the path should be ignored; false otherwise.</returns>
     public bool IsIgnored(string relativePath, bool isDirectory)
     {
-        var normalized = relativePath.TrimStart('/', '\\').Replace('\\', '/');
+        var normalized = relativePath.Trim('/', '\\').Replace('\\', '/');
+        if (string.IsNullOrEmpty(normalized))
+        {
+            return false;
+        }
+
         if (normalized.Equals(".git", StringComparison.OrdinalIgnoreCase) ||
             normalized.StartsWith(".git/", StringComparison.OrdinalIgnoreCase))
         {
@@ -269,7 +274,7 @@ public sealed class GitIgnoreMatcher
         {
             if (targetPath.Equals(rule.BasePrefix, StringComparison.Ordinal))
             {
-                return isDirectory && rule.Regex.IsMatch(string.Empty);
+                return false;
             }
 
             if (targetPath.StartsWith(rule.BasePrefix + "/", StringComparison.Ordinal))
