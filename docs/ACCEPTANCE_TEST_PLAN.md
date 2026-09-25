@@ -4,6 +4,7 @@
 > **Target Framework**: .NET 8 / C# 12  
 > **Execution Mode**: Autonomous AI Agent Playbook & Continuous Verification  
 > **Reference Oracle**: Native Git CLI (`git` >= 2.30)  
+> **Required Platform**: Linux (all scratch repositories must live under `/tmp/pmad_acceptance/`)  
 > **Status**: Ready for Automated Execution  
 
 ---
@@ -42,13 +43,22 @@ flowchart TD
 ```
 
 ### AI Agent Rules of Engagement
-1. **Directory Isolation**: All temporary test repositories must be created under a dedicated workspace directory (e.g. `./.acceptance_work/` or `$env:TEMP/pmad_acceptance/`). Never modify the parent source repository itself except when testing read-only inspection.
+1. **Directory Isolation (Linux, `/tmp` workspace required)**: This plan **must** be executed on **Linux**. All temporary test repositories must be created under the dedicated workspace directory `/tmp/pmad_acceptance/`. Relative workspaces inside the source tree (e.g. `./.acceptance_work/`) and Windows-specific locations (`$env:TEMP`) are **forbidden**. The source repository itself must never be modified except when testing read-only inspection.
+   ```bash
+   mkdir -p /tmp/pmad_acceptance
+   ```
 2. **Strict Verification Invariant**: Any test case involving state modification (staging, commit, reset, push, unpack) **MUST** execute `git fsck --full --strict` as a mandatory validation gate. Any `fsck` error, corrupt link, or dangling object warning constitutes a test failure.
 3. **Structured Exit Codes**: The companion tool (`tools/Pmad.Git.Acceptance`) returns:
    - `0`: Success (100% conformance with native Git).
    - `1`: Validation Failure (mismatch detected, exact diff printed to stderr/stdout).
    - `2`: Invalid CLI arguments or syntax.
 4. **Final Deliverable**: Upon completing all phases, generate an `ACCEPTANCE_REPORT.md` summarizing pass/fail counts, real-world repository metrics, execution durations, and any discrepancies discovered.
+5. **Differential Repositories Must Be Checked Out Without Line-Ending Conversion**: `Pmad.Git` does **not** implement Git's text / line-ending normalization (`core.autocrlf`, `core.eol`, `text` gitattributes). Any repository used for differential (oracle) queries — `compare-status`, working-tree-based tree comparisons — must be cloned or re-checked-out with conversion disabled so that on-disk bytes are bit-identical to blob bytes:
+   ```bash
+   git clone -c core.autocrlf=false <url> <target>
+   git -C <target> config core.autocrlf false
+   ```
+   If the working tree was checked out with CRLF conversion enabled, the managed status engine reports every CRLF-normalized file as *Modified* while native `git status` reports *clean*. This is an environment artifact, not a Pmad.Git defect. **Finding (run 2026-09-25)**: ATP-IDX-01 initially produced 326 false-positive mismatches until the scratch clone was re-created with `core.autocrlf=false`.
 
 ---
 
@@ -106,7 +116,7 @@ dotnet run --project tools/Pmad.Git.Acceptance -- <command> [arguments]
 - **Characteristics**: Large-scale C projects with >30,000 commits, >100 release tags, submodules, executable shell scripts (`100755`), and symlinks.
 - **Acquisition Command**:
   ```bash
-  git clone --depth 50 https://github.com/curl/curl.git .acceptance_work/curl_repo
+  git clone --depth 50 https://github.com/curl/curl.git /tmp/pmad_acceptance/curl_repo
   ```
 - **Traits Tested**: High-speed tree traversal, packed-refs parsing, delta resolution, tag dereferencing, multi-author signatures.
 
@@ -133,7 +143,9 @@ dotnet run --project tools/Pmad.Git.Acceptance -- <command> [arguments]
 
 The AI agent executes this phase first to confirm environment readiness.
 
-```powershell
+> **Platform Requirement**: This phase **must** run on **Linux**. Execute commands from the repository root with a standard bash shell (no PowerShell). All scratch artifacts live under `/tmp/pmad_acceptance/`.
+
+```bash
 # Step 0.1: Verify .NET 8 SDK
 dotnet --version
 
@@ -143,11 +155,11 @@ git --version
 # Step 0.3: Build entire solution including acceptance runner
 dotnet build Pmad.Git.sln -c Release
 
-# Step 0.4: Create clean scratch directory
-if (Test-Path .acceptance_work) { Remove-Item -Recurse -Force .acceptance_work }
-New-Item -ItemType Directory -Path .acceptance_work | Out-Null
+# Step 0.4: Create clean scratch directory under /tmp
+rm -rf /tmp/pmad_acceptance
+mkdir -p /tmp/pmad_acceptance
 ```
-**Pass Criteria**: `dotnet` and `git` commands exit `0`, and solution builds with `0 errors`.
+**Pass Criteria**: Running platform is Linux; `dotnet` and `git` commands exit `0`; solution builds with `0 errors`; `/tmp/pmad_acceptance/` exists and is empty.
 
 ---
 
@@ -157,7 +169,7 @@ New-Item -ItemType Directory -Path .acceptance_work | Out-Null
 - **Target**: Self-repository (`.`)
 - **Action**: Compare resolved references between `GitReferenceStore` and native `git show-ref`.
 - **Command**:
-  ```powershell
+  ```bash
   dotnet run --project tools/Pmad.Git.Acceptance -c Release -- compare-refs .
   ```
 - **Verification**: Exit code `0`. All branches, tags, and HEAD commit hashes match `git rev-parse` exactly.
@@ -166,7 +178,7 @@ New-Item -ItemType Directory -Path .acceptance_work | Out-Null
 - **Target**: Self-repository (`.`)
 - **Action**: Enumerate every blob and tree entry via `EnumerateCommitTreeAsync()` and compare against `git ls-tree -r -t HEAD`.
 - **Command**:
-  ```powershell
+  ```bash
   dotnet run --project tools/Pmad.Git.Acceptance -c Release -- compare-tree . HEAD
   ```
 - **Verification**: Exit code `0`. Entry count, file modes (100644 vs 100755 vs 040000), path strings, and object hashes are identical.
@@ -174,20 +186,20 @@ New-Item -ItemType Directory -Path .acceptance_work | Out-Null
 #### ATP-LOC-03: Real-World Deep History Clone & Traversal
 - **Target**: `curl/curl` (Shallow clone depth 50)
 - **Command**:
-  ```powershell
-  git clone --depth 50 https://github.com/curl/curl.git .acceptance_work/curl_repo
-  dotnet run --project tools/Pmad.Git.Acceptance -c Release -- compare-refs .acceptance_work/curl_repo
-  dotnet run --project tools/Pmad.Git.Acceptance -c Release -- compare-tree .acceptance_work/curl_repo HEAD
+  ```bash
+  git clone --depth 50 https://github.com/curl/curl.git /tmp/pmad_acceptance/curl_repo
+  dotnet run --project tools/Pmad.Git.Acceptance -c Release -- compare-refs /tmp/pmad_acceptance/curl_repo
+  dotnet run --project tools/Pmad.Git.Acceptance -c Release -- compare-tree /tmp/pmad_acceptance/curl_repo HEAD
   ```
 - **Verification**: Exit code `0` on both queries. Demonstrates reliable packed-refs resolution and tree walking on a non-trivial third-party open-source repository.
 
 #### ATP-LOC-04: Canonical Tree Sorting Rule Enforcement
-- **Target**: `.acceptance_work/synthetic_sort`
+- **Target**: `/tmp/pmad_acceptance/synthetic_sort`
 - **Action**: Create synthetic repo with files sharing identical prefixes with directories.
 - **Command**:
-  ```powershell
-  dotnet run --project tools/Pmad.Git.Acceptance -c Release -- create-synthetic-repo .acceptance_work/synthetic_sort
-  dotnet run --project tools/Pmad.Git.Acceptance -c Release -- verify-fsck .acceptance_work/synthetic_sort
+  ```bash
+  dotnet run --project tools/Pmad.Git.Acceptance -c Release -- create-synthetic-repo /tmp/pmad_acceptance/synthetic_sort
+  dotnet run --project tools/Pmad.Git.Acceptance -c Release -- verify-fsck /tmp/pmad_acceptance/synthetic_sort
   ```
 - **Verification**: Exit code `0`. `git fsck --full --strict` reports no `"contains unsorted entries"` or tree corruption errors.
 
@@ -196,42 +208,42 @@ New-Item -ItemType Directory -Path .acceptance_work | Out-Null
 ### Phase 2: Index (DIRC v2), Staging & Working Tree Status
 
 #### ATP-IDX-01: Working Tree Status Differential Oracle
-- **Target**: `.acceptance_work/status_repo`
+- **Target**: `/tmp/pmad_acceptance/status_repo`
 - **Action**: Generate modified, untracked, staged, and deleted files, then compare Pmad.Git status with `git status --porcelain=v2`.
 - **Command**:
-  ```powershell
-  git clone . .acceptance_work/status_repo
+  ```bash
+  git clone . /tmp/pmad_acceptance/status_repo
   # Create dirty state
-  Set-Content .acceptance_work/status_repo/new_untracked.txt "untracked"
-  Add-Content .acceptance_work/status_repo/README.md "dirty line"
-  git -C .acceptance_work/status_repo add .acceptance_work/status_repo/README.md
-  Add-Content .acceptance_work/status_repo/README.md "unstaged second line"
-  dotnet run --project tools/Pmad.Git.Acceptance -c Release -- compare-status .acceptance_work/status_repo
+  echo "untracked" > /tmp/pmad_acceptance/status_repo/new_untracked.txt
+  echo "dirty line" >> /tmp/pmad_acceptance/status_repo/README.md
+  git -C /tmp/pmad_acceptance/status_repo add README.md
+  echo "unstaged second line" >> /tmp/pmad_acceptance/status_repo/README.md
+  dotnet run --project tools/Pmad.Git.Acceptance -c Release -- compare-status /tmp/pmad_acceptance/status_repo
   ```
 - **Verification**: Exit code `0`. Discrepancy count is `0`. Both engines report identical staged and unstaged states.
 
 #### ATP-IDX-02: Interleaved Staging Conformance
-- **Target**: `.acceptance_work/interleaved_repo`
+- **Target**: `/tmp/pmad_acceptance/interleaved_repo`
 - **Action**: Stage file A via Pmad.Git managed code, stage file B via native `git add`, unstage file A via Pmad.Git, and verify index bit fidelity.
 - **Command**:
-  ```powershell
-  git init .acceptance_work/interleaved_repo
-  Set-Content .acceptance_work/interleaved_repo/fileA.txt "alpha"
-  Set-Content .acceptance_work/interleaved_repo/fileB.txt "beta"
-  dotnet run --project tools/Pmad.Git.Acceptance -c Release -- managed-commit .acceptance_work/interleaved_repo fileA.txt "alpha" "Add A"
-  git -C .acceptance_work/interleaved_repo add fileB.txt
-  git -C .acceptance_work/interleaved_repo status --porcelain
-  dotnet run --project tools/Pmad.Git.Acceptance -c Release -- compare-status .acceptance_work/interleaved_repo
+  ```bash
+  git init /tmp/pmad_acceptance/interleaved_repo
+  echo "alpha" > /tmp/pmad_acceptance/interleaved_repo/fileA.txt
+  echo "beta" > /tmp/pmad_acceptance/interleaved_repo/fileB.txt
+  dotnet run --project tools/Pmad.Git.Acceptance -c Release -- managed-commit /tmp/pmad_acceptance/interleaved_repo fileA.txt "alpha" "Add A"
+  git -C /tmp/pmad_acceptance/interleaved_repo add fileB.txt
+  git -C /tmp/pmad_acceptance/interleaved_repo status --porcelain
+  dotnet run --project tools/Pmad.Git.Acceptance -c Release -- compare-status /tmp/pmad_acceptance/interleaved_repo
   ```
 - **Verification**: Exit code `0`. `git status` confirms clean handoff between managed DIRC v2 engine and native Git.
 
 #### ATP-IDX-03: Stat Cache Matching & Short-Circuit Hashing
-- **Target**: `.acceptance_work/status_repo`
+- **Target**: `/tmp/pmad_acceptance/status_repo`
 - **Action**: Touch file timestamps without altering byte contents. Verify that `GetStatusAsync` leverages the index stat cache (`mtime`, `fileSize`, `ctime`) without marking unchanged files as modified.
 - **Command**:
-  ```powershell
-  (Get-Item .acceptance_work/status_repo/README.md).LastWriteTime = (Get-Date)
-  dotnet run --project tools/Pmad.Git.Acceptance -c Release -- compare-status .acceptance_work/status_repo
+  ```bash
+  touch /tmp/pmad_acceptance/status_repo/README.md
+  dotnet run --project tools/Pmad.Git.Acceptance -c Release -- compare-status /tmp/pmad_acceptance/status_repo
   ```
 - **Verification**: Exit code `0`. File is correctly recognized as clean or verified via fallback hash check.
 
@@ -240,63 +252,63 @@ New-Item -ItemType Directory -Path .acceptance_work | Out-Null
 ### Phase 3: Workspace Lifecycle Operations (Commit, Amend, Reset, Squash, Revert)
 
 #### ATP-MUT-01: Managed Commit & Amend with Tree Rewrite
-- **Target**: `.acceptance_work/mut_repo`
+- **Target**: `/tmp/pmad_acceptance/mut_repo`
 - **Action**: Author initial commit, then amend commit message and add extra files via managed code.
 - **Command**:
-  ```powershell
-  git init .acceptance_work/mut_repo
-  dotnet run --project tools/Pmad.Git.Acceptance -c Release -- managed-commit .acceptance_work/mut_repo test.txt "v1" "Initial commit"
-  dotnet run --project tools/Pmad.Git.Acceptance -c Release -- managed-amend .acceptance_work/mut_repo test.txt "v2" "Amended initial commit"
-  git -C .acceptance_work/mut_repo log -1 --pretty=%B
-  dotnet run --project tools/Pmad.Git.Acceptance -c Release -- verify-fsck .acceptance_work/mut_repo
+  ```bash
+  git init /tmp/pmad_acceptance/mut_repo
+  dotnet run --project tools/Pmad.Git.Acceptance -c Release -- managed-commit /tmp/pmad_acceptance/mut_repo test.txt "v1" "Initial commit"
+  dotnet run --project tools/Pmad.Git.Acceptance -c Release -- managed-amend /tmp/pmad_acceptance/mut_repo test.txt "v2" "Amended initial commit"
+  git -C /tmp/pmad_acceptance/mut_repo log -1 --pretty=%B
+  dotnet run --project tools/Pmad.Git.Acceptance -c Release -- verify-fsck /tmp/pmad_acceptance/mut_repo
   ```
 - **Verification**: Exit code `0`. Git log outputs `"Amended initial commit"`. `fsck` reports clean repository.
 
 #### ATP-MUT-02: Managed Soft, Mixed, and Hard Resets
-- **Target**: `.acceptance_work/reset_repo`
+- **Target**: `/tmp/pmad_acceptance/reset_repo`
 - **Action**: Author 3 commits, reset back to commit 1 using `GitResetMode.Hard`.
 - **Command**:
-  ```powershell
-  git init .acceptance_work/reset_repo
-  dotnet run --project tools/Pmad.Git.Acceptance -c Release -- managed-commit .acceptance_work/reset_repo f1.txt "1" "C1"
-  $c1 = (git -C .acceptance_work/reset_repo rev-parse HEAD).Trim()
-  dotnet run --project tools/Pmad.Git.Acceptance -c Release -- managed-commit .acceptance_work/reset_repo f2.txt "2" "C2"
-  dotnet run --project tools/Pmad.Git.Acceptance -c Release -- managed-commit .acceptance_work/reset_repo f3.txt "3" "C3"
-  dotnet run --project tools/Pmad.Git.Acceptance -c Release -- managed-reset .acceptance_work/reset_repo $c1 Hard
-  $head = (git -C .acceptance_work/reset_repo rev-parse HEAD).Trim()
-  if ($head -ne $c1) { throw "Reset did not point HEAD to C1" }
-  dotnet run --project tools/Pmad.Git.Acceptance -c Release -- compare-status .acceptance_work/reset_repo
+  ```bash
+  git init /tmp/pmad_acceptance/reset_repo
+  dotnet run --project tools/Pmad.Git.Acceptance -c Release -- managed-commit /tmp/pmad_acceptance/reset_repo f1.txt "1" "C1"
+  c1=$(git -C /tmp/pmad_acceptance/reset_repo rev-parse HEAD)
+  dotnet run --project tools/Pmad.Git.Acceptance -c Release -- managed-commit /tmp/pmad_acceptance/reset_repo f2.txt "2" "C2"
+  dotnet run --project tools/Pmad.Git.Acceptance -c Release -- managed-commit /tmp/pmad_acceptance/reset_repo f3.txt "3" "C3"
+  dotnet run --project tools/Pmad.Git.Acceptance -c Release -- managed-reset /tmp/pmad_acceptance/reset_repo "$c1" Hard
+  head=$(git -C /tmp/pmad_acceptance/reset_repo rev-parse HEAD)
+  if [ "$head" != "$c1" ]; then echo "FAIL: Reset did not point HEAD to C1" >&2; exit 1; fi
+  dotnet run --project tools/Pmad.Git.Acceptance -c Release -- compare-status /tmp/pmad_acceptance/reset_repo
   ```
 - **Verification**: Working tree is clean. `f2.txt` and `f3.txt` are purged from disk. `fsck` passes.
 
 #### ATP-MUT-03: Commit Range Squash (`SquashRangeAsync`)
-- **Target**: `.acceptance_work/squash_repo`
+- **Target**: `/tmp/pmad_acceptance/squash_repo`
 - **Action**: Squash commits `base..HEAD` into single milestone commit.
 - **Command**:
-  ```powershell
-  git init .acceptance_work/squash_repo
-  dotnet run --project tools/Pmad.Git.Acceptance -c Release -- managed-commit .acceptance_work/squash_repo base.txt "b" "Base commit"
-  $base = (git -C .acceptance_work/squash_repo rev-parse HEAD).Trim()
-  dotnet run --project tools/Pmad.Git.Acceptance -c Release -- managed-commit .acceptance_work/squash_repo feat1.txt "1" "Feature 1"
-  dotnet run --project tools/Pmad.Git.Acceptance -c Release -- managed-commit .acceptance_work/squash_repo feat2.txt "2" "Feature 2"
-  dotnet run --project tools/Pmad.Git.Acceptance -c Release -- managed-squash .acceptance_work/squash_repo $base "Squashed Milestone"
-  git -C .acceptance_work/squash_repo rev-list --count HEAD
-  dotnet run --project tools/Pmad.Git.Acceptance -c Release -- verify-fsck .acceptance_work/squash_repo
+  ```bash
+  git init /tmp/pmad_acceptance/squash_repo
+  dotnet run --project tools/Pmad.Git.Acceptance -c Release -- managed-commit /tmp/pmad_acceptance/squash_repo base.txt "b" "Base commit"
+  base=$(git -C /tmp/pmad_acceptance/squash_repo rev-parse HEAD)
+  dotnet run --project tools/Pmad.Git.Acceptance -c Release -- managed-commit /tmp/pmad_acceptance/squash_repo feat1.txt "1" "Feature 1"
+  dotnet run --project tools/Pmad.Git.Acceptance -c Release -- managed-commit /tmp/pmad_acceptance/squash_repo feat2.txt "2" "Feature 2"
+  dotnet run --project tools/Pmad.Git.Acceptance -c Release -- managed-squash /tmp/pmad_acceptance/squash_repo "$base" "Squashed Milestone"
+  git -C /tmp/pmad_acceptance/squash_repo rev-list --count HEAD
+  dotnet run --project tools/Pmad.Git.Acceptance -c Release -- verify-fsck /tmp/pmad_acceptance/squash_repo
   ```
 - **Verification**: Total commit count is `2`. Native `git diff HEAD~1..HEAD` contains both `feat1.txt` and `feat2.txt`.
 
 #### ATP-MUT-04: Commit Inversion Revert (`RevertAsync`)
-- **Target**: `.acceptance_work/revert_repo`
-- **Action**: Author a commit adding `bad_feature.txt`, then invert using `RevertAsync`.
+- **Target**: `/tmp/pmad_acceptance/revert_repo`
+- **Action**: Author a commit adding `bad.txt`, then invert using `RevertAsync`.
 - **Command**:
-  ```powershell
-  git init .acceptance_work/revert_repo
-  dotnet run --project tools/Pmad.Git.Acceptance -c Release -- managed-commit .acceptance_work/revert_repo base.txt "b" "Base"
-  dotnet run --project tools/Pmad.Git.Acceptance -c Release -- managed-commit .acceptance_work/revert_repo bad.txt "bad" "Bad Feature"
-  $badHash = (git -C .acceptance_work/revert_repo rev-parse HEAD).Trim()
-  dotnet run --project tools/Pmad.Git.Acceptance -c Release -- managed-revert .acceptance_work/revert_repo $badHash
-  if (Test-Path .acceptance_work/revert_repo/bad.txt) { throw "bad.txt still exists after revert" }
-  dotnet run --project tools/Pmad.Git.Acceptance -c Release -- verify-fsck .acceptance_work/revert_repo
+  ```bash
+  git init /tmp/pmad_acceptance/revert_repo
+  dotnet run --project tools/Pmad.Git.Acceptance -c Release -- managed-commit /tmp/pmad_acceptance/revert_repo base.txt "b" "Base"
+  dotnet run --project tools/Pmad.Git.Acceptance -c Release -- managed-commit /tmp/pmad_acceptance/revert_repo bad.txt "bad" "Bad Feature"
+  bad_hash=$(git -C /tmp/pmad_acceptance/revert_repo rev-parse HEAD)
+  dotnet run --project tools/Pmad.Git.Acceptance -c Release -- managed-revert /tmp/pmad_acceptance/revert_repo "$bad_hash"
+  if [ -e /tmp/pmad_acceptance/revert_repo/bad.txt ]; then echo "FAIL: bad.txt still exists after revert" >&2; exit 1; fi
+  dotnet run --project tools/Pmad.Git.Acceptance -c Release -- verify-fsck /tmp/pmad_acceptance/revert_repo
   ```
 - **Verification**: `bad.txt` is cleanly deleted from disk and index. `git log -1` confirms revert commit.
 
@@ -305,14 +317,14 @@ New-Item -ItemType Directory -Path .acceptance_work | Out-Null
 ### Phase 4: Diff Algorithms & 3-Way Merge Conformance
 
 #### ATP-MRG-01: In-Memory 3-Way Line Merge (`Diff3Merge`)
-- **Action**: Verify `Diff3Merge.MergeLines` cleanly reconciles non-overlapping insertions/modifications, matching `git merge-file`.
+- **Action**: Verify `Diff3Merge.Merge` cleanly reconciles non-overlapping insertions/modifications, matching `git merge-file`.
 - **Automated C# Program**: [Execute via `dotnet run` or Acceptance Runner]
   ```csharp
   var baseText = "Alpha\nBravo\nCharlie\nDelta\n";
   var ours = "Alpha\nBravo modified by user\nCharlie\nDelta\n";
   var theirs = "Alpha\nBravo\nCharlie\nDelta added by remote\n";
   
-  var result = Diff3Merge.MergeLines(baseText, ours, theirs);
+  var result = Diff3Merge.Merge(baseText, ours, theirs);
   Assert.False(result.HasConflict);
   Assert.Equal("Alpha\nBravo modified by user\nCharlie\nDelta added by remote\n", result.MergedText);
   ```
@@ -333,31 +345,27 @@ New-Item -ItemType Directory -Path .acceptance_work | Out-Null
 ### Phase 5: Wire Protocol & Smart HTTP Server (`Pmad.Git.HttpServer`)
 
 #### ATP-SRV-01: Native Git Clone over HTTP
-- **Action**: Spin up `Pmad.Git.HttpServer` on `127.0.0.1:5055` hosting `.acceptance_work/server_root`. Clone repository using native `git.exe clone http://127.0.0.1:5055/git/repo.git`.
+- **Action**: Spin up `Pmad.Git.HttpServer` on `127.0.0.1:5055` hosting `/tmp/pmad_acceptance/server_root`. Clone repository using native `git clone http://127.0.0.1:5055/git/repo.git`.
 - **Command**:
-  ```powershell
+  ```bash
   # 1. Setup server bare repo
-  New-Item -ItemType Directory -Path .acceptance_work/server_root/demo.git | Out-Null
-  git init --bare .acceptance_work/server_root/demo.git
-  git clone .acceptance_work/server_root/demo.git .acceptance_work/client_seed
-  dotnet run --project tools/Pmad.Git.Acceptance -c Release -- managed-commit .acceptance_work/client_seed file.txt "server test" "Initial server commit"
-  git -C .acceptance_work/client_seed push origin master
+  mkdir -p /tmp/pmad_acceptance/server_root
+  git init --bare /tmp/pmad_acceptance/server_root/demo.git
+  git clone /tmp/pmad_acceptance/server_root/demo.git /tmp/pmad_acceptance/client_seed
+  dotnet run --project tools/Pmad.Git.Acceptance -c Release -- managed-commit /tmp/pmad_acceptance/client_seed file.txt "server test" "Initial server commit"
+  git -C /tmp/pmad_acceptance/client_seed push origin master
 
   # 2. Launch server in background
-  $serverJob = Start-Job -ScriptBlock {
-      param($repoRoot)
-      Set-Location $using:PWD
-      dotnet run --project tools/Pmad.Git.Acceptance -c Release -- serve-repo $repoRoot 5055
-  } -ArgumentList (Resolve-Path .acceptance_work/server_root).Path
-
-  Start-Sleep -Seconds 3
+  ( dotnet run --project tools/Pmad.Git.Acceptance -c Release -- serve-repo /tmp/pmad_acceptance/server_root 5055 ) &
+  server_pid=$!
+  sleep 3
 
   # 3. Native Git clone from server
-  git clone http://127.0.0.1:5055/git/demo.git .acceptance_work/cloned_via_native_git
-  dotnet run --project tools/Pmad.Git.Acceptance -c Release -- verify-fsck .acceptance_work/cloned_via_native_git
+  git clone http://127.0.0.1:5055/git/demo.git /tmp/pmad_acceptance/cloned_via_native_git
+  dotnet run --project tools/Pmad.Git.Acceptance -c Release -- verify-fsck /tmp/pmad_acceptance/cloned_via_native_git
 
-  # 4. Cleanup server job
-  Stop-Job $serverJob; Remove-Job $serverJob
+  # 4. Cleanup server
+  kill "$server_pid" 2>/dev/null || true
   ```
 - **Verification**: Clone completes with exit `0`. Native `git fsck` confirms cloned repository has complete objects and valid pack index.
 
@@ -379,11 +387,11 @@ New-Item -ItemType Directory -Path .acceptance_work | Out-Null
 
 #### ATP-CLI-01: Zero-CLI Pure Managed Clone
 - **Target**: `https://github.com/jetelain/PmadGit.git` (or local HTTP daemon)
-- **Action**: Perform complete clone using `GitRemoteClientRepository.CloneAsync` with zero invocation of `git.exe`.
+- **Action**: Perform complete clone using `GitRemoteClientRepository.CloneAsync` with zero invocation of the native `git` binary.
 - **Command**:
-  ```powershell
-  dotnet run --project tools/Pmad.Git.Acceptance -c Release -- client-clone https://github.com/jetelain/PmadGit.git .acceptance_work/managed_clone master
-  dotnet run --project tools/Pmad.Git.Acceptance -c Release -- verify-fsck .acceptance_work/managed_clone
+  ```bash
+  dotnet run --project tools/Pmad.Git.Acceptance -c Release -- client-clone https://github.com/jetelain/PmadGit.git /tmp/pmad_acceptance/managed_clone master
+  dotnet run --project tools/Pmad.Git.Acceptance -c Release -- verify-fsck /tmp/pmad_acceptance/managed_clone
   ```
 - **Verification**: Working tree populated with files (e.g. `README.md`, `Pmad.Git.sln`). Native `git fsck` reports 100% integrity.
 
@@ -400,7 +408,7 @@ New-Item -ItemType Directory -Path .acceptance_work | Out-Null
 ### Phase 7: Decentralized Multi-Client Sync (`GitRepositorySynchronizer`)
 
 #### ATP-SNC-01: Dual Synchronizer Concurrent Auto-Sync
-- **Target**: `.acceptance_work/sync_demo`
+- **Target**: `/tmp/pmad_acceptance/sync_demo`
 - **Scenario**: Two independent local repository instances (Client 1 and Client 2) are connected via `GitRepositorySynchronizer` to a shared bare upstream repository.
 - **Action**:
   1. Client 1 commits `client1_data.txt`.
@@ -418,11 +426,11 @@ New-Item -ItemType Directory -Path .acceptance_work | Out-Null
 #### ATP-SHA-01: SHA-256 Repository Creation & Traversal
 - **Action**: Initialize SHA-256 repository and execute full acceptance cycle:
 - **Command**:
-  ```powershell
-  dotnet run --project tools/Pmad.Git.Acceptance -c Release -- create-synthetic-repo .acceptance_work/repo_sha256 --sha256
-  dotnet run --project tools/Pmad.Git.Acceptance -c Release -- compare-refs .acceptance_work/repo_sha256
-  dotnet run --project tools/Pmad.Git.Acceptance -c Release -- compare-tree .acceptance_work/repo_sha256 HEAD
-  dotnet run --project tools/Pmad.Git.Acceptance -c Release -- verify-fsck .acceptance_work/repo_sha256
+  ```bash
+  dotnet run --project tools/Pmad.Git.Acceptance -c Release -- create-synthetic-repo /tmp/pmad_acceptance/repo_sha256 --sha256
+  dotnet run --project tools/Pmad.Git.Acceptance -c Release -- compare-refs /tmp/pmad_acceptance/repo_sha256
+  dotnet run --project tools/Pmad.Git.Acceptance -c Release -- compare-tree /tmp/pmad_acceptance/repo_sha256 HEAD
+  dotnet run --project tools/Pmad.Git.Acceptance -c Release -- verify-fsck /tmp/pmad_acceptance/repo_sha256
   ```
 - **Verification**: 64-character hex hashes throughout index and object store. Native `git fsck` reports clean SHA-256 repository.
 
@@ -445,7 +453,7 @@ class Program
         var localContent = "Title\nSection 1 modified\nSection 2\n";
         var remoteContent = "Title\nSection 1\nSection 2 modified\n";
 
-        var result = Diff3Merge.MergeLines(baseContent, localContent, remoteContent);
+        var result = Diff3Merge.Merge(baseContent, localContent, remoteContent);
         Console.WriteLine($"HasConflict: {result.HasConflict}");
         Console.WriteLine("Merged Content:\n" + result.MergedText);
     }
@@ -482,7 +490,7 @@ Upon executing this plan, the AI agent must compile its findings into `docs/ACCE
 # Pmad.Git Acceptance Test Execution Report
 
 - **Date**: YYYY-MM-DD HH:mm:ss UTC
-- **Environment**: OS (Windows/Linux/macOS), .NET SDK version, Git CLI version
+- **Environment**: OS (Linux required, distribution + kernel version), scratch workspace (`/tmp/pmad_acceptance/`), .NET SDK version, Git CLI version
 - **Overall Result**: PASS / FAIL
 
 ### Summary Table

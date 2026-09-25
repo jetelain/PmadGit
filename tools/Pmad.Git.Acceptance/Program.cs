@@ -116,7 +116,7 @@ public static class Program
         var managedStatus = await repo.GetStatusAsync();
 
         // Run native git status --porcelain=v2
-        var (gitExit, gitOut, gitErr) = RunGit(repoPath, "status --porcelain=v2");
+        var (gitExit, gitOut, gitErr) = RunGit(repoPath, "-c core.quotePath=false status --porcelain=v2");
         if (gitExit != 0)
         {
             Console.Error.WriteLine($"[FAIL] git status returned exit code {gitExit}: {gitErr}");
@@ -168,6 +168,9 @@ public static class Program
             bool stagedMatches = (entry.StagedStatus, nativeState.Staged) switch
             {
                 (GitFileStatus.Clean, '.') => true,
+                // Untracked files are naturally Clean relative to HEAD (absent from index),
+                // while native git uses '?' in the staged column.
+                (GitFileStatus.Clean, '?') => true,
                 (GitFileStatus.Untracked, '?') => true,
                 (GitFileStatus.StagedNew, 'A') => true,
                 (GitFileStatus.StagedModified, 'M') => true,
@@ -229,7 +232,7 @@ public static class Program
         var repo = GitRepository.Open(repoPath);
         var commit = await repo.GetCommitAsync(commitIsh);
 
-        var (gitExit, gitOut, gitErr) = RunGit(repoPath, $"ls-tree -r -t {commitIsh}");
+        var (gitExit, gitOut, gitErr) = RunGit(repoPath, $"-c core.quotePath=false ls-tree -r -t {commitIsh}");
         if (gitExit != 0)
         {
             Console.Error.WriteLine($"[FAIL] git ls-tree returned exit code {gitExit}: {gitErr}");
