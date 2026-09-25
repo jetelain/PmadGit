@@ -79,7 +79,11 @@ public sealed class GitObjectWalker
                         var tree = GitTree.Parse(current, data.Content, _repository.HashLengthBytes);
                         for (var i = tree.Entries.Count - 1; i >= 0; i--)
                         {
-                            excludeStack.Push(tree.Entries[i].Hash);
+                            var entry = tree.Entries[i];
+                            if (entry.Kind != GitTreeEntryKind.Submodule)
+                            {
+                                excludeStack.Push(entry.Hash);
+                            }
                         }
                         break;
                     case GitObjectType.Tag:
@@ -121,7 +125,11 @@ public sealed class GitObjectWalker
                     var tree = GitTree.Parse(current, data.Content, _repository.HashLengthBytes);
                     for (var i = tree.Entries.Count - 1; i >= 0; i--)
                     {
-                        stack.Push(tree.Entries[i].Hash);
+                        var entry = tree.Entries[i];
+                        if (entry.Kind != GitTreeEntryKind.Submodule)
+                        {
+                            stack.Push(entry.Hash);
+                        }
                     }
                     break;
                 case GitObjectType.Tag:

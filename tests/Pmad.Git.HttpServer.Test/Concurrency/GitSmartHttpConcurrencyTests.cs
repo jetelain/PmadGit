@@ -221,7 +221,7 @@ public sealed class GitSmartHttpConcurrencyTests : IDisposable
             cloneDirs.Add(cloneDir);
         }
 
-        var results = new System.Collections.Concurrent.ConcurrentBag<bool>();
+        var results = new System.Collections.Concurrent.ConcurrentDictionary<int, bool>();
 
         // Act - All clones try to push at the same time
         var tasks = cloneDirs.Select((dir, index) => Task.Run(() =>
@@ -232,21 +232,21 @@ public sealed class GitSmartHttpConcurrencyTests : IDisposable
                 RunGit(dir, $"add file{index}.txt");
                 RunGit(dir, "commit -m \"Concurrent commit\" --quiet");
                 RunGit(dir, "push origin main");
-                results.Add(true);
+                results[index] = true;
             }
             catch
             {
-                results.Add(false);
+                results[index] = false;
             }
         })).ToArray();
 
         await Task.WhenAll(tasks);
 
         // Assert - At least one should succeed
-        Assert.Contains(true, results);
+        Assert.Contains(true, results.Values);
 
         // The ones that failed should be able to succeed after fetching
-        var failedClones = cloneDirs.Where((dir, i) => !results.ElementAt(i)).ToList();
+        var failedClones = cloneDirs.Where((dir, i) => !results[i]).ToList();
         foreach (var cloneDir in failedClones)
         {
             RunGit(cloneDir, "fetch origin");
@@ -411,28 +411,7 @@ public sealed class GitSmartHttpConcurrencyTests : IDisposable
 
     private string RunGitInDirectory(string workingDirectory, string arguments)
     {
-        var startInfo = new ProcessStartInfo("git", arguments)
-        {
-            WorkingDirectory = workingDirectory,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            UseShellExecute = false,
-            CreateNoWindow = true
-        };
-        startInfo.EnvironmentVariables["LC_ALL"] = "C";
-
-        using var process = Process.Start(startInfo) ?? throw new InvalidOperationException("Unable to start git process");
-        var output = process.StandardOutput.ReadToEnd();
-        var error = process.StandardError.ReadToEnd();
-        process.WaitForExit();
-
-        if (process.ExitCode != 0)
-        {
-            throw new InvalidOperationException(
-                $"git {arguments} failed with exit code {process.ExitCode}:{Environment.NewLine}{error}{Environment.NewLine}{output}");
-        }
-
-        return string.IsNullOrEmpty(output) ? error : output;
+        return TestHelper.RunGit(workingDirectory, arguments);
     }
 
     public void Dispose()

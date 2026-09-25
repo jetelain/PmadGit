@@ -220,9 +220,9 @@ public class GitCliRepositoryUnitTests
     }
 
     [Theory]
-    [InlineData(false, null, new[] { "checkout", "feature" })]
-    [InlineData(true, null, new[] { "checkout", "-b", "feature" })]
-    [InlineData(true, "main", new[] { "checkout", "-b", "feature", "main" })]
+    [InlineData(false, null, new[] { "checkout", "feature", "--" })]
+    [InlineData(true, null, new[] { "checkout", "-b", "feature", "--" })]
+    [InlineData(true, "main", new[] { "checkout", "-b", "feature", "main", "--" })]
     public async Task CheckoutAsync_Builds_Expected_Arguments(bool createNew, string? startPoint, string[] expected)
     {
         var runner = new FakeGitRunner().Enqueue(0);
@@ -241,7 +241,7 @@ public class GitCliRepositoryUnitTests
 
         await repository.CheckoutAsync("feature", createNew: false, startPoint: "main");
 
-        Assert.Equal(new[] { "checkout", "feature" }, runner.Calls.Single());
+        Assert.Equal(new[] { "checkout", "feature", "--" }, runner.Calls.Single());
     }
 
     [Fact]
@@ -444,5 +444,30 @@ public class GitCliRepositoryUnitTests
         await repository.RunAsync("status");
 
         Assert.Equal(ExistingDirectory, runner.WorkingDirectories.Single());
+    }
+
+    [Fact]
+    public async Task CheckoutAsync_WithLeadingHyphenBranch_AppendsDoubleHyphenSeparator_PreventingOptionInjection()
+    {
+        var runner = new FakeGitRunner().Enqueue(0);
+        var repository = new GitCliRepository(ExistingDirectory, runner);
+
+        await repository.CheckoutAsync("-bad-branch", createNew: true);
+
+        Assert.Equal(new[] { "checkout", "-b", "-bad-branch", "--" }, runner.Calls.Single());
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("   ")]
+    [InlineData("feature/..")]
+    [InlineData("feature/@{upstream}")]
+    public async Task BranchOperations_WithInvalidBranchName_ThrowsArgumentException(string invalidBranch)
+    {
+        var runner = new FakeGitRunner();
+        var repository = new GitCliRepository(ExistingDirectory, runner);
+
+        await Assert.ThrowsAsync<ArgumentException>(() => repository.CreateBranchAsync(invalidBranch));
+        await Assert.ThrowsAsync<ArgumentException>(() => repository.CheckoutAsync(invalidBranch));
     }
 }

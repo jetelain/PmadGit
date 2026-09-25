@@ -183,6 +183,10 @@ public sealed class GitRepositoryWithIndexAndWorkspace : IGitWorkspaceRepository
         _repo.GetCurrentBranchNameAsync(cancellationToken);
 
     /// <inheritdoc />
+    public Task<string?> GetCurrentBranchNameAsync(bool allowUnborn, CancellationToken cancellationToken = default) =>
+        _repo.GetCurrentBranchNameAsync(allowUnborn, cancellationToken);
+
+    /// <inheritdoc />
     public Task<bool> IsHeadDetachedAsync(CancellationToken cancellationToken = default) =>
         _repo.IsHeadDetachedAsync(cancellationToken);
 
@@ -1338,7 +1342,7 @@ public sealed class GitRepositoryWithIndexAndWorkspace : IGitWorkspaceRepository
 
     private async Task<bool> IsCurrentBranchAsync(string branchName, CancellationToken cancellationToken)
     {
-        var currentBranch = await ReferenceStore.GetCurrentBranchNameAsync(cancellationToken).ConfigureAwait(false);
+        var currentBranch = await ReferenceStore.GetCurrentBranchNameAsync(allowUnborn: true, cancellationToken).ConfigureAwait(false);
         if (currentBranch == null)
         {
             return false;

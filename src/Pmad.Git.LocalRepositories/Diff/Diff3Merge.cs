@@ -65,13 +65,15 @@ public static class Diff3Merge
     /// <param name="theirsContent">Theirs (merging / remote) content.</param>
     /// <param name="oursLabel">Label for ours conflict marker (defaults to "HEAD").</param>
     /// <param name="theirsLabel">Label for theirs conflict marker (defaults to "theirs").</param>
+    /// <param name="maxEditDistance">Optional maximum edit distance threshold for Myers diff.</param>
     /// <returns>A <see cref="Diff3MergeResult"/> containing merged bytes and conflict indicator.</returns>
     public static Diff3MergeResult Merge(
         byte[]? baseContent,
         byte[]? oursContent,
         byte[]? theirsContent,
         string oursLabel = "HEAD",
-        string theirsLabel = "theirs")
+        string theirsLabel = "theirs",
+        int? maxEditDistance = null)
     {
         baseContent ??= Array.Empty<byte>();
         oursContent ??= Array.Empty<byte>();
@@ -118,8 +120,8 @@ public static class Diff3Merge
         var hasCr = ContainsCr(oursContent) || ContainsCr(theirsContent) || ContainsCr(baseContent);
         var eol = hasCr ? "\r\n" : "\n";
 
-        var oursDiff = MyersDiff.Compute(baseRawLines, oursRawLines);
-        var theirsDiff = MyersDiff.Compute(baseRawLines, theirsRawLines);
+        var oursDiff = MyersDiff.Compute(baseRawLines, oursRawLines, maxEditDistance: maxEditDistance);
+        var theirsDiff = MyersDiff.Compute(baseRawLines, theirsRawLines, maxEditDistance: maxEditDistance);
 
         var oursEdits = ToEditBlocks(oursDiff);
         var theirsEdits = ToEditBlocks(theirsDiff);
@@ -214,13 +216,14 @@ public static class Diff3Merge
         string? oursText,
         string? theirsText,
         string oursLabel = "HEAD",
-        string theirsLabel = "theirs")
+        string theirsLabel = "theirs",
+        int? maxEditDistance = null)
     {
         var baseBytes = baseText != null ? Encoding.UTF8.GetBytes(baseText) : null;
         var oursBytes = oursText != null ? Encoding.UTF8.GetBytes(oursText) : null;
         var theirsBytes = theirsText != null ? Encoding.UTF8.GetBytes(theirsText) : null;
 
-        return Merge(baseBytes, oursBytes, theirsBytes, oursLabel, theirsLabel);
+        return Merge(baseBytes, oursBytes, theirsBytes, oursLabel, theirsLabel, maxEditDistance);
     }
 
     private static bool ContainsCr(byte[] content)

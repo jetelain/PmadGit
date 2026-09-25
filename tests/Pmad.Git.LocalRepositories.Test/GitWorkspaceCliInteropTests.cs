@@ -388,5 +388,282 @@ public sealed class GitWorkspaceCliInteropTests
         var describe = testRepo.RunGit("describe --tags").Trim();
         Assert.Equal("v1.0.0", describe);
     }
+
+    [Fact]
+    public async Task GitCli_StagedAndUnstagedModifications_TwoStageDiffInterop()
+    {
+        using var testRepo = GitTestRepository.Create();
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+
+        var filePath = Path.Combine(testRepo.WorkingDirectory, "two_stage.txt");
+        await File.WriteAllTextAsync(filePath, "line 1\n");
+        await repo.StageAsync("two_stage.txt");
+        await repo.CommitAsync("Initial two_stage", new GitCommitMetadata("Initial two_stage", TestSignature));
+
+        // Modify and stage (staged change: v1 -> v2)
+        await File.WriteAllTextAsync(filePath, "line 1\nline 2 (staged)\n");
+        await repo.StageAsync("two_stage.txt");
+
+        // Modify again in working tree without staging (unstaged change: v2 -> v3)
+        await File.WriteAllTextAsync(filePath, "line 1\nline 2 (staged)\nline 3 (unstaged)\n");
+
+        // Native git status must report MM (staged modified, working tree modified)
+        var porcelain = testRepo.RunGit("status --porcelain");
+        Assert.Contains("MM two_stage.txt", porcelain);
+
+        // Native git diff --cached (staged diff vs HEAD)
+        var cachedDiff = testRepo.RunGit("diff --cached two_stage.txt");
+        Assert.Contains("+line 2 (staged)", cachedDiff);
+        Assert.DoesNotContain("line 3 (unstaged)", cachedDiff);
+
+        // Native git diff (unstaged diff: working tree vs index)
+        var unstagedDiff = testRepo.RunGit("diff two_stage.txt");
+        Assert.Contains("+line 3 (unstaged)", unstagedDiff);
+
+        // Managed repository status inspection
+        var status = await repo.GetStatusAsync();
+        var entry = status.Entries.FirstOrDefault(e => e.Path == "two_stage.txt");
+        Assert.NotNull(entry);
+        Assert.Equal(GitFileStatus.StagedModified, entry.StagedStatus);
+        Assert.Equal(GitFileStatus.Modified, entry.WorkingTreeStatus);
+
+        // Commit remaining and verify clean git status
+        await repo.StageAsync("two_stage.txt");
+        await repo.CommitAsync("Commit full two_stage", new GitCommitMetadata("Commit full two_stage", TestSignature));
+
+        var finalPorcelain = testRepo.RunGit("status --porcelain").Trim();
+        Assert.Empty(finalPorcelain);
+        var fsck = testRepo.RunGit("fsck --full --strict");
+        Assert.DoesNotContain("error:", fsck, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task GitCli_FileRemoval_InteropBetweenManagedAndNative()
+    {
+        using var testRepo = GitTestRepository.Create();
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+
+        // Create two files
+        var file1 = Path.Combine(testRepo.WorkingDirectory, "remove_managed.txt");
+        var file2 = Path.Combine(testRepo.WorkingDirectory, "remove_native.txt");
+        await File.WriteAllTextAsync(file1, "managed removal\n");
+        await File.WriteAllTextAsync(file2, "native removal\n");
+        await repo.StageAllAsync();
+        await repo.CommitAsync("Add files to remove", new GitCommitMetadata("Add files to remove", TestSignature));
+
+        // Part 1: Delete file1 from working tree and stage removal via managed code
+        File.Delete(file1);
+        await repo.StageAsync("remove_managed.txt");
+
+        // Native git status must report staged deletion (D )
+        var status1 = testRepo.RunGit("status --porcelain");
+        Assert.Contains("D  remove_managed.txt", status1);
+
+        // Commit managed deletion
+        await repo.CommitAsync("Removed via managed code", new GitCommitMetadata("Removed via managed code", TestSignature));
+
+        var logAfter1 = testRepo.RunGit("log -1 --name-status");
+        Assert.Contains("D\tremove_managed.txt", logAfter1);
+
+        // Part 2: Native git rm on file2
+        testRepo.RunGit("rm remove_native.txt");
+
+        // Managed repo status sees staged deletion
+        var statusResult = await repo.GetStatusAsync();
+        var entry2 = statusResult.Entries.FirstOrDefault(e => e.Path == "remove_native.txt");
+        Assert.NotNull(entry2);
+        Assert.Equal(GitFileStatus.StagedDeleted, entry2.StagedStatus);
+
+        // Commit native deletion via managed repo
+        await repo.CommitAsync("Removed via native git rm", new GitCommitMetadata("Removed via native git rm", TestSignature));
+
+        // Native git status clean and fsck passes
+        var finalStatus = testRepo.RunGit("status --porcelain").Trim();
+        Assert.Empty(finalStatus);
+        var fsck = testRepo.RunGit("fsck --full --strict");
+        Assert.DoesNotContain("error:", fsck, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task GitCli_BranchCheckoutAndSwitch_Interop()
+    {
+        using var testRepo = GitTestRepository.Create();
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+
+        var defaultBranch = await repo.ReferenceStore.GetCurrentBranchNameAsync();
+        Assert.NotNull(defaultBranch);
+
+        // Create feature branch pointing to current HEAD
+        var headCommit = await repo.ReferenceStore.ResolveHeadAsync();
+        await repo.ReferenceStore.CreateReferenceAsync("refs/heads/feature", headCommit);
+
+        // Switch to feature branch by updating HEAD
+        await File.WriteAllTextAsync(Path.Combine(testRepo.GitDirectory, "HEAD"), "ref: refs/heads/feature\n");
+        repo.InvalidateCaches();
+
+        // Native git CLI verifies current branch is feature
+        var nativeCurrentBranch = testRepo.RunGit("branch --show-current").Trim();
+        Assert.Equal("feature", nativeCurrentBranch);
+
+        // Commit on feature branch
+        var featFile = Path.Combine(testRepo.WorkingDirectory, "feature_only.txt");
+        await File.WriteAllTextAsync(featFile, "feature branch content\n");
+        await repo.StageAsync("feature_only.txt");
+        await repo.CommitAsync("Feature commit", new GitCommitMetadata("Feature commit", TestSignature));
+
+        Assert.True(File.Exists(featFile));
+
+        // Switch back to master using native git CLI
+        testRepo.RunGit($"checkout {defaultBranch} --quiet");
+
+        // Managed repo observes defaultBranch
+        repo.InvalidateCaches();
+        var currentAfterNativeSwitch = await repo.ReferenceStore.GetCurrentBranchNameAsync();
+        Assert.Equal(defaultBranch, currentAfterNativeSwitch);
+
+        // Feature file does not exist on default branch
+        Assert.False(File.Exists(featFile));
+
+        // Native git fsck passes
+        var fsck = testRepo.RunGit("fsck --full --strict");
+        Assert.DoesNotContain("error:", fsck, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task GitCli_AnnotatedTag_ManagedCreation_VerifiedByNativeCli()
+    {
+        using var testRepo = GitTestRepository.Create();
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+
+        var head = await repo.ReferenceStore.ResolveHeadAsync();
+
+        // Build native-format annotated tag object
+        var tagMessage = "Release v2.0.0 annotated tag description";
+        var tagPayload = Encoding.UTF8.GetBytes(
+            $"object {head}\n" +
+            "type commit\n" +
+            "tag v2.0.0-annotated\n" +
+            "tagger Test Author <author@example.com> 1700000000 +0000\n\n" +
+            $"{tagMessage}\n");
+
+        var tagHash = await repo.ObjectStore.WriteObjectAsync(GitObjectType.Tag, tagPayload);
+        await repo.ReferenceStore.CreateReferenceAsync("refs/tags/v2.0.0-annotated", tagHash);
+        repo.InvalidateCaches();
+
+        // Native git tag -l must list v2.0.0-annotated
+        var tagList = testRepo.RunGit("tag -l").Trim();
+        Assert.Contains("v2.0.0-annotated", tagList);
+
+        // Native git cat-file -t must return "tag"
+        var objType = testRepo.RunGit("cat-file -t v2.0.0-annotated").Trim();
+        Assert.Equal("tag", objType);
+
+        // Native git cat-file -p must show tag payload
+        var objContent = testRepo.RunGit("cat-file -p v2.0.0-annotated");
+        Assert.Contains(tagMessage, objContent);
+
+        // Native git rev-parse with peel operator ^{commit} must match HEAD commit
+        var peeledCommit = testRepo.RunGit("rev-parse v2.0.0-annotated^{commit}").Trim();
+        Assert.Equal(head.ToString(), peeledCommit, StringComparer.OrdinalIgnoreCase);
+
+        // Native git describe --tags must output the tag
+        var describe = testRepo.RunGit("describe --tags").Trim();
+        Assert.Equal("v2.0.0-annotated", describe);
+
+        // Native git tag -n shows annotation
+        var tagWithAnnotation = testRepo.RunGit("tag -n9 -l v2.0.0-annotated");
+        Assert.Contains(tagMessage, tagWithAnnotation);
+
+        // Native git fsck --full --strict must pass cleanly
+        var fsck = testRepo.RunGit("fsck --full --strict");
+        Assert.DoesNotContain("error:", fsck, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task GitCli_GitIgnore_Interop()
+    {
+        using var testRepo = GitTestRepository.Create();
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+
+        // Create .gitignore
+        await File.WriteAllTextAsync(Path.Combine(testRepo.WorkingDirectory, ".gitignore"), "*.log\nignored/\n");
+        await File.WriteAllTextAsync(Path.Combine(testRepo.WorkingDirectory, "normal.txt"), "normal content\n");
+        await File.WriteAllTextAsync(Path.Combine(testRepo.WorkingDirectory, "app.log"), "log content\n");
+
+        Directory.CreateDirectory(Path.Combine(testRepo.WorkingDirectory, "ignored"));
+        await File.WriteAllTextAsync(Path.Combine(testRepo.WorkingDirectory, "ignored", "secret.txt"), "secret\n");
+
+        // Native git status must only report .gitignore and normal.txt as untracked
+        var nativeStatus = testRepo.RunGit("status --porcelain");
+        Assert.Contains(".gitignore", nativeStatus);
+        Assert.Contains("normal.txt", nativeStatus);
+        Assert.DoesNotContain("app.log", nativeStatus);
+        Assert.DoesNotContain("ignored", nativeStatus);
+
+        // Managed repository status inspection must also respect .gitignore
+        var statusResult = await repo.GetStatusAsync();
+        var paths = statusResult.Entries.Select(e => e.Path).ToList();
+        Assert.Contains(".gitignore", paths);
+        Assert.Contains("normal.txt", paths);
+        Assert.DoesNotContain("app.log", paths);
+        Assert.DoesNotContain("ignored/secret.txt", paths);
+
+        // Stage all and commit via managed code
+        await repo.StageAllAsync();
+        await repo.CommitAsync("Commit with gitignore", new GitCommitMetadata("Commit with gitignore", TestSignature));
+
+        // Native git ls-files must only have .gitignore, normal.txt, and README.md
+        var lsFiles = testRepo.RunGit("ls-files");
+        Assert.Contains(".gitignore", lsFiles);
+        Assert.Contains("normal.txt", lsFiles);
+        Assert.DoesNotContain("app.log", lsFiles);
+        Assert.DoesNotContain("secret.txt", lsFiles);
+
+        // Native git status is completely clean
+        var finalStatus = testRepo.RunGit("status --porcelain").Trim();
+        Assert.Empty(finalStatus);
+
+        var fsck = testRepo.RunGit("fsck --full --strict");
+        Assert.DoesNotContain("error:", fsck, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task GitCli_BinaryFileIntegrity_Interop()
+    {
+        using var testRepo = GitTestRepository.Create();
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+
+        // Create a 64KB binary buffer containing every byte value 0..255 repeated
+        var binaryData = new byte[65536];
+        for (int i = 0; i < binaryData.Length; i++)
+        {
+            binaryData[i] = (byte)(i % 256);
+        }
+
+        var binaryPath = Path.Combine(testRepo.WorkingDirectory, "data.bin");
+        await File.WriteAllBytesAsync(binaryPath, binaryData);
+
+        await repo.StageAsync("data.bin");
+        var commit = await repo.CommitAsync("Add binary file", new GitCommitMetadata("Add binary file", TestSignature));
+        Assert.NotEqual(GitHash.Zero, commit);
+
+        // Native git status must be clean
+        var porcelain = testRepo.RunGit("status --porcelain").Trim();
+        Assert.Empty(porcelain);
+
+        // Native git diff HEAD~1..HEAD should detect binary file
+        var diff = testRepo.RunGit("diff HEAD~1..HEAD");
+        Assert.Contains("Binary files", diff);
+
+        // Verify native git fsck --full --strict
+        var fsck = testRepo.RunGit("fsck --full --strict");
+        Assert.DoesNotContain("error:", fsck, StringComparison.OrdinalIgnoreCase);
+
+        // Reset and checkout back with native git to ensure disk bytes match
+        File.Delete(binaryPath);
+        testRepo.RunGit("checkout HEAD -- data.bin");
+        var readBack = await File.ReadAllBytesAsync(binaryPath);
+        Assert.Equal(binaryData, readBack);
+    }
 }
 

@@ -45,25 +45,58 @@ public static class GitDeltaApplier
             var opcode = delta[cursor++];
             if ((opcode & 0x80) != 0)
             {
-                var copyOffset = 0;
+                long copyOffset = 0;
                 var copySize = 0;
 
-                if ((opcode & 0x01) != 0) copyOffset |= delta[cursor++];
-                if ((opcode & 0x02) != 0) copyOffset |= delta[cursor++] << 8;
-                if ((opcode & 0x04) != 0) copyOffset |= delta[cursor++] << 16;
-                if ((opcode & 0x08) != 0) copyOffset |= delta[cursor++] << 24;
+                if ((opcode & 0x01) != 0)
+                {
+                    if (cursor >= delta.Length) throw new InvalidDataException("Truncated delta payload");
+                    copyOffset |= delta[cursor++];
+                }
+                if ((opcode & 0x02) != 0)
+                {
+                    if (cursor >= delta.Length) throw new InvalidDataException("Truncated delta payload");
+                    copyOffset |= (long)delta[cursor++] << 8;
+                }
+                if ((opcode & 0x04) != 0)
+                {
+                    if (cursor >= delta.Length) throw new InvalidDataException("Truncated delta payload");
+                    copyOffset |= (long)delta[cursor++] << 16;
+                }
+                if ((opcode & 0x08) != 0)
+                {
+                    if (cursor >= delta.Length) throw new InvalidDataException("Truncated delta payload");
+                    copyOffset |= (long)delta[cursor++] << 24;
+                }
 
-                if ((opcode & 0x10) != 0) copySize |= delta[cursor++];
-                if ((opcode & 0x20) != 0) copySize |= delta[cursor++] << 8;
-                if ((opcode & 0x40) != 0) copySize |= delta[cursor++] << 16;
+                if ((opcode & 0x10) != 0)
+                {
+                    if (cursor >= delta.Length) throw new InvalidDataException("Truncated delta payload");
+                    copySize |= delta[cursor++];
+                }
+                if ((opcode & 0x20) != 0)
+                {
+                    if (cursor >= delta.Length) throw new InvalidDataException("Truncated delta payload");
+                    copySize |= delta[cursor++] << 8;
+                }
+                if ((opcode & 0x40) != 0)
+                {
+                    if (cursor >= delta.Length) throw new InvalidDataException("Truncated delta payload");
+                    copySize |= delta[cursor++] << 16;
+                }
                 if (copySize == 0) copySize = 0x10000;
 
-                if (copyOffset < 0 || copyOffset + copySize > source.Length)
+                if (copyOffset < 0 || copyOffset > int.MaxValue || copyOffset + copySize > source.Length)
                 {
                     throw new InvalidDataException("Delta copy instruction exceeds base size");
                 }
 
-                source.Slice(copyOffset, copySize).CopyTo(result.AsSpan(resultIndex));
+                if ((long)resultIndex + copySize > result.Length)
+                {
+                    throw new InvalidDataException("Delta copy instruction exceeds result buffer size");
+                }
+
+                source.Slice((int)copyOffset, copySize).CopyTo(result.AsSpan(resultIndex));
                 resultIndex += copySize;
             }
             else if (opcode != 0)
@@ -71,6 +104,11 @@ public static class GitDeltaApplier
                 if (cursor + opcode > delta.Length)
                 {
                     throw new InvalidDataException("Delta insert instruction exceeds payload");
+                }
+
+                if ((long)resultIndex + opcode > result.Length)
+                {
+                    throw new InvalidDataException("Delta insert instruction exceeds result buffer size");
                 }
 
                 delta.Slice(cursor, opcode).CopyTo(result.AsSpan(resultIndex));

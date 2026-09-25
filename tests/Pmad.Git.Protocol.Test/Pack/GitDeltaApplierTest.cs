@@ -410,4 +410,86 @@ public sealed class GitDeltaApplierTest
         // Assert
         Assert.Equal(10, result.Content.Length);
     }
+
+    [Fact]
+    public void Apply_WithCopyOffsetShift24HighBitSet_ThrowsInvalidDataException()
+    {
+        var baseContent = "Hello World"u8.ToArray();
+        var baseObject = new GitObjectData(GitObjectType.Blob, baseContent);
+
+        // Opcode 0x89: bit 3 (offset byte 4, shifted 24 bits) and bit 0 (offset byte 1)
+        // Offset byte 4 has 0x80 (128). In 32-bit signed shift, 0x80 << 24 is negative.
+        var delta = new byte[]
+        {
+            11,   // base size
+            5,    // result size
+            0x89, // copy opcode: bit 0 and bit 3
+            0x00, // offset byte 1 = 0
+            0x80  // offset byte 4 = 0x80 (exceeds base size, positive long)
+        };
+
+        var exception = Assert.Throws<InvalidDataException>(() =>
+            GitDeltaApplier.Apply(baseObject, delta));
+        Assert.Contains("exceeds base size", exception.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Apply_WithCopyExceedingResultBufferSize_ThrowsInvalidDataException()
+    {
+        var baseContent = "Hello World! Extra padding here."u8.ToArray();
+        var baseObject = new GitObjectData(GitObjectType.Blob, baseContent);
+
+        // Header declares result size = 5, but copy tries to copy 10 bytes
+        var delta = new byte[]
+        {
+            (byte)baseContent.Length, // base size
+            5,    // declared result size = 5
+            0x91, // copy opcode: bit 0 (offset) and bit 4 (size)
+            0x00, // offset = 0
+            10    // copy 10 bytes (> result size of 5)
+        };
+
+        var exception = Assert.Throws<InvalidDataException>(() =>
+            GitDeltaApplier.Apply(baseObject, delta));
+        Assert.Contains("result buffer size", exception.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Apply_WithInsertExceedingResultBufferSize_ThrowsInvalidDataException()
+    {
+        var baseContent = "Hello"u8.ToArray();
+        var baseObject = new GitObjectData(GitObjectType.Blob, baseContent);
+
+        // Header declares result size = 3, but insert tries to insert 5 bytes
+        var delta = new byte[]
+        {
+            5, // base size
+            3, // declared result size = 3
+            5, // insert opcode (insert 5 bytes > result size of 3)
+            (byte)'a', (byte)'b', (byte)'c', (byte)'d', (byte)'e'
+        };
+
+        var exception = Assert.Throws<InvalidDataException>(() =>
+            GitDeltaApplier.Apply(baseObject, delta));
+        Assert.Contains("result buffer size", exception.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Apply_WithTruncatedCopyOpcodePayload_ThrowsInvalidDataException()
+    {
+        var baseContent = "Hello"u8.ToArray();
+        var baseObject = new GitObjectData(GitObjectType.Blob, baseContent);
+
+        // Opcode specifies offset and size bits, but no bytes follow
+        var delta = new byte[]
+        {
+            5,   // base size
+            5,   // result size
+            0x91 // copy opcode requiring at least 2 bytes, but delta ends
+        };
+
+        var exception = Assert.Throws<InvalidDataException>(() =>
+            GitDeltaApplier.Apply(baseObject, delta));
+        Assert.Contains("truncated", exception.Message, StringComparison.OrdinalIgnoreCase);
+    }
 }

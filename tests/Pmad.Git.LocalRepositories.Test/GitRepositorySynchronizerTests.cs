@@ -33,9 +33,15 @@ public sealed class GitRepositorySynchronizerTests
             return Task.FromResult(PullResult);
         }
 
+        public Func<Task>? OnPushAsync { get; set; }
+
         public Task PushAsync(string? remote = null, string? branch = null, bool force = false, bool setUpstream = false, CancellationToken cancellationToken = default)
         {
             PushCalls.Add((remote, branch, force, setUpstream));
+            if (OnPushAsync != null)
+            {
+                return OnPushAsync();
+            }
             return Task.CompletedTask;
         }
 
@@ -184,5 +190,69 @@ public sealed class GitRepositorySynchronizerTests
         Assert.Equal(GitSyncState.Idle, synchronizer.State);
         Assert.Null(synchronizer.Conflict);
     }
+
+    [Fact]
+    public async Task FlushPendingPushAsync_OnNonFastForwardRejection_TriggersRemoteSyncAndRetriesPush()
+    {
+        var fake = new FakeRemoteRepository();
+        var pushAttempts = 0;
+        fake.OnPushAsync = () =>
+        {
+            pushAttempts++;
+            if (pushAttempts == 1)
+            {
+                throw new InvalidOperationException("error: failed to push some refs to 'origin'\nUpdates were rejected because the remote contains work that you do not have locally.\nNon-fast-forward push rejected");
+            }
+            return Task.CompletedTask;
+        };
+
+        var options = new GitSyncOptions
+        {
+            Remote = "origin",
+            Branch = "main"
+        };
+
+        await using var synchronizer = new GitRepositorySynchronizer(fake, options);
+
+        synchronizer.NotifyLocalChange();
+        await synchronizer.FlushPendingPushAsync();
+
+        Assert.Equal(2, fake.PushCalls.Count);
+        Assert.Single(fake.PullCalls);
+        Assert.Equal(GitSyncState.Idle, synchronizer.State);
+        Assert.NotNull(synchronizer.LastSuccessfulSyncAt);
+        Assert.Null(synchronizer.Conflict);
+    }
+
+    [Fact]
+    public async Task FlushPendingPushAsync_OnNonFastForwardRejection_WithMergeConflict_EntersConflictState()
+    {
+        var fake = new FakeRemoteRepository
+        {
+            PullResult = new GitMergeResult(false, new[] { "conflict.txt" })
+        };
+        fake.OnPushAsync = () =>
+        {
+            throw new InvalidOperationException("error: failed to push some refs to 'origin'\nhint: Updates were rejected because the remote contains work that you do not have locally.\n[rejected] (non-fast-forward)");
+        };
+
+        var options = new GitSyncOptions
+        {
+            Remote = "origin",
+            Branch = "main"
+        };
+
+        await using var synchronizer = new GitRepositorySynchronizer(fake, options);
+
+        synchronizer.NotifyLocalChange();
+        await synchronizer.FlushPendingPushAsync();
+
+        Assert.Single(fake.PushCalls);
+        Assert.Single(fake.PullCalls);
+        Assert.Equal(GitSyncState.Conflict, synchronizer.State);
+        Assert.NotNull(synchronizer.Conflict);
+        Assert.Equal(new[] { "conflict.txt" }, synchronizer.Conflict!.ConflictedFiles);
+    }
 }
+
 

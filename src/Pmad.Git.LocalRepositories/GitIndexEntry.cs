@@ -158,6 +158,7 @@ public sealed class GitIndexEntry
     /// <param name="fileInfo">The file info for the on-disk file.</param>
     /// <param name="blobHash">The blob hash of the file content.</param>
     /// <param name="stage">Stage number (0 for normal).</param>
+    /// <param name="preserveFileMode">Optional explicit file mode to preserve (e.g. from existing index entry).</param>
     /// <returns>A new <see cref="GitIndexEntry"/> with stat cache fields populated.</returns>
     /// <remarks>
     /// The <c>ctime</c> fields in the Git index represent the inode metadata-change time, not the
@@ -166,7 +167,7 @@ public sealed class GitIndexEntry
     /// On Unix the executable bit is preserved: a file whose owner-execute permission is set is stored
     /// with mode 100755, all others with 100644.
     /// </remarks>
-    public static GitIndexEntry FromFileInfo(string relativePath, FileInfo fileInfo, GitHash blobHash, int stage = 0)
+    public static GitIndexEntry FromFileInfo(string relativePath, FileInfo fileInfo, GitHash blobHash, int stage = 0, int? preserveFileMode = null)
     {
         var mtimeUtc = fileInfo.LastWriteTimeUtc;
 
@@ -181,8 +182,8 @@ public sealed class GitIndexEntry
         var ctimeNano = (uint)((ctimeUtc.Ticks % TimeSpan.TicksPerSecond) * 100);
 
         // Derive mode: 100755 for executable, 100644 for regular.
-        // On Windows there are no Unix permission bits, so we always use 100644.
-        var fileMode = GetFileMode(fileInfo);
+        // If preserveFileMode is provided, use it directly (e.g. preserving existing mode on Windows).
+        var fileMode = preserveFileMode ?? GetFileMode(fileInfo);
 
         var pathBytesLen = Encoding.UTF8.GetByteCount(relativePath);
         var pathLen = (ushort)Math.Min(pathBytesLen, 0xFFF);

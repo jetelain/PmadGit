@@ -45,9 +45,31 @@ internal sealed class GitReferenceStore : IGitReferenceStore
     }
 
     /// <inheritdoc/>
-    public async Task<GitHash?> TryResolveReferenceAsync(string referencePath, CancellationToken cancellationToken = default)
+    public Task<GitHash?> TryResolveReferenceAsync(string referencePath, CancellationToken cancellationToken = default)
     {
+        return TryResolveReferenceCoreAsync(referencePath, visited: null, depth: 0, cancellationToken);
+    }
+
+    private async Task<GitHash?> TryResolveReferenceCoreAsync(
+        string referencePath,
+        HashSet<string>? visited,
+        int depth,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+
+        if (depth >= 10)
+        {
+            throw new InvalidOperationException($"Symbolic reference cycle or maximum depth exceeded while resolving '{referencePath}'.");
+        }
+
         var normalized = referencePath.Replace('\\', '/');
+        visited ??= new HashSet<string>(StringComparer.Ordinal);
+        if (!visited.Add(normalized))
+        {
+            throw new InvalidOperationException($"Symbolic reference cycle detected: '{normalized}' was already visited.");
+        }
+
         var refs = await _cache.Value.ConfigureAwait(false);
         if (refs.TryGetValue(normalized, out var hash))
         {
@@ -61,14 +83,13 @@ internal sealed class GitReferenceStore : IGitReferenceStore
             if (content.StartsWith("ref: ", StringComparison.Ordinal))
             {
                 var target = content[5..].Trim();
-                return await TryResolveReferenceAsync(target, cancellationToken).ConfigureAwait(false);
+                return await TryResolveReferenceCoreAsync(target, visited, depth + 1, cancellationToken).ConfigureAwait(false);
             }
 
             if (GitHash.TryParse(content, out hash))
             {
                 return hash;
             }
-
         }
 
         return null;
@@ -105,7 +126,11 @@ internal sealed class GitReferenceStore : IGitReferenceStore
     }
 
     /// <inheritdoc/>
-    public async Task<string?> GetCurrentBranchNameAsync(CancellationToken cancellationToken = default)
+    public Task<string?> GetCurrentBranchNameAsync(CancellationToken cancellationToken = default)
+        => GetCurrentBranchNameAsync(allowUnborn: false, cancellationToken);
+
+    /// <inheritdoc/>
+    public async Task<string?> GetCurrentBranchNameAsync(bool allowUnborn, CancellationToken cancellationToken = default)
     {
         var headPath = Path.Combine(_gitDirectory, "HEAD");
         if (!File.Exists(headPath))
@@ -123,11 +148,14 @@ internal sealed class GitReferenceStore : IGitReferenceStore
                 return null;
             }
 
-            var refPath = "refs/heads/" + branch;
-            var resolved = await TryResolveReferenceAsync(refPath, cancellationToken).ConfigureAwait(false);
-            if (!resolved.HasValue)
+            if (!allowUnborn)
             {
-                return null;
+                var refPath = "refs/heads/" + branch;
+                var resolved = await TryResolveReferenceAsync(refPath, cancellationToken).ConfigureAwait(false);
+                if (!resolved.HasValue)
+                {
+                    return null;
+                }
             }
 
             return branch;
@@ -159,6 +187,8 @@ internal sealed class GitReferenceStore : IGitReferenceStore
         var normalized = NormalizeAbsoluteReferencePath(referencePath);
         using (await _lockManager.AcquireReferenceLockAsync(normalized, cancellationToken).ConfigureAwait(false))
         {
+            await CheckDirectoryFileConflictAsync(normalized, cancellationToken).ConfigureAwait(false);
+
             if (!overwrite)
             {
                 var existing = await TryResolveReferenceAsync(normalized, cancellationToken).ConfigureAwait(false);
@@ -243,6 +273,7 @@ internal sealed class GitReferenceStore : IGitReferenceStore
                 throw new InvalidOperationException($"A branch named '{normalizedNewBranch}' already exists.");
             }
 
+            await CheckDirectoryFileConflictAsync(newRef, cancellationToken).ConfigureAwait(false);
             await WriteReferenceAsync(newRef, targetCommit.Value, cancellationToken).ConfigureAwait(false);
             await DeleteReferenceAsyncInternal(oldRef, cancellationToken).ConfigureAwait(false);
 
@@ -369,6 +400,7 @@ internal sealed class GitReferenceStore : IGitReferenceStore
 
         if (newValue.HasValue)
         {
+            await CheckDirectoryFileConflictAsync(normalized, cancellationToken).ConfigureAwait(false);
             await WriteReferenceAsync(normalized, newValue.Value, cancellationToken).ConfigureAwait(false);
         }
         else
@@ -400,8 +432,57 @@ internal sealed class GitReferenceStore : IGitReferenceStore
         }
 
         var normalized = NormalizeAbsoluteReferencePath(referencePath!);
+        await CheckDirectoryFileConflictAsync(normalized, cancellationToken).ConfigureAwait(false);
         await WriteReferenceAsync(normalized, targetCommit, cancellationToken).ConfigureAwait(false);
         Interlocked.Exchange(ref _cache, CreateCache());
+    }
+
+    private async Task CheckDirectoryFileConflictAsync(string normalized, CancellationToken cancellationToken)
+    {
+        var allRefs = await GetReferencesAsync(cancellationToken).ConfigureAwait(false);
+
+        var prefix = normalized;
+        int lastSlash;
+        while ((lastSlash = prefix.LastIndexOf('/')) > 0)
+        {
+            prefix = prefix[..lastSlash];
+            if (allRefs.ContainsKey(prefix))
+            {
+                throw new InvalidOperationException($"Cannot create reference '{normalized}' because '{prefix}' exists as a reference.");
+            }
+        }
+
+        var prefixWithSlash = normalized + "/";
+        foreach (var existingRef in allRefs.Keys)
+        {
+            if (existingRef.StartsWith(prefixWithSlash, StringComparison.Ordinal))
+            {
+                throw new InvalidOperationException($"Cannot create reference '{normalized}' because '{existingRef}' exists under it.");
+            }
+        }
+
+        var refPath = Path.Combine(_gitDirectory, normalized.Replace('/', Path.DirectorySeparatorChar));
+        if (Directory.Exists(refPath))
+        {
+            throw new InvalidOperationException($"Cannot create reference '{normalized}' because a directory with that name already exists.");
+        }
+
+        CheckAncestorFileConflict(normalized);
+    }
+
+    private void CheckAncestorFileConflict(string normalized)
+    {
+        var segments = normalized.Split('/');
+        var current = _gitDirectory;
+        for (var i = 0; i < segments.Length - 1; i++)
+        {
+            current = Path.Combine(current, segments[i]);
+            if (File.Exists(current))
+            {
+                var ancestorRef = string.Join('/', segments.Take(i + 1));
+                throw new InvalidOperationException($"Cannot create reference '{normalized}' because '{ancestorRef}' exists as a file.");
+            }
+        }
     }
 
     private async Task ValidateReferenceOldValueAsync(string normalized, GitHash? expectedOldValue, CancellationToken cancellationToken)
@@ -431,16 +512,56 @@ internal sealed class GitReferenceStore : IGitReferenceStore
     private async Task WriteReferenceAsync(string referencePath, GitHash hash, CancellationToken cancellationToken)
     {
         var refPath = Path.Combine(_gitDirectory, referencePath.Replace('/', Path.DirectorySeparatorChar));
+        if (Directory.Exists(refPath))
+        {
+            throw new InvalidOperationException($"Cannot create reference '{referencePath}' because a directory with that name already exists.");
+        }
+
         var directory = Path.GetDirectoryName(refPath);
         if (!string.IsNullOrEmpty(directory))
         {
-            Directory.CreateDirectory(directory);
+            CheckAncestorFileConflict(referencePath);
+            try
+            {
+                Directory.CreateDirectory(directory);
+            }
+            catch (IOException ex)
+            {
+                throw new InvalidOperationException($"Cannot create reference '{referencePath}' due to a directory/file conflict.", ex);
+            }
         }
 
         var tempDirectory = directory ?? _gitDirectory;
         var tempPath = Path.Combine(tempDirectory, $"{Path.GetFileName(refPath)}.{Guid.NewGuid():N}.tmp");
-        await File.WriteAllTextAsync(tempPath, hash.Value + "\n", cancellationToken).ConfigureAwait(false);
-        File.Move(tempPath, refPath, overwrite: true);
+        try
+        {
+            await File.WriteAllTextAsync(tempPath, hash.Value + "\n", cancellationToken).ConfigureAwait(false);
+            try
+            {
+                File.Move(tempPath, refPath, overwrite: true);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                if (Directory.Exists(refPath))
+                {
+                    throw new InvalidOperationException($"Cannot create reference '{referencePath}' because a directory with that name already exists.", ex);
+                }
+                throw new InvalidOperationException($"Cannot write reference '{referencePath}' due to a directory/file conflict.", ex);
+            }
+        }
+        finally
+        {
+            if (File.Exists(tempPath))
+            {
+                try
+                {
+                    File.Delete(tempPath);
+                }
+                catch
+                {
+                }
+            }
+        }
     }
 
     private async Task DeleteReferenceAsyncInternal(string normalizedReferencePath, CancellationToken cancellationToken)

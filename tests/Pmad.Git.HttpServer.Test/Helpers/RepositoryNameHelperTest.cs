@@ -1,4 +1,4 @@
-﻿using Pmad.Git.HttpServer.Helpers;
+using Pmad.Git.HttpServer.Helpers;
 
 namespace Pmad.Git.HttpServer.Test.Helpers;
 
@@ -505,6 +505,80 @@ public sealed class RepositoryNameHelperTest
 
         // Assert
         Assert.False(result);
+    }
+
+    #endregion
+
+    #region Reserved Windows / DOS Device Names
+
+    [Theory]
+    [InlineData("CON")]
+    [InlineData("con")]
+    [InlineData("PRN")]
+    [InlineData("prn")]
+    [InlineData("AUX")]
+    [InlineData("aux")]
+    [InlineData("NUL")]
+    [InlineData("nul")]
+    [InlineData("COM1")]
+    [InlineData("com1")]
+    [InlineData("COM2")]
+    [InlineData("COM3")]
+    [InlineData("COM4")]
+    [InlineData("COM5")]
+    [InlineData("COM6")]
+    [InlineData("COM7")]
+    [InlineData("COM8")]
+    [InlineData("COM9")]
+    [InlineData("com9")]
+    [InlineData("LPT1")]
+    [InlineData("lpt1")]
+    [InlineData("LPT2")]
+    [InlineData("LPT3")]
+    [InlineData("LPT4")]
+    [InlineData("LPT5")]
+    [InlineData("LPT6")]
+    [InlineData("LPT7")]
+    [InlineData("LPT8")]
+    [InlineData("LPT9")]
+    [InlineData("lpt9")]
+    public void DefaultRepositoryNameValidator_WithReservedWindowsDeviceName_ShouldReturnFalse(string name)
+    {
+        // Act
+        var result = RepositoryNameHelper.DefaultRepositoryNameValidator(name);
+
+        // Assert
+        Assert.False(result);
+    }
+
+    [Theory]
+    [InlineData("org/CON")]
+    [InlineData("AUX/project")]
+    [InlineData("team/sub/nul")]
+    [InlineData("group/com1/repo")]
+    [InlineData("lpt2/subgroup/test")]
+    public void DefaultRepositoryNameValidator_WithReservedDeviceNameInPathSegment_ShouldReturnFalse(string name)
+    {
+        // Act
+        var result = RepositoryNameHelper.DefaultRepositoryNameValidator(name);
+
+        // Assert
+        Assert.False(result);
+    }
+
+    [Theory]
+    [InlineData("console")]
+    [InlineData("context")]
+    [InlineData("auxiliary")]
+    [InlineData("nullify")]
+    [InlineData("communication")]
+    public void DefaultRepositoryNameValidator_WithPrefixMatchingDeviceName_ShouldReturnTrue(string name)
+    {
+        // Act
+        var result = RepositoryNameHelper.DefaultRepositoryNameValidator(name);
+
+        // Assert
+        Assert.True(result);
     }
 
     #endregion

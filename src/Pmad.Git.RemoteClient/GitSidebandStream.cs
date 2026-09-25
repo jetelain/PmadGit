@@ -62,7 +62,48 @@ public sealed class GitSidebandStream : Stream
 
     /// <inheritdoc />
     public override int Read(byte[] buffer, int offset, int count)
-        => ReadAsync(buffer.AsMemory(offset, count)).GetAwaiter().GetResult();
+        => Read(buffer.AsSpan(offset, count));
+
+    /// <inheritdoc />
+    public override int Read(Span<byte> buffer)
+    {
+        if (buffer.IsEmpty)
+        {
+            return 0;
+        }
+
+        while (true)
+        {
+            if (_currentOffset < _currentPayload.Length)
+            {
+                var available = _currentPayload.Length - _currentOffset;
+                var toCopy = Math.Min(buffer.Length, available);
+                _currentPayload.Span.Slice(_currentOffset, toCopy).CopyTo(buffer);
+                _currentOffset += toCopy;
+                _bytesRead += toCopy;
+                return toCopy;
+            }
+
+            if (_endOfStream)
+            {
+                return 0;
+            }
+
+            var packet = _reader.Read();
+            if (packet is null || packet.Value.IsFlush)
+            {
+                _endOfStream = true;
+                return 0;
+            }
+
+            if (packet.Value.IsEmpty)
+            {
+                continue;
+            }
+
+            ProcessPacket(packet.Value);
+        }
+    }
 
     /// <inheritdoc />
     public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
@@ -101,33 +142,38 @@ public sealed class GitSidebandStream : Stream
                 continue;
             }
 
-            var payload = packet.Value.Payload;
-            var channel = payload.Span[0];
+            ProcessPacket(packet.Value);
+        }
+    }
 
-            switch (channel)
-            {
-                case 1: // Band 1: Packfile data
-                    _currentPayload = payload.Slice(1);
-                    _currentOffset = 0;
-                    break;
+    private void ProcessPacket(PktLine packet)
+    {
+        var payload = packet.Payload;
+        var channel = payload.Span[0];
 
-                case 2: // Band 2: Progress message
-                    if (payload.Length > 1)
-                    {
-                        var message = Encoding.UTF8.GetString(payload.Span[1..]);
-                        _onProgress?.Invoke(message);
-                    }
-                    break;
+        switch (channel)
+        {
+            case 1: // Band 1: Packfile data
+                _currentPayload = payload.Slice(1);
+                _currentOffset = 0;
+                break;
 
-                case 3: // Band 3: Error message
-                    var errorMessage = payload.Length > 1
-                        ? Encoding.UTF8.GetString(payload.Span[1..]).TrimEnd('\r', '\n')
-                        : "Remote sideband error";
-                    throw new GitRemoteException(errorMessage);
+            case 2: // Band 2: Progress message
+                if (payload.Length > 1)
+                {
+                    var message = Encoding.UTF8.GetString(payload.Span[1..]);
+                    _onProgress?.Invoke(message);
+                }
+                break;
 
-                default:
-                    throw new InvalidDataException($"Unknown sideband channel: {channel}");
-            }
+            case 3: // Band 3: Error message
+                var errorMessage = payload.Length > 1
+                    ? Encoding.UTF8.GetString(payload.Span[1..]).TrimEnd('\r', '\n')
+                    : "Remote sideband error";
+                throw new GitRemoteException(errorMessage);
+
+            default:
+                throw new InvalidDataException($"Unknown sideband channel: {channel}");
         }
     }
 

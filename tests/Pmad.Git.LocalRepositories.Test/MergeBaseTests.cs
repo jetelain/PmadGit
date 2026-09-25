@@ -163,5 +163,92 @@ public sealed class MergeBaseTests
         Assert.True(File.Exists(fileC));
         Assert.True(File.Exists(fileD));
     }
+
+    [Fact]
+    public async Task FindMergeBasesAsync_CrissCrossWithConflictingVirtualBase_DoesNotBakeConflictMarkersAndMergesCleanly()
+    {
+        using var testRepo = GitTestRepository.Create();
+        var repo = GitRepository.Open(testRepo.WorkingDirectory);
+
+        // Initial base commit with shared.txt
+        var sharedFile = Path.Combine(testRepo.WorkingDirectory, "shared.txt");
+        await File.WriteAllTextAsync(sharedFile, "common line 1\ncommon line 2\ncommon line 3\ncommon line 4\ncommon line 5\n");
+        testRepo.RunGit("add shared.txt");
+        testRepo.RunGit("commit -m \"Initial base\"");
+        var base0 = await repo.ReferenceStore.ResolveHeadAsync();
+
+        // Branch A modifies line 3
+        testRepo.RunGit("checkout -b branchA");
+        await File.WriteAllTextAsync(sharedFile, "common line 1\ncommon line 2\nline 3 modified by A\ncommon line 4\ncommon line 5\n");
+        testRepo.RunGit("add shared.txt");
+        testRepo.RunGit("commit -m \"Commit A\"");
+        var commitA = await repo.ReferenceStore.ResolveHeadAsync();
+
+        // Branch B from base0 modifies line 3 with conflicting content
+        testRepo.RunGit($"checkout -b branchB {base0}");
+        await File.WriteAllTextAsync(sharedFile, "common line 1\ncommon line 2\nline 3 modified by B\ncommon line 4\ncommon line 5\n");
+        testRepo.RunGit("add shared.txt");
+        testRepo.RunGit("commit -m \"Commit B\"");
+        var commitB = new GitHash(testRepo.RunGit("rev-parse HEAD").Trim());
+
+        // Criss-cross merge 1: branchA merges branchB and resolves conflict in favor of A's line 3
+        testRepo.RunGit("checkout branchA");
+        testRepo.RunGit("merge -X ours --no-edit branchB");
+
+        // Criss-cross merge 2: branchB merges commitA and resolves conflict in favor of A's line 3 (-X theirs)
+        testRepo.RunGit("checkout branchB");
+        testRepo.RunGit($"merge -X theirs --no-edit {commitA}");
+
+        // Branch A modifies line 1 (Commit C)
+        testRepo.RunGit("checkout branchA");
+        await File.WriteAllTextAsync(sharedFile, "line 1 modified by C\ncommon line 2\nline 3 modified by A\ncommon line 4\ncommon line 5\n");
+        testRepo.RunGit("add shared.txt");
+        testRepo.RunGit("commit -m \"Commit C\"");
+        var commitC = new GitHash(testRepo.RunGit("rev-parse HEAD").Trim());
+
+        // Branch B modifies line 5 (Commit D)
+        testRepo.RunGit("checkout branchB");
+        await File.WriteAllTextAsync(sharedFile, "common line 1\ncommon line 2\nline 3 modified by A\ncommon line 4\nline 5 modified by D\n");
+        testRepo.RunGit("add shared.txt");
+        testRepo.RunGit("commit -m \"Commit D\"");
+        var commitD = new GitHash(testRepo.RunGit("rev-parse HEAD").Trim());
+
+        repo.InvalidateCaches();
+
+        // Multiple merge bases exist (commitA and commitB)
+        var allBases = await repo.FindMergeBasesAsync(commitC, commitD);
+        Assert.Equal(2, allBases.Count);
+        Assert.Contains(commitA, allBases);
+        Assert.Contains(commitB, allBases);
+
+        // Virtual merge base is constructed by merging candidate bases A and B (which conflict on shared.txt)
+        var virtualBase = await repo.FindMergeBaseAsync(commitC, commitD);
+        Assert.NotNull(virtualBase);
+
+        var virtualCommit = await repo.GetCommitAsync(virtualBase.Value.Value);
+        var virtualLeaves = await repo.LoadLeafEntriesAsync(virtualCommit.Tree, default);
+        Assert.True(virtualLeaves.ContainsKey("shared.txt"));
+
+        // Verify virtual merge base blob does NOT contain conflict markers
+        var virtualBlob = await repo.ObjectStore.ReadObjectAsync(virtualLeaves["shared.txt"].Hash, default);
+        var virtualText = System.Text.Encoding.UTF8.GetString(virtualBlob.Content);
+        Assert.DoesNotContain("<<<<<<<", virtualText);
+        Assert.DoesNotContain("=======", virtualText);
+        Assert.DoesNotContain(">>>>>>>", virtualText);
+
+        // Subsequent 3-way merge between branchA and branchB succeeds cleanly without spurious conflicts
+        testRepo.RunGit("checkout branchA");
+        using var workspace = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+        var mergeResult = await workspace.MergeAsync("branchB");
+
+        Assert.True(mergeResult.IsSuccess, $"Merge failed with status {mergeResult.Status}, message: {mergeResult.Message}, conflicts: {string.Join(", ", mergeResult.ConflictedFiles)}");
+        Assert.Equal(GitMergeStatus.Merged, mergeResult.Status);
+        Assert.False(await workspace.IsMergeInProgressAsync());
+
+        var finalContent = await File.ReadAllTextAsync(sharedFile);
+        var expectedContent = "line 1 modified by C\ncommon line 2\nline 3 modified by A\ncommon line 4\nline 5 modified by D\n";
+        Assert.Equal(expectedContent, finalContent.Replace("\r\n", "\n"));
+    }
 }
+
 

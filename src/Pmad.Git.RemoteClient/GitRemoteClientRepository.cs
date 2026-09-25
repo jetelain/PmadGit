@@ -820,31 +820,8 @@ public sealed class GitRemoteClientRepository : IGitRepositoryWithRemote, IDispo
         }
     }
 
-    private async Task<string?> GetCurrentBranchOrUnbornBranchAsync(CancellationToken cancellationToken)
-    {
-        var currentBranch = await _repo.ReferenceStore.GetCurrentBranchNameAsync(cancellationToken).ConfigureAwait(false);
-        if (!string.IsNullOrEmpty(currentBranch))
-        {
-            return currentBranch;
-        }
-
-        var headPath = Path.Combine(_repo.GitDirectory, "HEAD");
-        if (File.Exists(headPath))
-        {
-            var content = (await File.ReadAllTextAsync(headPath, cancellationToken).ConfigureAwait(false)).Trim();
-            const string prefix = "ref: refs/heads/";
-            if (content.StartsWith(prefix, StringComparison.Ordinal))
-            {
-                var branch = content[prefix.Length..].Trim();
-                if (!string.IsNullOrEmpty(branch))
-                {
-                    return branch;
-                }
-            }
-        }
-
-        return null;
-    }
+    private Task<string?> GetCurrentBranchOrUnbornBranchAsync(CancellationToken cancellationToken)
+        => _repo.ReferenceStore.GetCurrentBranchNameAsync(allowUnborn: true, cancellationToken);
 
     private async Task<string> ResolveRemoteNameAsync(string? branch, CancellationToken cancellationToken)
     {

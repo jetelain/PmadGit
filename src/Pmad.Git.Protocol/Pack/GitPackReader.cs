@@ -59,7 +59,8 @@ public sealed class GitPackReader
 
         fileStream.Position = HeaderLength;
 
-        var created = new List<GitHash>(checked((int)objectCount));
+        var initialCapacity = (int)Math.Min(objectCount, 65536u);
+        var created = new List<GitHash>(initialCapacity);
         var offsetCache = new Dictionary<long, GitObjectData>();
         var hashCache = new Dictionary<string, GitObjectData>(StringComparer.Ordinal);
 

@@ -90,6 +90,118 @@ public sealed class PktLineProtocolTest
     }
 
     [Fact]
+    public async Task PktLineReader_CanReadResponseEnd()
+    {
+        var data = "0002";
+        var stream = new MemoryStream(Encoding.UTF8.GetBytes(data));
+        var reader = new PktLineReader(stream);
+
+        var packet = await reader.ReadAsync(CancellationToken.None);
+
+        Assert.NotNull(packet);
+        Assert.False(packet.Value.IsFlush);
+        Assert.False(packet.Value.IsDelimiter);
+        Assert.True(packet.Value.IsResponseEnd);
+    }
+
+    [Fact]
+    public async Task PktLineReader_ControlFramesAreDifferentiated()
+    {
+        var data = "000000010002";
+        var stream = new MemoryStream(Encoding.UTF8.GetBytes(data));
+        var reader = new PktLineReader(stream);
+
+        var flush = await reader.ReadAsync(CancellationToken.None);
+        Assert.NotNull(flush);
+        Assert.True(flush.Value.IsFlush);
+        Assert.False(flush.Value.IsDelimiter);
+        Assert.False(flush.Value.IsResponseEnd);
+
+        var delim = await reader.ReadAsync(CancellationToken.None);
+        Assert.NotNull(delim);
+        Assert.False(delim.Value.IsFlush);
+        Assert.True(delim.Value.IsDelimiter);
+        Assert.False(delim.Value.IsResponseEnd);
+
+        var respEnd = await reader.ReadAsync(CancellationToken.None);
+        Assert.NotNull(respEnd);
+        Assert.False(respEnd.Value.IsFlush);
+        Assert.False(respEnd.Value.IsDelimiter);
+        Assert.True(respEnd.Value.IsResponseEnd);
+    }
+
+    [Fact]
+    public async Task PktLineReader_RejectsLength3()
+    {
+        var data = "0003";
+        var stream = new MemoryStream(Encoding.UTF8.GetBytes(data));
+        var reader = new PktLineReader(stream);
+
+        var ex = await Assert.ThrowsAsync<InvalidDataException>(
+            () => reader.ReadAsync(CancellationToken.None));
+        Assert.Contains("invalid", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task PktLineReader_RejectsLengthExceeding65520()
+    {
+        // 0xffff = 65535 > 65520
+        var data = "ffff" + new string('a', 10);
+        var stream = new MemoryStream(Encoding.UTF8.GetBytes(data));
+        var reader = new PktLineReader(stream);
+
+        var ex = await Assert.ThrowsAsync<InvalidDataException>(
+            () => reader.ReadAsync(CancellationToken.None));
+        Assert.Contains("exceeds maximum allowed packet length", ex.Message);
+    }
+
+    [Fact]
+    public async Task PktLineWriter_CanWriteDelimiter()
+    {
+        var stream = new MemoryStream();
+        await PktLineWriter.WriteDelimiterAsync(stream, CancellationToken.None);
+
+        var result = Encoding.UTF8.GetString(stream.ToArray());
+        Assert.Equal("0001", result);
+    }
+
+    [Fact]
+    public async Task PktLineWriter_CanWriteResponseEnd()
+    {
+        var stream = new MemoryStream();
+        await PktLineWriter.WriteResponseEndAsync(stream, CancellationToken.None);
+
+        var result = Encoding.UTF8.GetString(stream.ToArray());
+        Assert.Equal("0002", result);
+    }
+
+    [Fact]
+    public async Task PktLineWriter_MaxPayloadSucceeds()
+    {
+        var stream = new MemoryStream();
+        var payload = new byte[PktLineWriter.MaxPayloadLength];
+        Array.Fill<byte>(payload, (byte)'x');
+
+        await PktLineWriter.WriteAsync(stream, payload, CancellationToken.None);
+
+        var written = stream.ToArray();
+        Assert.Equal(65520, written.Length);
+        Assert.Equal("fff0", Encoding.ASCII.GetString(written, 0, 4));
+    }
+
+    [Fact]
+    public async Task PktLineWriter_ExceedingMaxPayloadThrowsArgumentOutOfRangeException()
+    {
+        var stream = new MemoryStream();
+        var payload = new byte[PktLineWriter.MaxPayloadLength + 1];
+
+        var ex = await Assert.ThrowsAsync<ArgumentOutOfRangeException>(
+            () => PktLineWriter.WriteAsync(stream, payload, CancellationToken.None));
+
+        Assert.Equal("payload", ex.ParamName);
+    }
+
+    [Fact]
     public async Task RoundTrip_WriteThenRead()
     {
         var stream = new MemoryStream();

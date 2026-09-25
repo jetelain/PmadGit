@@ -142,6 +142,102 @@ public sealed class GitSmartHttpEndToEndTest : IDisposable
     }
 
     [Fact]
+    public async Task GitFetch_IncrementalFetch_OnlyTransfersIncrementalObjects()
+    {
+        // Arrange: Create initial repository with commit 1
+        var sourceRepo = CreateSourceRepository("incremental-fetch-test", new[] { ("initial.txt", "initial content") });
+        await StartServerAsync();
+
+        var cloneDir = Path.Combine(_clientWorkingDir, "incremental-fetch-clone");
+        RunGit(_clientWorkingDir, $"clone {_serverUrl}/incremental-fetch-test.git {cloneDir}");
+
+        // Add commit 2 to the bare repository
+        var tempWorkDir = Path.Combine(Path.GetTempPath(), "temp-incremental-fetch", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempWorkDir);
+        try
+        {
+            var bareRepoPath = Path.Combine(_serverRepoRoot, "incremental-fetch-test.git");
+            RunGit(tempWorkDir, $"clone \"{bareRepoPath}\" .");
+            RunGit(tempWorkDir, "config user.name \"Test\"");
+            RunGit(tempWorkDir, "config user.email test@test.com");
+
+            File.WriteAllText(Path.Combine(tempWorkDir, "new-file.txt"), "new content");
+            RunGit(tempWorkDir, "add new-file.txt");
+            RunGit(tempWorkDir, "commit -m \"Second commit\" --quiet");
+            RunGit(tempWorkDir, "push origin main --quiet");
+        }
+        finally
+        {
+            TestHelper.TryDeleteDirectory(tempWorkDir);
+        }
+
+        // Before fetch, get pack files in clone
+        var packDir = Path.Combine(cloneDir, ".git", "objects", "pack");
+        var existingPacks = Directory.Exists(packDir) ? Directory.GetFiles(packDir, "*.pack") : Array.Empty<string>();
+
+        // Act: Fetch
+        RunGit(cloneDir, "fetch origin");
+
+        // Assert: New commit is fetched
+        var logOutput = RunGit(cloneDir, "log origin/main --oneline");
+        Assert.Contains("Second commit", logOutput);
+
+        // Find newly downloaded packfile
+        var currentPacks = Directory.GetFiles(packDir, "*.pack");
+        var newPacks = currentPacks.Except(existingPacks).ToList();
+        if (newPacks.Count > 0)
+        {
+            // Verify pack object count using git verify-pack:
+            // An incremental pack for just 1 new file should only contain 3 objects (commit, tree, blob),
+            // not the initial commit/tree/blob.
+            var verifyOutput = RunGit(cloneDir, $"verify-pack -v \"{newPacks[0]}\"");
+            var objectLines = verifyOutput.Split('\n', StringSplitOptions.RemoveEmptyEntries)
+                .Where(line => line.Contains("commit") || line.Contains("tree") || line.Contains("blob"))
+                .ToList();
+            Assert.Equal(3, objectLines.Count);
+        }
+    }
+
+    [Fact]
+    public async Task GitClone_HierarchicalRepository_WithAndWithoutGitSuffix()
+    {
+        // Arrange: Create a hierarchical repository under org/team/project.git
+        var repoDir = Path.Combine(_serverRepoRoot, "org", "team", "project.git");
+        Directory.CreateDirectory(repoDir);
+        RunGit(repoDir, "init --bare --quiet --initial-branch=main");
+
+        var tempWorkDir = Path.Combine(Path.GetTempPath(), "temp-hierarchical-work", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempWorkDir);
+        try
+        {
+            RunGit(tempWorkDir, "init --quiet --initial-branch=main");
+            RunGit(tempWorkDir, "config user.name \"Test\"");
+            RunGit(tempWorkDir, "config user.email test@test.com");
+            File.WriteAllText(Path.Combine(tempWorkDir, "nested.txt"), "hierarchical content");
+            RunGit(tempWorkDir, "add nested.txt");
+            RunGit(tempWorkDir, "commit -m \"Initial commit\" --quiet");
+            RunGit(tempWorkDir, $"remote add origin \"{repoDir}\"");
+            RunGit(tempWorkDir, "push -u origin main --quiet");
+        }
+        finally
+        {
+            TestHelper.TryDeleteDirectory(tempWorkDir);
+        }
+
+        await StartServerAsync();
+
+        // Act 1: Clone with .git suffix
+        var cloneDirWithGit = Path.Combine(_clientWorkingDir, "hierarchical-with-git");
+        RunGit(_clientWorkingDir, $"clone {_serverUrl}/org/team/project.git {cloneDirWithGit}");
+        Assert.True(File.Exists(Path.Combine(cloneDirWithGit, "nested.txt")));
+
+        // Act 2: Clone without .git suffix
+        var cloneDirWithoutGit = Path.Combine(_clientWorkingDir, "hierarchical-without-git");
+        RunGit(_clientWorkingDir, $"clone {_serverUrl}/org/team/project {cloneDirWithoutGit}");
+        Assert.True(File.Exists(Path.Combine(cloneDirWithoutGit, "nested.txt")));
+    }
+
+    [Fact]
     public async Task GitPull_AfterNewCommits_ShouldMergeNewCommits()
     {
         // Arrange: Create initial repository
@@ -694,6 +790,288 @@ public sealed class GitSmartHttpEndToEndTest : IDisposable
         Assert.Equal("sha256", format);
     }
 
+    [Fact]
+    public async Task GitPush_DeleteBranch_ShouldDeleteOnServerAndNotifyCallback()
+    {
+        // Arrange: Create a repository with main and feature branches
+        var repoPath = Path.Combine(_serverRepoRoot, "delete-branch-test.git");
+        Directory.CreateDirectory(repoPath);
+        RunGit(repoPath, "init --bare --quiet --initial-branch=main");
+
+        var tempWorkDir = Path.Combine(Path.GetTempPath(), "temp-del-branch", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempWorkDir);
+        try
+        {
+            RunGit(tempWorkDir, "init --quiet --initial-branch=main");
+            RunGit(tempWorkDir, "config user.name \"Test\"");
+            RunGit(tempWorkDir, "config user.email test@test.com");
+            File.WriteAllText(Path.Combine(tempWorkDir, "main.txt"), "main content");
+            RunGit(tempWorkDir, "add main.txt");
+            RunGit(tempWorkDir, "commit -m \"Main commit\" --quiet");
+            RunGit(tempWorkDir, "checkout -b to-delete --quiet");
+            File.WriteAllText(Path.Combine(tempWorkDir, "del.txt"), "to be deleted");
+            RunGit(tempWorkDir, "add del.txt");
+            RunGit(tempWorkDir, "commit -m \"Branch commit\" --quiet");
+            RunGit(tempWorkDir, $"remote add origin \"{repoPath}\"");
+            RunGit(tempWorkDir, "push -u origin --all --quiet");
+        }
+        finally
+        {
+            TestHelper.TryDeleteDirectory(tempWorkDir);
+        }
+
+        var callbackInvoked = false;
+        IReadOnlyList<string>? callbackUpdatedRefs = null;
+        var callbackTcs = new TaskCompletionSource<bool>();
+
+        await StartServerAsync(enableReceivePack: true, onReceivePackCompleted: (ctx, repoName, updatedRefs) =>
+        {
+            callbackInvoked = true;
+            callbackUpdatedRefs = updatedRefs;
+            callbackTcs.SetResult(true);
+            return ValueTask.CompletedTask;
+        });
+
+        var cloneDir = Path.Combine(_clientWorkingDir, "delete-branch-clone");
+        RunGit(_clientWorkingDir, $"clone {_serverUrl}/delete-branch-test.git {cloneDir}");
+
+        // Act: Delete branch on remote using git push origin --delete <branch>
+        RunGit(cloneDir, "push origin --delete to-delete");
+
+        // Wait for callback
+        var completed = await Task.WhenAny(callbackTcs.Task, Task.Delay(5000));
+        Assert.Same(callbackTcs.Task, completed);
+
+        // Assert: Branch deleted on server
+        var serverRepo = GitRepository.Open(repoPath);
+        serverRepo.InvalidateCaches(raiseChanged: false);
+        var refVal = await serverRepo.ReferenceStore.TryResolveReferenceAsync("refs/heads/to-delete");
+        Assert.Null(refVal);
+
+        // Assert: Callback notified with deleted ref
+        Assert.True(callbackInvoked);
+        Assert.NotNull(callbackUpdatedRefs);
+        Assert.Contains("refs/heads/to-delete", callbackUpdatedRefs);
+
+        // Client git branch -r does not have origin/to-delete
+        var remoteBranches = RunGit(cloneDir, "branch -r");
+        Assert.DoesNotContain("origin/to-delete", remoteBranches);
+    }
+
+    [Fact]
+    public async Task GitPush_DeleteTag_ShouldDeleteTagOnServer()
+    {
+        var sourceRepo = CreateSourceRepository("delete-tag-test", new[] { ("file.txt", "v1") });
+        var serverRepoPath = Path.Combine(_serverRepoRoot, "delete-tag-test.git");
+        var headCommit = await sourceRepo.ReferenceStore.ResolveHeadAsync();
+        await sourceRepo.ReferenceStore.CreateReferenceAsync("refs/tags/v1.0", headCommit);
+
+        await StartServerAsync(enableReceivePack: true);
+
+        var cloneDir = Path.Combine(_clientWorkingDir, "delete-tag-clone");
+        RunGit(_clientWorkingDir, $"clone {_serverUrl}/delete-tag-test.git {cloneDir}");
+        var tagsBefore = RunGit(cloneDir, "tag -l");
+        Assert.Contains("v1.0", tagsBefore);
+
+        // Act: Delete tag on remote using git push origin --delete <tag>
+        RunGit(cloneDir, "push origin --delete v1.0");
+
+        // Assert: Tag is deleted on server
+        sourceRepo.InvalidateCaches(raiseChanged: false);
+        var tagRef = await sourceRepo.ReferenceStore.TryResolveReferenceAsync("refs/tags/v1.0");
+        Assert.Null(tagRef);
+
+        // Verify fresh clone has no tags
+        var freshCloneDir = Path.Combine(_clientWorkingDir, "delete-tag-fresh-clone");
+        RunGit(_clientWorkingDir, $"clone {_serverUrl}/delete-tag-test.git {freshCloneDir}");
+        var freshTags = RunGit(freshCloneDir, "tag -l").Trim();
+        Assert.Empty(freshTags);
+    }
+
+    [Fact]
+    public async Task GitPush_AnnotatedAndLightweightTags_ShouldUploadTagObjectsAndRefs()
+    {
+        var sourceRepo = CreateSourceRepository("push-tags-test", new[] { ("file.txt", "initial") });
+        await StartServerAsync(enableReceivePack: true);
+
+        var cloneDir = Path.Combine(_clientWorkingDir, "push-tags-clone");
+        RunGit(_clientWorkingDir, $"clone {_serverUrl}/push-tags-test.git {cloneDir}");
+        RunGit(cloneDir, "config user.name \"Test User\"");
+        RunGit(cloneDir, "config user.email test@example.com");
+
+        // Create lightweight tag
+        RunGit(cloneDir, "tag v1.0-light");
+
+        // Create annotated tag
+        RunGit(cloneDir, "tag -a v1.0-annotated -m \"Annotated release tag message\"");
+
+        // Act: Push tags to server
+        var pushOutput = RunGit(cloneDir, "push origin --tags");
+        Assert.Contains("v1.0-light", pushOutput);
+        Assert.Contains("v1.0-annotated", pushOutput);
+
+        // Assert on server: Both tags exist
+        var serverRepoPath = Path.Combine(_serverRepoRoot, "push-tags-test.git");
+        var serverRepo = GitRepository.Open(serverRepoPath);
+        serverRepo.InvalidateCaches(raiseChanged: false);
+        var lightRef = await serverRepo.ReferenceStore.TryResolveReferenceAsync("refs/tags/v1.0-light");
+        var annotatedRef = await serverRepo.ReferenceStore.TryResolveReferenceAsync("refs/tags/v1.0-annotated");
+
+        Assert.NotNull(lightRef);
+        Assert.NotNull(annotatedRef);
+
+        // Annotated tag ref points to a Tag object, not commit object directly
+        var tagObj = await serverRepo.ObjectStore.ReadObjectAsync(annotatedRef.Value);
+        Assert.Equal(GitObjectType.Tag, tagObj.Type);
+
+        // Clone into another directory and verify native git sees tag annotation
+        var verifyCloneDir = Path.Combine(_clientWorkingDir, "push-tags-verify-clone");
+        RunGit(_clientWorkingDir, $"clone {_serverUrl}/push-tags-test.git {verifyCloneDir}");
+        var catType = RunGit(verifyCloneDir, "cat-file -t v1.0-annotated").Trim();
+        Assert.Equal("tag", catType);
+
+        var tagDetails = RunGit(verifyCloneDir, "tag -n9 -l v1.0-annotated");
+        Assert.Contains("Annotated release tag message", tagDetails);
+    }
+
+    [Fact]
+    public async Task GitPush_ForcePushAfterReset_ShouldUpdateRefOnServer()
+    {
+        var sourceRepo = CreateSourceRepository("force-push-test", new[] { ("file.txt", "v1") });
+        await StartServerAsync(enableReceivePack: true);
+
+        var cloneDir = Path.Combine(_clientWorkingDir, "force-push-clone");
+        RunGit(_clientWorkingDir, $"clone {_serverUrl}/force-push-test.git {cloneDir}");
+        RunGit(cloneDir, "config user.name \"Test User\"");
+        RunGit(cloneDir, "config user.email test@example.com");
+
+        // Add commit 2 and push
+        File.WriteAllText(Path.Combine(cloneDir, "file.txt"), "v2");
+        RunGit(cloneDir, "add file.txt");
+        RunGit(cloneDir, "commit -m \"Commit 2\" --quiet");
+        RunGit(cloneDir, "push origin main");
+
+        // Reset back to commit 1 and make alternate commit 3 (diverging)
+        RunGit(cloneDir, "reset --hard HEAD~1");
+        File.WriteAllText(Path.Combine(cloneDir, "alt.txt"), "divergent content");
+        RunGit(cloneDir, "add alt.txt");
+        RunGit(cloneDir, "commit -m \"Commit 3 alternate\" --quiet");
+
+        // Act & Assert 1: Normal push must be rejected (non-fast-forward)
+        var ex = Assert.Throws<InvalidOperationException>(() =>
+            RunGit(cloneDir, "push origin main"));
+        Assert.True(
+            ex.Message.Contains("non-fast-forward", StringComparison.OrdinalIgnoreCase) ||
+            ex.Message.Contains("rejected", StringComparison.OrdinalIgnoreCase));
+
+        // Act 2: Force push must succeed
+        var forceOutput = RunGit(cloneDir, "push --force origin main");
+        Assert.Contains("forced update", forceOutput);
+
+        // Assert on server: main points to the alternate commit
+        var serverRepoPath = Path.Combine(_serverRepoRoot, "force-push-test.git");
+        var serverRepo = GitRepository.Open(serverRepoPath);
+        serverRepo.InvalidateCaches(raiseChanged: false);
+        var expectedHash = RunGit(cloneDir, "rev-parse HEAD").Trim();
+        var serverMain = await serverRepo.ReferenceStore.TryResolveReferenceAsync("refs/heads/main");
+        Assert.Equal(expectedHash, serverMain.ToString(), StringComparer.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task GitPush_MixedBatchOperations_UpdatesCreatesAndDeletesAtomic()
+    {
+        // Arrange
+        var repoPath = Path.Combine(_serverRepoRoot, "mixed-batch-test.git");
+        Directory.CreateDirectory(repoPath);
+        RunGit(repoPath, "init --bare --quiet --initial-branch=main");
+
+        var tempWorkDir = Path.Combine(Path.GetTempPath(), "temp-mixed-batch", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempWorkDir);
+        try
+        {
+            RunGit(tempWorkDir, "init --quiet --initial-branch=main");
+            RunGit(tempWorkDir, "config user.name \"Test\"");
+            RunGit(tempWorkDir, "config user.email test@test.com");
+            File.WriteAllText(Path.Combine(tempWorkDir, "main.txt"), "main content");
+            RunGit(tempWorkDir, "add main.txt");
+            RunGit(tempWorkDir, "commit -m \"Initial\" --quiet");
+            RunGit(tempWorkDir, "checkout -b to-delete --quiet");
+            File.WriteAllText(Path.Combine(tempWorkDir, "del.txt"), "to be deleted");
+            RunGit(tempWorkDir, "add del.txt");
+            RunGit(tempWorkDir, "commit -m \"To delete\" --quiet");
+            RunGit(tempWorkDir, $"remote add origin \"{repoPath}\"");
+            RunGit(tempWorkDir, "push -u origin --all --quiet");
+        }
+        finally
+        {
+            TestHelper.TryDeleteDirectory(tempWorkDir);
+        }
+
+        var callbackTcs = new TaskCompletionSource<bool>();
+        IReadOnlyList<string>? updatedRefsCaptured = null;
+        await StartServerAsync(enableReceivePack: true, onReceivePackCompleted: (ctx, repoName, updatedRefs) =>
+        {
+            updatedRefsCaptured = updatedRefs;
+            callbackTcs.SetResult(true);
+            return ValueTask.CompletedTask;
+        });
+
+        var cloneDir = Path.Combine(_clientWorkingDir, "mixed-batch-clone");
+        RunGit(_clientWorkingDir, $"clone {_serverUrl}/mixed-batch-test.git {cloneDir}");
+        RunGit(cloneDir, "config user.name \"Test\"");
+        RunGit(cloneDir, "config user.email test@test.com");
+
+        // Advance main
+        File.WriteAllText(Path.Combine(cloneDir, "main2.txt"), "main updated");
+        RunGit(cloneDir, "add main2.txt");
+        RunGit(cloneDir, "commit -m \"Advance main\" --quiet");
+
+        // Create new branch
+        RunGit(cloneDir, "checkout -b to-create --quiet");
+        File.WriteAllText(Path.Combine(cloneDir, "create.txt"), "created");
+        RunGit(cloneDir, "add create.txt");
+        RunGit(cloneDir, "commit -m \"New branch\" --quiet");
+
+        // Act: Push advance main, create to-create, delete to-delete in single push
+        RunGit(cloneDir, "push origin main to-create :to-delete");
+
+        var completed = await Task.WhenAny(callbackTcs.Task, Task.Delay(5000));
+        Assert.Same(callbackTcs.Task, completed);
+
+        // Assert
+        var serverRepo = GitRepository.Open(repoPath);
+        serverRepo.InvalidateCaches(raiseChanged: false);
+        Assert.NotNull(await serverRepo.ReferenceStore.TryResolveReferenceAsync("refs/heads/main"));
+        Assert.NotNull(await serverRepo.ReferenceStore.TryResolveReferenceAsync("refs/heads/to-create"));
+        Assert.Null(await serverRepo.ReferenceStore.TryResolveReferenceAsync("refs/heads/to-delete"));
+
+        Assert.NotNull(updatedRefsCaptured);
+        Assert.Contains("refs/heads/main", updatedRefsCaptured);
+        Assert.Contains("refs/heads/to-create", updatedRefsCaptured);
+        Assert.Contains("refs/heads/to-delete", updatedRefsCaptured);
+    }
+
+    [Fact]
+    public async Task GitClone_DetachedHeadRepository_ShouldSucceed()
+    {
+        var sourceRepo = CreateSourceRepository("detached-head-test", new[] { ("file.txt", "detached content") });
+        var headCommit = await sourceRepo.ReferenceStore.ResolveHeadAsync();
+
+        // Put the bare server repo into detached HEAD state by storing commit hash in HEAD
+        var bareHeadPath = Path.Combine(_serverRepoRoot, "detached-head-test.git", "HEAD");
+        await File.WriteAllTextAsync(bareHeadPath, headCommit.ToString() + "\n");
+
+        await StartServerAsync(enableUploadPack: true);
+
+        // Act: Clone repository with detached HEAD
+        var cloneDir = Path.Combine(_clientWorkingDir, "detached-clone");
+        RunGit(_clientWorkingDir, $"clone {_serverUrl}/detached-head-test.git {cloneDir}");
+
+        // Assert: Clone succeeded and content is available
+        Assert.True(File.Exists(Path.Combine(cloneDir, "file.txt")));
+        Assert.Equal("detached content", File.ReadAllText(Path.Combine(cloneDir, "file.txt")));
+    }
+
     private GitRepository CreateSourceRepository(string name, (string path, string content)[] files)
     {
         var bareRepoPath = Path.Combine(_serverRepoRoot, $"{name}.git");
@@ -768,7 +1146,7 @@ public sealed class GitSmartHttpEndToEndTest : IDisposable
         var app = builder.Build();
 
         // Map Git Smart HTTP endpoints
-        app.MapGitSmartHttp("/" + routePrefix + "/{repository}.git");
+        app.MapGitSmartHttp("/" + routePrefix + "/{*repository}.git");
 
         _host = app;
         await _host.StartAsync();

@@ -774,6 +774,111 @@ public sealed class GitPackObjectReaderTest
         Assert.Equal(0x10000, result.Content.Length);
     }
 
+    [Fact]
+    public async Task ReadObjectAsync_WithOfsDeltaZeroDistance_ShouldThrowInvalidDataException()
+    {
+        var delta = CreateSimpleCopyDelta(10, 5);
+        var stream = CreateOfsDeltaStream(0, delta);
+
+        var ex = await Assert.ThrowsAsync<InvalidDataException>(
+            () => GitPackObjectReader.ReadObjectAsync(
+                stream,
+                200,
+                20,
+                (hash, ct) => throw new InvalidOperationException(),
+                (offset, ct) => throw new InvalidOperationException(),
+                CancellationToken.None));
+
+        Assert.Contains("Invalid ofs-delta distance", ex.Message);
+    }
+
+    [Fact]
+    public async Task ReadObjectAsync_WithOfsDeltaBaseOffsetBeforeHeader_ShouldThrowInvalidDataException()
+    {
+        var delta = CreateSimpleCopyDelta(10, 5);
+        // currentOffset = 20, distance = 15 => baseOffset = 5 < 12 (pack header is 12 bytes)
+        var stream = CreateOfsDeltaStream(15, delta);
+
+        var ex = await Assert.ThrowsAsync<InvalidDataException>(
+            () => GitPackObjectReader.ReadObjectAsync(
+                stream,
+                20,
+                20,
+                (hash, ct) => throw new InvalidOperationException(),
+                (offset, ct) => throw new InvalidOperationException(),
+                CancellationToken.None));
+
+        Assert.Contains("Invalid ofs-delta base offset", ex.Message);
+    }
+
+    [Fact]
+    public async Task ReadObjectAsync_WithDeltaRecursionExceedingMaxDepth_ShouldThrowInvalidDataException()
+    {
+        var delta = CreateSimpleCopyDelta(10, 5);
+        var stream = CreateOfsDeltaStream(20, delta);
+
+        // Recursive resolver that keeps resolving deltas forever
+        Func<long, CancellationToken, Task<GitObjectData>> recursiveResolver = null!;
+        recursiveResolver = async (offset, ct) =>
+        {
+            var s = CreateOfsDeltaStream(20, delta);
+            return await GitPackObjectReader.ReadObjectAsync(
+                s,
+                offset,
+                20,
+                (h, c) => throw new InvalidOperationException(),
+                recursiveResolver,
+                ct);
+        };
+
+        var ex = await Assert.ThrowsAsync<InvalidDataException>(
+            () => GitPackObjectReader.ReadObjectAsync(
+                stream,
+                10000,
+                20,
+                (hash, ct) => throw new InvalidOperationException(),
+                recursiveResolver,
+                CancellationToken.None));
+
+        Assert.Contains("exceeded maximum depth", ex.Message);
+    }
+
+    [Fact]
+    public async Task ReadObjectAsync_WithCyclicRefDeltas_ShouldThrowInvalidDataException()
+    {
+        var hash1 = new GitHash("1".PadRight(40, '0'));
+        var hash2 = new GitHash("2".PadRight(40, '0'));
+
+        var delta = CreateSimpleCopyDelta(10, 5);
+        var stream1 = CreateRefDeltaStream(hash2, delta);
+
+        // Cyclic: hash1 -> hash2 -> hash1 -> ...
+        Func<GitHash, CancellationToken, Task<GitObjectData>> cyclicResolver = null!;
+        cyclicResolver = async (hash, ct) =>
+        {
+            var targetHash = hash == hash1 ? hash2 : hash1;
+            var s = CreateRefDeltaStream(targetHash, delta);
+            return await GitPackObjectReader.ReadObjectAsync(
+                s,
+                0,
+                20,
+                cyclicResolver,
+                null,
+                ct);
+        };
+
+        var ex = await Assert.ThrowsAsync<InvalidDataException>(
+            () => GitPackObjectReader.ReadObjectAsync(
+                stream1,
+                0,
+                20,
+                cyclicResolver,
+                null,
+                CancellationToken.None));
+
+        Assert.Contains("exceeded maximum depth", ex.Message);
+    }
+
     #endregion
 
     #region Helper Methods

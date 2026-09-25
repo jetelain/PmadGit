@@ -8,6 +8,10 @@ namespace Pmad.Git.LocalRepositories.Pack;
 /// </summary>
 internal static class GitPackObjectReader
 {
+    public const int MaxDeltaDepth = 50;
+
+    private static readonly AsyncLocal<int> DeltaDepth = new();
+
     /// <summary>
     /// Reads a Git object from a pack stream at the current position.
     /// </summary>
@@ -17,13 +21,15 @@ internal static class GitPackObjectReader
     /// <param name="resolveByHash">Callback to resolve base objects by hash (for ref-delta)</param>
     /// <param name="resolveByOffset">Callback to resolve base objects by offset (for ofs-delta)</param>
     /// <param name="cancellationToken">Cancellation token</param>
+    /// <param name="depth">Current delta resolution recursion depth</param>
     public static async Task<GitObjectData> ReadObjectAsync(
         Stream stream,
         long currentOffset,
         int hashLengthBytes,
         Func<GitHash, CancellationToken, Task<GitObjectData>> resolveByHash,
         Func<long, CancellationToken, Task<GitObjectData>>? resolveByOffset,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        int depth = 0)
     {
         if (!stream.CanSeek)
         {
@@ -46,8 +52,8 @@ internal static class GitPackObjectReader
             4 => new GitObjectData(
                 GitObjectType.Tag,
                 await ReadZLibAsync(stream, cancellationToken).ConfigureAwait(false)),
-            6 => await ReadOfsDeltaAsync(stream, currentOffset, resolveByHash, resolveByOffset, cancellationToken).ConfigureAwait(false),
-            7 => await ReadRefDeltaAsync(stream, hashLengthBytes, resolveByHash, cancellationToken).ConfigureAwait(false),
+            6 => await ReadOfsDeltaAsync(stream, currentOffset, resolveByHash, resolveByOffset, cancellationToken, depth).ConfigureAwait(false),
+            7 => await ReadRefDeltaAsync(stream, hashLengthBytes, resolveByHash, cancellationToken, depth).ConfigureAwait(false),
             _ => throw new NotSupportedException($"Unsupported pack object kind {kind}")
         };
     }
@@ -57,15 +63,40 @@ internal static class GitPackObjectReader
         long currentOffset,
         Func<GitHash, CancellationToken, Task<GitObjectData>> resolveByHash,
         Func<long, CancellationToken, Task<GitObjectData>>? resolveByOffset,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        int depth)
     {
+        var effectiveDepth = Math.Max(depth, DeltaDepth.Value);
+        if (effectiveDepth >= MaxDeltaDepth)
+        {
+            throw new InvalidDataException($"Delta resolution exceeded maximum depth of {MaxDeltaDepth}");
+        }
+
         var baseDistance = await ReadOfsDeltaOffsetAsync(stream, cancellationToken).ConfigureAwait(false);
+        if (baseDistance <= 0)
+        {
+            throw new InvalidDataException($"Invalid ofs-delta distance: {baseDistance}");
+        }
+
         var baseOffset = currentOffset - baseDistance;
-        
+        if (baseOffset < 12 || baseOffset >= currentOffset)
+        {
+            throw new InvalidDataException($"Invalid ofs-delta base offset: {baseOffset} (current offset: {currentOffset})");
+        }
+
         GitObjectData baseObject;
         if (resolveByOffset != null)
         {
-            baseObject = await resolveByOffset(baseOffset, cancellationToken).ConfigureAwait(false);
+            var prevDepth = DeltaDepth.Value;
+            DeltaDepth.Value = effectiveDepth + 1;
+            try
+            {
+                baseObject = await resolveByOffset(baseOffset, cancellationToken).ConfigureAwait(false);
+            }
+            finally
+            {
+                DeltaDepth.Value = prevDepth;
+            }
         }
         else
         {
@@ -80,12 +111,31 @@ internal static class GitPackObjectReader
         Stream stream,
         int hashLengthBytes,
         Func<GitHash, CancellationToken, Task<GitObjectData>> resolveByHash,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        int depth)
     {
+        var effectiveDepth = Math.Max(depth, DeltaDepth.Value);
+        if (effectiveDepth >= MaxDeltaDepth)
+        {
+            throw new InvalidDataException($"Delta resolution exceeded maximum depth of {MaxDeltaDepth}");
+        }
+
         var baseHashBytes = new byte[hashLengthBytes];
         await stream.ReadExactlyAsync(baseHashBytes, cancellationToken).ConfigureAwait(false);
         var baseHash = GitHash.FromBytes(baseHashBytes);
-        var baseObject = await resolveByHash(baseHash, cancellationToken).ConfigureAwait(false);
+
+        GitObjectData baseObject;
+        var prevDepth = DeltaDepth.Value;
+        DeltaDepth.Value = effectiveDepth + 1;
+        try
+        {
+            baseObject = await resolveByHash(baseHash, cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            DeltaDepth.Value = prevDepth;
+        }
+
         var deltaPayload = await ReadZLibAsync(stream, cancellationToken).ConfigureAwait(false);
         return ApplyDelta(baseObject, deltaPayload);
     }
@@ -120,25 +170,58 @@ internal static class GitPackObjectReader
             var opcode = delta[cursor++];
             if ((opcode & 0x80) != 0)
             {
-                var copyOffset = 0;
+                long copyOffset = 0;
                 var copySize = 0;
 
-                if ((opcode & 0x01) != 0) copyOffset |= delta[cursor++];
-                if ((opcode & 0x02) != 0) copyOffset |= delta[cursor++] << 8;
-                if ((opcode & 0x04) != 0) copyOffset |= delta[cursor++] << 16;
-                if ((opcode & 0x08) != 0) copyOffset |= delta[cursor++] << 24;
+                if ((opcode & 0x01) != 0)
+                {
+                    if (cursor >= delta.Length) throw new InvalidDataException("Truncated delta payload");
+                    copyOffset |= delta[cursor++];
+                }
+                if ((opcode & 0x02) != 0)
+                {
+                    if (cursor >= delta.Length) throw new InvalidDataException("Truncated delta payload");
+                    copyOffset |= (long)delta[cursor++] << 8;
+                }
+                if ((opcode & 0x04) != 0)
+                {
+                    if (cursor >= delta.Length) throw new InvalidDataException("Truncated delta payload");
+                    copyOffset |= (long)delta[cursor++] << 16;
+                }
+                if ((opcode & 0x08) != 0)
+                {
+                    if (cursor >= delta.Length) throw new InvalidDataException("Truncated delta payload");
+                    copyOffset |= (long)delta[cursor++] << 24;
+                }
 
-                if ((opcode & 0x10) != 0) copySize |= delta[cursor++];
-                if ((opcode & 0x20) != 0) copySize |= delta[cursor++] << 8;
-                if ((opcode & 0x40) != 0) copySize |= delta[cursor++] << 16;
+                if ((opcode & 0x10) != 0)
+                {
+                    if (cursor >= delta.Length) throw new InvalidDataException("Truncated delta payload");
+                    copySize |= delta[cursor++];
+                }
+                if ((opcode & 0x20) != 0)
+                {
+                    if (cursor >= delta.Length) throw new InvalidDataException("Truncated delta payload");
+                    copySize |= delta[cursor++] << 8;
+                }
+                if ((opcode & 0x40) != 0)
+                {
+                    if (cursor >= delta.Length) throw new InvalidDataException("Truncated delta payload");
+                    copySize |= delta[cursor++] << 16;
+                }
                 if (copySize == 0) copySize = 0x10000;
 
-                if (copyOffset < 0 || copyOffset + copySize > source.Length)
+                if (copyOffset < 0 || copyOffset > int.MaxValue || copyOffset + copySize > source.Length)
                 {
                     throw new InvalidDataException("Delta copy instruction exceeds base size");
                 }
 
-                source.Slice(copyOffset, copySize).CopyTo(result.AsSpan(resultIndex));
+                if ((long)resultIndex + copySize > result.Length)
+                {
+                    throw new InvalidDataException("Delta copy instruction exceeds result buffer size");
+                }
+
+                source.Slice((int)copyOffset, copySize).CopyTo(result.AsSpan(resultIndex));
                 resultIndex += copySize;
             }
             else if (opcode != 0)
@@ -146,6 +229,11 @@ internal static class GitPackObjectReader
                 if (cursor + opcode > delta.Length)
                 {
                     throw new InvalidDataException("Delta insert instruction exceeds payload");
+                }
+
+                if ((long)resultIndex + opcode > result.Length)
+                {
+                    throw new InvalidDataException("Delta insert instruction exceeds result buffer size");
                 }
 
                 delta.Slice(cursor, opcode).CopyTo(result.AsSpan(resultIndex));
@@ -179,7 +267,7 @@ internal static class GitPackObjectReader
             for (int i = 1; i < read; i++)
             {
                 b = buffer[i];
-                offset = ((offset + 1) << 7) | (uint)(b & 0x7F);
+                offset = checked(((offset + 1) << 7) | (uint)(b & 0x7F));
             }
 
             return offset;

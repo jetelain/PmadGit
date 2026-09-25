@@ -114,6 +114,12 @@ public static class TestHelper
                 UseShellExecute = false,
                 CreateNoWindow = true
             };
+            startInfo.EnvironmentVariables["LC_ALL"] = "C";
+            var gitConfigGlobal = Environment.GetEnvironmentVariable("GIT_CONFIG_GLOBAL");
+            if (string.IsNullOrEmpty(gitConfigGlobal) || !File.Exists(gitConfigGlobal))
+            {
+                startInfo.EnvironmentVariables.Remove("GIT_CONFIG_GLOBAL");
+            }
 
             using var process = Process.Start(startInfo) ?? throw new InvalidOperationException("Unable to start git process");
             var output = process.StandardOutput.ReadToEnd();
@@ -129,7 +135,8 @@ public static class TestHelper
                               error.Contains("unable to create", StringComparison.OrdinalIgnoreCase) ||
                               error.Contains("unable to write", StringComparison.OrdinalIgnoreCase) ||
                               error.Contains("File exists", StringComparison.OrdinalIgnoreCase) ||
-                              error.Contains("locked", StringComparison.OrdinalIgnoreCase);
+                              error.Contains("locked", StringComparison.OrdinalIgnoreCase) ||
+                              error.Contains("reading the configuration files", StringComparison.OrdinalIgnoreCase);
 
             if (attempt < maxAttempts - 1 && isTransient)
             {

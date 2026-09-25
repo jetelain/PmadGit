@@ -115,6 +115,7 @@ public class GitCliRepository : IGitRepositoryWithRemote
         }
         if (branch != null)
         {
+            ValidateBranchName(branch);
             arguments.Add("--branch");
             arguments.Add(branch);
         }
@@ -198,6 +199,7 @@ public class GitCliRepository : IGitRepositoryWithRemote
             arguments.Add(targetRemote);
             if (branch != null)
             {
+                ValidateBranchName(branch);
                 arguments.Add(branch);
             }
         }
@@ -231,6 +233,7 @@ public class GitCliRepository : IGitRepositoryWithRemote
             arguments.Add(targetRemote);
             if (branch != null)
             {
+                ValidateBranchName(branch);
                 arguments.Add(branch);
             }
         }
@@ -279,6 +282,7 @@ public class GitCliRepository : IGitRepositoryWithRemote
             arguments.Add(targetRemote);
             if (branch != null)
             {
+                ValidateBranchName(branch);
                 arguments.Add(branch);
             }
         }
@@ -327,6 +331,7 @@ public class GitCliRepository : IGitRepositoryWithRemote
     /// <param name="cancellationToken"></param>
     public async Task CreateBranchAsync(string branchName, string? startPoint = null, CancellationToken cancellationToken = default)
     {
+        ValidateBranchName(branchName);
         var arguments = new List<string> { "branch", branchName };
         if (startPoint != null)
         {
@@ -354,6 +359,7 @@ public class GitCliRepository : IGitRepositoryWithRemote
     /// <param name="cancellationToken"></param>
     public async Task CheckoutAsync(string branchName, bool createNew = false, string? startPoint = null, bool updateWorkingTree = true, CancellationToken cancellationToken = default)
     {
+        ValidateBranchName(branchName);
         using var writeLock = await LockWriteAsync(cancellationToken).ConfigureAwait(false);
 
         if (!createNew && !updateWorkingTree)
@@ -374,11 +380,17 @@ public class GitCliRepository : IGitRepositoryWithRemote
         if (createNew)
         {
             arguments.Add("-b");
+            arguments.Add(branchName);
+            if (startPoint != null)
+            {
+                arguments.Add(startPoint);
+            }
+            arguments.Add("--");
         }
-        arguments.Add(branchName);
-        if (createNew && startPoint != null)
+        else
         {
-            arguments.Add(startPoint);
+            arguments.Add(branchName);
+            arguments.Add("--");
         }
         var result = await RunGit(cancellationToken, arguments.ToArray());
         result.EnsureSuccess();
@@ -393,6 +405,7 @@ public class GitCliRepository : IGitRepositoryWithRemote
     /// <param name="cancellationToken"></param>
     public async Task DeleteBranchAsync(string branchName, bool force = false, CancellationToken cancellationToken = default)
     {
+        ValidateBranchName(branchName);
         using var writeLock = await LockWriteAsync(cancellationToken).ConfigureAwait(false);
         var result = await RunGit(cancellationToken, "branch", force ? "-D" : "-d", branchName);
         result.EnsureSuccess();
@@ -407,6 +420,8 @@ public class GitCliRepository : IGitRepositoryWithRemote
     /// <param name="cancellationToken"></param>
     public async Task RenameBranchAsync(string oldName, string newName, CancellationToken cancellationToken = default)
     {
+        ValidateBranchName(oldName, nameof(oldName));
+        ValidateBranchName(newName, nameof(newName));
         using var writeLock = await LockWriteAsync(cancellationToken).ConfigureAwait(false);
         var result = await RunGit(cancellationToken, "branch", "-m", oldName, newName);
         result.EnsureSuccess();
@@ -682,6 +697,11 @@ public class GitCliRepository : IGitRepositoryWithRemote
     /// <returns>A <see cref="GitTrackingStatus"/> describing upstream configuration and ahead/behind commit counts.</returns>
     public async Task<GitTrackingStatus> GetTrackingStatusAsync(string? branch = null, CancellationToken cancellationToken = default)
     {
+        if (branch != null)
+        {
+            ValidateBranchName(branch);
+        }
+
         var localBranch = branch ?? await GetCurrentBranchAsync(cancellationToken).ConfigureAwait(false);
 
         var refPath = localBranch.StartsWith("refs/heads/", StringComparison.Ordinal)
@@ -888,6 +908,32 @@ public class GitCliRepository : IGitRepositoryWithRemote
         var result = await RunGit(default, arguments);
         result.EnsureSuccess();
         return result.StdOut;
+    }
+
+    private static void ValidateBranchName(string branchName, string paramName = "branch")
+    {
+        if (string.IsNullOrWhiteSpace(branchName))
+        {
+            throw new ArgumentException("Branch name cannot be empty.", paramName);
+        }
+
+        var fullRef = branchName.StartsWith("refs/", StringComparison.Ordinal)
+            ? branchName
+            : $"refs/heads/{branchName}";
+
+        try
+        {
+            GitReferenceStore.NormalizeAbsoluteReferencePath(fullRef);
+        }
+        catch (ArgumentException ex)
+        {
+            throw new ArgumentException($"Invalid branch name '{branchName}': {ex.Message}", paramName, ex);
+        }
+
+        if (branchName.Contains("@{") || branchName.EndsWith('/'))
+        {
+            throw new ArgumentException($"Invalid branch name '{branchName}'.", paramName);
+        }
     }
 
     private Task<GitResponse> RunGit(CancellationToken cancellationToken, params string[] arguments)

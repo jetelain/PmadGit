@@ -500,6 +500,29 @@ public sealed class GitObjectStoreTests
         Assert.Equal(content.Length, streamContent.Length);
     }
 
+    [Fact]
+    public async Task WriteObjectAsync_ConcurrentWritesOfSameObject_SucceedsAndReadsValidObject()
+    {
+        using var repo = GitTestRepository.Create();
+        var store = new GitObjectStore(repo.GitDirectory);
+        var payload = Encoding.UTF8.GetBytes("Concurrent loose object write payload data " + Guid.NewGuid());
+
+        const int taskCount = 20;
+        var startSignal = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        var tasks = Enumerable.Range(0, taskCount).Select(async _ =>
+        {
+            await startSignal.Task;
+            var hash = await store.WriteObjectAsync(GitObjectType.Blob, payload, CancellationToken.None);
+            var readBack = await store.ReadObjectAsync(hash, CancellationToken.None);
+            Assert.Equal(GitObjectType.Blob, readBack.Type);
+            Assert.Equal(payload, readBack.Content);
+        });
+
+        startSignal.SetResult();
+        await Task.WhenAll(tasks);
+    }
+
     private static void RemoveLooseObject(string gitDirectory, GitHash hash)
     {
         var path = Path.Combine(gitDirectory, "objects", hash.Value[..2], hash.Value[2..]);

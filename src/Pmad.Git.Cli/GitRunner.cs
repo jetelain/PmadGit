@@ -32,6 +32,7 @@ internal class GitRunner : IGitRunner
         var stderr = new StringBuilder();
 
         using var process = Process.Start(startInfo) ?? throw new InvalidOperationException("Unable to start git process");
+        process.StandardInput.Close();
         process.OutputDataReceived += (_, e) => { if (e.Data != null) { stdout.AppendLine(e.Data); } };
         process.ErrorDataReceived += (_, e) => { if (e.Data != null) { stderr.AppendLine(e.Data); } };
         process.BeginOutputReadLine();

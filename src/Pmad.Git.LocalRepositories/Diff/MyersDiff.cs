@@ -10,17 +10,24 @@ namespace Pmad.Git.LocalRepositories.Diff;
 public static class MyersDiff
 {
     /// <summary>
+    /// Default maximum edit distance allowed before falling back to whole-chunk replacement.
+    /// </summary>
+    public const int DefaultMaxEditDistance = 2500;
+
+    /// <summary>
     /// Computes the sequence of differences (keeps, inserts, deletes) between <paramref name="oldItems"/> and <paramref name="newItems"/>.
     /// </summary>
     /// <typeparam name="T">The type of elements to compare.</typeparam>
     /// <param name="oldItems">The original sequence.</param>
     /// <param name="newItems">The modified sequence.</param>
     /// <param name="comparer">Optional equality comparer; defaults to <see cref="EqualityComparer{T}.Default"/>.</param>
+    /// <param name="maxEditDistance">Optional maximum edit distance threshold. If the edit distance exceeds this threshold, the algorithm falls back to replacing the middle portion. Defaults to <see cref="DefaultMaxEditDistance"/>.</param>
     /// <returns>A list of <see cref="DiffChange{T}"/> representing the edit script.</returns>
     public static IReadOnlyList<DiffChange<T>> Compute<T>(
         IReadOnlyList<T> oldItems,
         IReadOnlyList<T> newItems,
-        IEqualityComparer<T>? comparer = null)
+        IEqualityComparer<T>? comparer = null,
+        int? maxEditDistance = null)
     {
         ArgumentNullException.ThrowIfNull(oldItems);
         ArgumentNullException.ThrowIfNull(newItems);
@@ -87,7 +94,7 @@ public static class MyersDiff
 
         if (midN > 0 || midM > 0)
         {
-            var middleChanges = ComputeMiddle(oldItems, newItems, prefixLen, midN, midM, comparer);
+            var middleChanges = ComputeMiddle(oldItems, newItems, prefixLen, midN, midM, comparer, maxEditDistance);
             result.AddRange(middleChanges);
         }
 
@@ -108,7 +115,8 @@ public static class MyersDiff
         int prefixLen,
         int n,
         int m,
-        IEqualityComparer<T> comparer)
+        IEqualityComparer<T> comparer,
+        int? maxEditDistance)
     {
         if (n == 0)
         {
@@ -133,29 +141,32 @@ public static class MyersDiff
         }
 
         var max = n + m;
-        var vSize = 2 * max + 1;
+        var limit = Math.Min(max, maxEditDistance ?? DefaultMaxEditDistance);
+        if (limit <= 0)
+        {
+            return CreateFallbackChanges(oldItems, newItems, prefixLen, n, m);
+        }
+
+        var vSize = 2 * limit + 3;
         var v = new int[vSize];
+        var offset = limit + 1;
         var trace = new List<int[]>();
 
-        v[max + 1] = 0;
+        v[offset + 1] = 0;
 
         int finalD = -1;
-        for (var d = 0; d <= max; d++)
+        for (var d = 0; d <= limit; d++)
         {
-            var vCopy = new int[vSize];
-            Array.Copy(v, vCopy, vSize);
-            trace.Add(vCopy);
-
             for (var k = -d; k <= d; k += 2)
             {
                 int x;
-                if (k == -d || (k != d && v[max + k - 1] < v[max + k + 1]))
+                if (k == -d || (k != d && v[offset + k - 1] < v[offset + k + 1]))
                 {
-                    x = v[max + k + 1]; // Downward move = Insert
+                    x = v[offset + k + 1]; // Downward move = Insert
                 }
                 else
                 {
-                    x = v[max + k - 1] + 1; // Rightward move = Delete
+                    x = v[offset + k - 1] + 1; // Rightward move = Delete
                 }
 
                 var y = x - k;
@@ -167,7 +178,7 @@ public static class MyersDiff
                     y++;
                 }
 
-                v[max + k] = x;
+                v[offset + k] = x;
 
                 if (x >= n && y >= m)
                 {
@@ -176,10 +187,20 @@ public static class MyersDiff
                 }
             }
 
+            // Only record the active k-window for step d: [-d, d] -> length 2*d + 1
+            var vRecord = new int[2 * d + 1];
+            Array.Copy(v, offset - d, vRecord, 0, 2 * d + 1);
+            trace.Add(vRecord);
+
             if (finalD >= 0)
             {
                 break;
             }
+        }
+
+        if (finalD < 0)
+        {
+            return CreateFallbackChanges(oldItems, newItems, prefixLen, n, m);
         }
 
         // Backtrack to find the edit path
@@ -190,10 +211,10 @@ public static class MyersDiff
         for (var d = finalD; d > 0; d--)
         {
             var k = curX - curY;
-            var prevV = trace[d];
+            var prevV = trace[d - 1];
 
             int prevK;
-            if (k == -d || (k != d && prevV[max + k - 1] < prevV[max + k + 1]))
+            if (k == -d || (k != d && prevV[(k - 1) + (d - 1)] < prevV[(k + 1) + (d - 1)]))
             {
                 prevK = k + 1;
             }
@@ -202,7 +223,7 @@ public static class MyersDiff
                 prevK = k - 1;
             }
 
-            var prevX = prevV[max + prevK];
+            var prevX = prevV[prevK + (d - 1)];
             var prevY = prevX - prevK;
 
             // Diagonal moves (snake)
@@ -238,6 +259,27 @@ public static class MyersDiff
 
         changes.Reverse();
         return changes;
+    }
+
+    private static List<DiffChange<T>> CreateFallbackChanges<T>(
+        IReadOnlyList<T> oldItems,
+        IReadOnlyList<T> newItems,
+        int prefixLen,
+        int n,
+        int m)
+    {
+        var fallback = new List<DiffChange<T>>(n + m);
+        for (var i = 0; i < n; i++)
+        {
+            var oldIdx = prefixLen + i;
+            fallback.Add(new DiffChange<T>(DiffChangeType.Delete, oldItems[oldIdx], oldIdx, -1));
+        }
+        for (var j = 0; j < m; j++)
+        {
+            var newIdx = prefixLen + j;
+            fallback.Add(new DiffChange<T>(DiffChangeType.Insert, newItems[newIdx], -1, newIdx));
+        }
+        return fallback;
     }
 }
 

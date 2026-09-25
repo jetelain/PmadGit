@@ -214,6 +214,56 @@ public sealed class GitSmartHttpServiceCollectionExtensionsTest
         Assert.NotNull(provider.GetService<IDummyService>());
     }
 
+    [Fact]
+    public void AddGitRepositoryService_WithNullServices_ThrowsArgumentNullException()
+    {
+        IServiceCollection services = null!;
+        Assert.Throws<ArgumentNullException>(() => services.AddGitRepositoryService());
+    }
+
+    [Fact]
+    public void AddGitRepositoryService_RegistersSingleton()
+    {
+        var services = new ServiceCollection();
+        services.AddGitRepositoryService();
+        var provider = services.BuildServiceProvider();
+
+        var service1 = provider.GetService<IGitRepositoryService>();
+        var service2 = provider.GetService<IGitRepositoryService>();
+        Assert.NotNull(service1);
+        Assert.Same(service1, service2);
+    }
+
+    [Fact]
+    public void AddGitRepositorySynchronizerService_WithNullServices_ThrowsArgumentNullException()
+    {
+        IServiceCollection services = null!;
+        Assert.Throws<ArgumentNullException>(() => services.AddGitRepositorySynchronizerService());
+    }
+
+    [Fact]
+    public void AddGitRepositorySynchronizerService_RegistersSingleton()
+    {
+        var services = new ServiceCollection();
+        services.AddGitRepositorySynchronizerService();
+        var provider = services.BuildServiceProvider();
+
+        var service1 = provider.GetService<IGitRepositorySynchronizerService>();
+        var service2 = provider.GetService<IGitRepositorySynchronizerService>();
+        Assert.NotNull(service1);
+        Assert.Same(service1, service2);
+
+        var repoService = provider.GetService<IGitRepositoryService>();
+        Assert.NotNull(repoService);
+    }
+
+    [Fact]
+    public void AddGitSmartHttp_ActionOverload_WithNullServices_ThrowsArgumentNullException()
+    {
+        IServiceCollection services = null!;
+        Assert.Throws<ArgumentNullException>(() => services.AddGitSmartHttp(_ => { }));
+    }
+
     // Helper interface and class for chaining test
     private interface IDummyService { }
     private class DummyService : IDummyService { }
