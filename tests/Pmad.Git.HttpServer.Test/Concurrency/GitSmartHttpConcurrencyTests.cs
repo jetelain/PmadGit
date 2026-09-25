@@ -221,7 +221,7 @@ public sealed class GitSmartHttpConcurrencyTests : IDisposable
             cloneDirs.Add(cloneDir);
         }
 
-        var results = new System.Collections.Concurrent.ConcurrentBag<bool>();
+        var results = new System.Collections.Concurrent.ConcurrentDictionary<int, bool>();
 
         // Act - All clones try to push at the same time
         var tasks = cloneDirs.Select((dir, index) => Task.Run(() =>
@@ -232,21 +232,21 @@ public sealed class GitSmartHttpConcurrencyTests : IDisposable
                 RunGit(dir, $"add file{index}.txt");
                 RunGit(dir, "commit -m \"Concurrent commit\" --quiet");
                 RunGit(dir, "push origin main");
-                results.Add(true);
+                results[index] = true;
             }
             catch
             {
-                results.Add(false);
+                results[index] = false;
             }
         })).ToArray();
 
         await Task.WhenAll(tasks);
 
         // Assert - At least one should succeed
-        Assert.Contains(true, results);
+        Assert.Contains(true, results.Values);
 
         // The ones that failed should be able to succeed after fetching
-        var failedClones = cloneDirs.Where((dir, i) => !results.ElementAt(i)).ToList();
+        var failedClones = cloneDirs.Where((dir, i) => !results[i]).ToList();
         foreach (var cloneDir in failedClones)
         {
             RunGit(cloneDir, "fetch origin");

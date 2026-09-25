@@ -870,6 +870,336 @@ public sealed class GitSmartHttpServiceTest : IDisposable
         Assert.Equal(3, objectCount); // Only 3 incremental objects, NOT full history (which would be 6)
     }
 
+    [Fact]
+    public async Task HandleUploadPackAsync_WithMultiAck_RespondsWithAckContinue()
+    {
+        var tempWorkDir = Path.Combine(Path.GetTempPath(), "temp-work-multiack", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempWorkDir);
+        string commit1, commit2;
+        try
+        {
+            RunGitInDirectory(tempWorkDir, "init --quiet --initial-branch=main");
+            RunGitInDirectory(tempWorkDir, "config user.name \"Test\"");
+            RunGitInDirectory(tempWorkDir, "config user.email test@test.com");
+
+            File.WriteAllText(Path.Combine(tempWorkDir, "file1.txt"), "content 1");
+            RunGitInDirectory(tempWorkDir, "add file1.txt");
+            RunGitInDirectory(tempWorkDir, "commit -m \"Commit 1\" --quiet");
+            commit1 = TestHelper.RunGit(tempWorkDir, "rev-parse HEAD").Trim();
+
+            File.WriteAllText(Path.Combine(tempWorkDir, "file2.txt"), "content 2");
+            RunGitInDirectory(tempWorkDir, "add file2.txt");
+            RunGitInDirectory(tempWorkDir, "commit -m \"Commit 2\" --quiet");
+            commit2 = TestHelper.RunGit(tempWorkDir, "rev-parse HEAD").Trim();
+
+            RunGitInDirectory(tempWorkDir, $"remote add origin \"{_testRepoPath}\"");
+            RunGitInDirectory(tempWorkDir, "push -u origin main --quiet");
+        }
+        finally
+        {
+            TestHelper.TryDeleteDirectory(tempWorkDir);
+        }
+
+        var service = CreateService();
+        var context = CreateHttpContext("/test-repo.git/git-upload-pack", repository: "test-repo");
+
+        var requestStream = new MemoryStream();
+        await PktLineWriter.WriteStringAsync(requestStream, $"want {commit2} multi_ack\n", CancellationToken.None);
+        await PktLineWriter.WriteFlushAsync(requestStream, CancellationToken.None);
+        await PktLineWriter.WriteStringAsync(requestStream, $"have {commit1}\n", CancellationToken.None);
+        await PktLineWriter.WriteStringAsync(requestStream, "done\n", CancellationToken.None);
+        requestStream.Position = 0;
+        context.Request.Body = requestStream;
+
+        // Act
+        await service.HandleUploadPackAsync(context);
+
+        // Assert
+        Assert.Equal(StatusCodes.Status200OK, context.Response.StatusCode);
+        context.Response.Body.Position = 0;
+
+        var reader = new PktLineReader(context.Response.Body);
+        var ackContinuePacket = await reader.ReadAsync(CancellationToken.None);
+        Assert.NotNull(ackContinuePacket);
+        Assert.Equal($"ACK {commit1} continue\n", ackContinuePacket.Value.AsString());
+
+        var terminalAckPacket = await reader.ReadAsync(CancellationToken.None);
+        Assert.NotNull(terminalAckPacket);
+        Assert.Equal($"ACK {commit1}\n", terminalAckPacket.Value.AsString());
+    }
+
+    [Fact]
+    public async Task HandleUploadPackAsync_WithoutMultiAck_RespondsWithSingleAck()
+    {
+        var tempWorkDir = Path.Combine(Path.GetTempPath(), "temp-work-singleack", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempWorkDir);
+        string commit1, commit2;
+        try
+        {
+            RunGitInDirectory(tempWorkDir, "init --quiet --initial-branch=main");
+            RunGitInDirectory(tempWorkDir, "config user.name \"Test\"");
+            RunGitInDirectory(tempWorkDir, "config user.email test@test.com");
+
+            File.WriteAllText(Path.Combine(tempWorkDir, "file1.txt"), "content 1");
+            RunGitInDirectory(tempWorkDir, "add file1.txt");
+            RunGitInDirectory(tempWorkDir, "commit -m \"Commit 1\" --quiet");
+            commit1 = TestHelper.RunGit(tempWorkDir, "rev-parse HEAD").Trim();
+
+            File.WriteAllText(Path.Combine(tempWorkDir, "file2.txt"), "content 2");
+            RunGitInDirectory(tempWorkDir, "add file2.txt");
+            RunGitInDirectory(tempWorkDir, "commit -m \"Commit 2\" --quiet");
+            commit2 = TestHelper.RunGit(tempWorkDir, "rev-parse HEAD").Trim();
+
+            RunGitInDirectory(tempWorkDir, $"remote add origin \"{_testRepoPath}\"");
+            RunGitInDirectory(tempWorkDir, "push -u origin main --quiet");
+        }
+        finally
+        {
+            TestHelper.TryDeleteDirectory(tempWorkDir);
+        }
+
+        var service = CreateService();
+        var context = CreateHttpContext("/test-repo.git/git-upload-pack", repository: "test-repo");
+
+        var requestStream = new MemoryStream();
+        await PktLineWriter.WriteStringAsync(requestStream, $"want {commit2}\n", CancellationToken.None);
+        await PktLineWriter.WriteFlushAsync(requestStream, CancellationToken.None);
+        await PktLineWriter.WriteStringAsync(requestStream, $"have {commit1}\n", CancellationToken.None);
+        await PktLineWriter.WriteStringAsync(requestStream, "done\n", CancellationToken.None);
+        requestStream.Position = 0;
+        context.Request.Body = requestStream;
+
+        // Act
+        await service.HandleUploadPackAsync(context);
+
+        // Assert
+        Assert.Equal(StatusCodes.Status200OK, context.Response.StatusCode);
+        context.Response.Body.Position = 0;
+
+        var reader = new PktLineReader(context.Response.Body);
+        var ackPacket = await reader.ReadAsync(CancellationToken.None);
+        Assert.NotNull(ackPacket);
+        Assert.Equal($"ACK {commit1}\n", ackPacket.Value.AsString());
+    }
+
+    [Fact]
+    public async Task HandleUploadPackAsync_WithUnknownHaves_RespondsWithNak()
+    {
+        var tempWorkDir = Path.Combine(Path.GetTempPath(), "temp-work-nak", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempWorkDir);
+        string commit1;
+        try
+        {
+            RunGitInDirectory(tempWorkDir, "init --quiet --initial-branch=main");
+            RunGitInDirectory(tempWorkDir, "config user.name \"Test\"");
+            RunGitInDirectory(tempWorkDir, "config user.email test@test.com");
+
+            File.WriteAllText(Path.Combine(tempWorkDir, "file1.txt"), "content 1");
+            RunGitInDirectory(tempWorkDir, "add file1.txt");
+            RunGitInDirectory(tempWorkDir, "commit -m \"Commit 1\" --quiet");
+            commit1 = TestHelper.RunGit(tempWorkDir, "rev-parse HEAD").Trim();
+
+            RunGitInDirectory(tempWorkDir, $"remote add origin \"{_testRepoPath}\"");
+            RunGitInDirectory(tempWorkDir, "push -u origin main --quiet");
+        }
+        finally
+        {
+            TestHelper.TryDeleteDirectory(tempWorkDir);
+        }
+
+        var service = CreateService();
+        var context = CreateHttpContext("/test-repo.git/git-upload-pack", repository: "test-repo");
+
+        var unknownHave = new string('1', 40);
+        var requestStream = new MemoryStream();
+        await PktLineWriter.WriteStringAsync(requestStream, $"want {commit1} multi_ack_detailed\n", CancellationToken.None);
+        await PktLineWriter.WriteFlushAsync(requestStream, CancellationToken.None);
+        await PktLineWriter.WriteStringAsync(requestStream, $"have {unknownHave}\n", CancellationToken.None);
+        await PktLineWriter.WriteStringAsync(requestStream, "done\n", CancellationToken.None);
+        requestStream.Position = 0;
+        context.Request.Body = requestStream;
+
+        // Act
+        await service.HandleUploadPackAsync(context);
+
+        // Assert
+        Assert.Equal(StatusCodes.Status200OK, context.Response.StatusCode);
+        context.Response.Body.Position = 0;
+
+        var reader = new PktLineReader(context.Response.Body);
+        var nakPacket = await reader.ReadAsync(CancellationToken.None);
+        Assert.NotNull(nakPacket);
+        Assert.Equal("NAK\n", nakPacket.Value.AsString());
+    }
+
+    [Fact]
+    public async Task HandleUploadPackAsync_WithDelimiterPacket_ParsesSuccessfully()
+    {
+        var tempWorkDir = Path.Combine(Path.GetTempPath(), "temp-work-delim", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempWorkDir);
+        string commit1;
+        try
+        {
+            RunGitInDirectory(tempWorkDir, "init --quiet --initial-branch=main");
+            RunGitInDirectory(tempWorkDir, "config user.name \"Test\"");
+            RunGitInDirectory(tempWorkDir, "config user.email test@test.com");
+
+            File.WriteAllText(Path.Combine(tempWorkDir, "file1.txt"), "content 1");
+            RunGitInDirectory(tempWorkDir, "add file1.txt");
+            RunGitInDirectory(tempWorkDir, "commit -m \"Commit 1\" --quiet");
+            commit1 = TestHelper.RunGit(tempWorkDir, "rev-parse HEAD").Trim();
+
+            RunGitInDirectory(tempWorkDir, $"remote add origin \"{_testRepoPath}\"");
+            RunGitInDirectory(tempWorkDir, "push -u origin main --quiet");
+        }
+        finally
+        {
+            TestHelper.TryDeleteDirectory(tempWorkDir);
+        }
+
+        var service = CreateService();
+        var context = CreateHttpContext("/test-repo.git/git-upload-pack", repository: "test-repo");
+
+        var requestStream = new MemoryStream();
+        await PktLineWriter.WriteStringAsync(requestStream, $"want {commit1} multi_ack_detailed\n", CancellationToken.None);
+        await PktLineWriter.WriteDelimiterAsync(requestStream, CancellationToken.None);
+        await PktLineWriter.WriteStringAsync(requestStream, "done\n", CancellationToken.None);
+        requestStream.Position = 0;
+        context.Request.Body = requestStream;
+
+        // Act
+        await service.HandleUploadPackAsync(context);
+
+        // Assert
+        Assert.Equal(StatusCodes.Status200OK, context.Response.StatusCode);
+    }
+
+    [Fact]
+    public async Task HandleReceivePackAsync_WithInvalidRefPrefix_ThrowsInvalidOperationException()
+    {
+        var repositoryService = new GitRepositoryService();
+        var repo = repositoryService.GetRepositoryByPath(_testRepoPath);
+        var service = CreateService();
+        var context = CreateHttpContext("/test-repo.git/git-receive-pack", repository: "test-repo");
+
+        var zeroHash = new string('0', 40);
+        var newHash = new string('1', 40);
+        var stream = new MemoryStream();
+        await PktLineWriter.WriteStringAsync(stream, $"{zeroHash} {newHash} invalid-ref\0report-status\n", CancellationToken.None);
+        await PktLineWriter.WriteFlushAsync(stream, CancellationToken.None);
+        await new GitPackBuilder().WriteAsync(repo, Array.Empty<GitHash>(), stream, CancellationToken.None);
+        stream.Position = 0;
+        context.Request.Body = stream;
+
+        // Act & Assert
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(() => service.HandleReceivePackAsync(context));
+        Assert.Contains("References must reside under refs/", ex.Message);
+    }
+
+    [Fact]
+    public async Task HandleReceivePackAsync_WhenRefAlreadyExistsOnCreation_ReturnsNgStatus()
+    {
+        var repositoryService = new GitRepositoryService();
+        var repo = repositoryService.GetRepositoryByPath(_testRepoPath);
+        var commitData = Encoding.UTF8.GetBytes("tree 4b825dc642cb6eb9a060e54bf8d69288fbee4904\nauthor Test <t@t.com> 0 +0000\ncommitter Test <t@t.com> 0 +0000\n\nInitial\n");
+        var commitHash = await repo.ObjectStore.WriteObjectAsync(GitObjectType.Commit, commitData, CancellationToken.None);
+        await repo.ReferenceStore.CreateReferenceAsync("refs/heads/main", commitHash, overwrite: true, CancellationToken.None);
+
+        var service = CreateService();
+        var context = CreateHttpContext("/test-repo.git/git-receive-pack", repository: "test-repo");
+
+        var zeroHash = new string('0', 40);
+        var newHash = new string('1', 40);
+        var stream = new MemoryStream();
+        await PktLineWriter.WriteStringAsync(stream, $"{zeroHash} {newHash} refs/heads/main\0report-status\n", CancellationToken.None);
+        await PktLineWriter.WriteFlushAsync(stream, CancellationToken.None);
+        await new GitPackBuilder().WriteAsync(repo, Array.Empty<GitHash>(), stream, CancellationToken.None);
+        stream.Position = 0;
+        context.Request.Body = stream;
+
+        // Act
+        await service.HandleReceivePackAsync(context);
+
+        // Assert
+        Assert.Equal(StatusCodes.Status200OK, context.Response.StatusCode);
+        context.Response.Body.Position = 0;
+
+        var reader = new PktLineReader(context.Response.Body);
+        var unpackPacket = await reader.ReadAsync(CancellationToken.None);
+        Assert.NotNull(unpackPacket);
+        Assert.Equal("unpack ok\n", unpackPacket.Value.AsString());
+
+        var statusPacket = await reader.ReadAsync(CancellationToken.None);
+        Assert.NotNull(statusPacket);
+        Assert.Equal("ng refs/heads/main reference exists\n", statusPacket.Value.AsString());
+    }
+
+    [Fact]
+    public async Task HandleReceivePackAsync_WhenOldValueMismatches_ReturnsNgNonFastForward()
+    {
+        var repositoryService = new GitRepositoryService();
+        var repo = repositoryService.GetRepositoryByPath(_testRepoPath);
+        var commitData = Encoding.UTF8.GetBytes("tree 4b825dc642cb6eb9a060e54bf8d69288fbee4904\nauthor Test <t@t.com> 0 +0000\ncommitter Test <t@t.com> 0 +0000\n\nInitial\n");
+        var commitHash = await repo.ObjectStore.WriteObjectAsync(GitObjectType.Commit, commitData, CancellationToken.None);
+        await repo.ReferenceStore.CreateReferenceAsync("refs/heads/main", commitHash, overwrite: true, CancellationToken.None);
+
+        var service = CreateService();
+        var context = CreateHttpContext("/test-repo.git/git-receive-pack", repository: "test-repo");
+
+        var wrongOldHash = new string('2', 40);
+        var newHash = new string('3', 40);
+        var stream = new MemoryStream();
+        await PktLineWriter.WriteStringAsync(stream, $"{wrongOldHash} {newHash} refs/heads/main\0report-status\n", CancellationToken.None);
+        await PktLineWriter.WriteFlushAsync(stream, CancellationToken.None);
+        await new GitPackBuilder().WriteAsync(repo, Array.Empty<GitHash>(), stream, CancellationToken.None);
+        stream.Position = 0;
+        context.Request.Body = stream;
+
+        // Act
+        await service.HandleReceivePackAsync(context);
+
+        // Assert
+        Assert.Equal(StatusCodes.Status200OK, context.Response.StatusCode);
+        context.Response.Body.Position = 0;
+
+        var reader = new PktLineReader(context.Response.Body);
+        var unpackPacket = await reader.ReadAsync(CancellationToken.None);
+        Assert.NotNull(unpackPacket);
+        Assert.Equal("unpack ok\n", unpackPacket.Value.AsString());
+
+        var statusPacket = await reader.ReadAsync(CancellationToken.None);
+        Assert.NotNull(statusPacket);
+        Assert.Equal("ng refs/heads/main non-fast-forward\n", statusPacket.Value.AsString());
+    }
+
+    [Fact]
+    public async Task HandleReceivePackAsync_WithCorruptPackfile_ReturnsUnpackError()
+    {
+        var service = CreateService();
+        var context = CreateHttpContext("/test-repo.git/git-receive-pack", repository: "test-repo");
+
+        var zeroHash = new string('0', 40);
+        var newHash = new string('1', 40);
+        var stream = new MemoryStream();
+        await PktLineWriter.WriteStringAsync(stream, $"{zeroHash} {newHash} refs/heads/feature\0report-status\n", CancellationToken.None);
+        await PktLineWriter.WriteFlushAsync(stream, CancellationToken.None);
+        stream.Write(new byte[] { 0xFF, 0xFE, 0xFD, 0xFC, 0xFB, 0xFA, 0x00, 0x01, 0x02, 0x03, 0x04, 0x05 });
+        stream.Position = 0;
+        context.Request.Body = stream;
+
+        // Act
+        await service.HandleReceivePackAsync(context);
+
+        // Assert
+        Assert.Equal(StatusCodes.Status200OK, context.Response.StatusCode);
+        context.Response.Body.Position = 0;
+
+        var reader = new PktLineReader(context.Response.Body);
+        var unpackPacket = await reader.ReadAsync(CancellationToken.None);
+        Assert.NotNull(unpackPacket);
+        Assert.StartsWith("unpack error", unpackPacket.Value.AsString());
+    }
+
     #endregion
 
     #region Path Traversal and Device Name Tests

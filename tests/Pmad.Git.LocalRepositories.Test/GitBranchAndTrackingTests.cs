@@ -6,6 +6,7 @@ using Xunit;
 
 namespace Pmad.Git.LocalRepositories.Test;
 
+[Collection("NonParallelEnvironment")]
 public sealed class GitBranchAndTrackingTests
 {
     [Fact]
