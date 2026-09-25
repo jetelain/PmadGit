@@ -184,5 +184,52 @@ public sealed class GitSidebandStreamTest
             await sideband.ReadAsync(buffer);
         });
     }
+
+    [Fact]
+    public void Read_SynchronousInSingleThreadSynchronizationContext_ReadsWithoutDeadlock()
+    {
+        var prevContext = SynchronizationContext.Current;
+        try
+        {
+            var context = new NoAsyncSynchronizationContext();
+            SynchronizationContext.SetSynchronizationContext(context);
+
+            using var memory = new MemoryStream();
+            var expectedData = Encoding.UTF8.GetBytes("PACK-PAYLOAD-SYNC-READ");
+
+            var packetPayload = new byte[expectedData.Length + 1];
+            packetPayload[0] = 1; // Band 1
+            expectedData.CopyTo(packetPayload, 1);
+
+            // Write packet synchronously to test stream
+            var header = $"{packetPayload.Length + 4:x4}";
+            var headerBytes = Encoding.ASCII.GetBytes(header);
+            memory.Write(headerBytes, 0, headerBytes.Length);
+            memory.Write(packetPayload, 0, packetPayload.Length);
+            var flushBytes = Encoding.ASCII.GetBytes("0000");
+            memory.Write(flushBytes, 0, flushBytes.Length);
+
+            memory.Seek(0, SeekOrigin.Begin);
+
+            using var sideband = new GitSidebandStream(memory);
+            var buffer = new byte[expectedData.Length];
+            var bytesRead = sideband.Read(buffer, 0, buffer.Length);
+
+            Assert.Equal(expectedData.Length, bytesRead);
+            Assert.Equal(expectedData, buffer);
+        }
+        finally
+        {
+            SynchronizationContext.SetSynchronizationContext(prevContext);
+        }
+    }
+
+    private sealed class NoAsyncSynchronizationContext : SynchronizationContext
+    {
+        public override void Post(SendOrPostCallback d, object? state)
+        {
+            throw new InvalidOperationException("Post was called, indicating an asynchronous continuation was scheduled.");
+        }
+    }
 }
 

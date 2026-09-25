@@ -45,6 +45,87 @@ public sealed class PktLineReader
     }
 
     /// <summary>
+    /// Reads the next packet line synchronously from the stream.
+    /// </summary>
+    /// <returns>The parsed <see cref="PktLine"/>, or <see langword="null"/> if the end of the stream was reached.</returns>
+    public PktLine? Read()
+    {
+        var read = ReadExact(_headerBuffer);
+        if (read == 0)
+        {
+            return null;
+        }
+
+        if (read < _headerBuffer.Length)
+        {
+            throw new InvalidDataException("Unexpected end of packet header");
+        }
+
+        var length = ParseLength(_headerBuffer);
+        if (length == 0)
+        {
+            return new PktLine(ReadOnlyMemory<byte>.Empty, IsFlush: true, IsDelimiter: false, IsResponseEnd: false);
+        }
+
+        if (length == 1)
+        {
+            return new PktLine(ReadOnlyMemory<byte>.Empty, IsFlush: false, IsDelimiter: true, IsResponseEnd: false);
+        }
+
+        if (length == 2)
+        {
+            return new PktLine(ReadOnlyMemory<byte>.Empty, IsFlush: false, IsDelimiter: false, IsResponseEnd: true);
+        }
+
+        if (length < 4)
+        {
+            throw new InvalidDataException($"pkt-line length {length} is invalid; control packets are 0, 1, or 2, and data packets must be at least 4 bytes");
+        }
+
+        if (length > 65520)
+        {
+            throw new InvalidDataException($"pkt-line length {length} exceeds maximum allowed packet length of 65520 bytes");
+        }
+
+        var payloadLength = length - 4;
+        var payload = new byte[payloadLength];
+        ReadFully(payload, payloadLength);
+        return new PktLine(payload, IsFlush: false, IsDelimiter: false, IsResponseEnd: false);
+    }
+
+    private int ReadExact(byte[] buffer)
+    {
+        var total = 0;
+        while (total < buffer.Length)
+        {
+            var read = _stream.Read(buffer, total, buffer.Length - total);
+            if (read == 0)
+            {
+                break;
+            }
+
+            total += read;
+        }
+
+        return total;
+    }
+
+    private void ReadFully(byte[] buffer, int length)
+    {
+        var offset = 0;
+        while (offset < length)
+        {
+            var read = _stream.Read(buffer, offset, length - offset);
+            if (read == 0)
+            {
+                throw new EndOfStreamException("Unexpected end of pkt-line payload");
+            }
+
+            offset += read;
+        }
+    }
+
+    /// <summary>
     /// Reads the next packet line from the stream.
     /// </summary>
     /// <param name="cancellationToken">Cancellation token.</param>

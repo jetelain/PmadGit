@@ -116,4 +116,17 @@ public class GitCliRepositoryBranchTests
 
         Assert.Contains(branches, b => b.Contains("origin/" + GitCliTestRepository.DefaultBranch));
     }
+
+    [Theory]
+    [InlineData("-bad-branch")]
+    [InlineData("--orphan")]
+    public async Task CheckoutAsync_WithLeadingHyphenBranch_DoesNotInjectOption(string branchName)
+    {
+        using var repo = GitCliTestRepository.Create();
+        var repository = new GitCliRepository(repo.WorkingDirectory);
+
+        // Git CLI will reject the branch name syntax, but should not treat it as a CLI option switch
+        var ex = await Assert.ThrowsAsync<GitCliException>(() => repository.CheckoutAsync(branchName, createNew: true));
+        Assert.Contains("not a valid branch name", ex.StdErr);
+    }
 }

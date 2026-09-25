@@ -22,8 +22,11 @@ public class GitRunnerTests
         var runner = new GitRunner();
         using var cts = new CancellationTokenSource();
 
-        // "git hash-object --stdin" blocks waiting for input on stdin, so it stays alive until killed.
-        var runTask = runner.RunGit(Path.GetTempPath(), new[] { "hash-object", "--stdin" }, cts.Token);
+        // A blocking command so git stays alive until cancelled and killed.
+        var sleepCommand = OperatingSystem.IsWindows()
+            ? "!powershell -NoProfile -Command Start-Sleep 10"
+            : "!sleep 10";
+        var runTask = runner.RunGit(Path.GetTempPath(), new[] { "-c", $"alias.block={sleepCommand}", "block" }, cts.Token);
 
         // Give the process a moment to start before cancelling.
         await Task.Delay(200);

@@ -271,6 +271,104 @@ public sealed class GitMultiClientSynchronizerEndToEndTests : IDisposable
     }
 
     [Fact]
+    public async Task ConcurrentCommits_AutoReconciles_CleanlyMergesAndPushesWithoutStalling()
+    {
+        // Arrange
+        var initialContent = "shared content\n";
+        CreateServerRepository("autoreconcile-sync", new[] { ("shared.txt", initialContent) });
+        await StartServerAsync();
+
+        var clientA = _testServer!.CreateClient();
+        var clientB = _testServer!.CreateClient();
+
+        var dirA = Path.Combine(_clientWorkingDir, "reconcile-repo-a");
+        var dirB = Path.Combine(_clientWorkingDir, "reconcile-repo-b");
+
+        using var clientRepoA = await GitRemoteClientRepository.CloneAsync(
+            "http://localhost/autoreconcile-sync.git",
+            dirA,
+            new GitRemoteClientOptions { HttpClient = clientA });
+
+        using var clientRepoB = await GitRemoteClientRepository.CloneAsync(
+            "http://localhost/autoreconcile-sync.git",
+            dirB,
+            new GitRemoteClientOptions { HttpClient = clientB });
+
+        var syncOptionsA = new GitRemoteClientSyncOptions
+        {
+            Url = "http://localhost/autoreconcile-sync.git",
+            ClientOptions = new GitRemoteClientOptions { HttpClient = clientA },
+            PushDebounceDelay = TimeSpan.FromMilliseconds(50),
+            PullInterval = TimeSpan.FromMilliseconds(200)
+        };
+        await using var synchronizerA = clientRepoA.LocalRepository.CreateSynchronizer(syncOptionsA, start: false);
+
+        var syncOptionsB = new GitRemoteClientSyncOptions
+        {
+            Url = "http://localhost/autoreconcile-sync.git",
+            ClientOptions = new GitRemoteClientOptions { HttpClient = clientB },
+            PushDebounceDelay = TimeSpan.FromMilliseconds(50),
+            PullInterval = TimeSpan.FromMilliseconds(200)
+        };
+        await using var synchronizerB = clientRepoB.LocalRepository.CreateSynchronizer(syncOptionsB, start: false);
+
+        // Step 1: Commit and push in Repo A
+        await File.WriteAllTextAsync(Path.Combine(dirA, "fileA.txt"), "hello from A\n");
+        await clientRepoA.WorkspaceRepository!.StageAsync("fileA.txt");
+        var commitA = await clientRepoA.WorkspaceRepository!.CommitAsync("Commit in Repo A");
+
+        synchronizerA.NotifyLocalChange();
+        await synchronizerA.FlushPendingPushAsync();
+
+        var serverRepoPath = Path.Combine(_serverRepoRoot, "autoreconcile-sync.git");
+        var serverRepo = GitRepository.Open(serverRepoPath);
+        serverRepo.InvalidateCaches();
+        var serverHead = await serverRepo.ReferenceStore.TryResolveReferenceAsync("refs/heads/main");
+        Assert.Equal(commitA, serverHead);
+
+        // Step 2: Concurrent non-conflicting commit in Repo B (before pulling Commit A)
+        await File.WriteAllTextAsync(Path.Combine(dirB, "fileB.txt"), "hello from B\n");
+        await clientRepoB.WorkspaceRepository!.StageAsync("fileB.txt");
+        var commitB = await clientRepoB.WorkspaceRepository!.CommitAsync("Commit in Repo B");
+
+        // Step 3: Repo B flushes pending push -> non-fast-forward rejection -> auto-reconcile (pulls A, 3-way merges, retries push)
+        synchronizerB.NotifyLocalChange();
+        await synchronizerB.FlushPendingPushAsync();
+
+        // Verify synchronizer B successfully auto-reconciled, cleanly merged, and pushed to server
+        Assert.Equal(GitSyncState.Idle, synchronizerB.State);
+        Assert.Null(synchronizerB.Conflict);
+
+        var headB = await clientRepoB.LocalRepository.ReferenceStore.ResolveHeadAsync();
+        Assert.NotEqual(GitHash.Zero, headB);
+        Assert.NotEqual(commitA, headB);
+        Assert.NotEqual(commitB, headB);
+
+        serverRepo.InvalidateCaches();
+        var serverHeadAfterReconcile = await serverRepo.ReferenceStore.TryResolveReferenceAsync("refs/heads/main");
+        Assert.Equal(headB, serverHeadAfterReconcile);
+
+        // Both files exist in Repo B
+        Assert.True(File.Exists(Path.Combine(dirB, "fileA.txt")));
+        Assert.True(File.Exists(Path.Combine(dirB, "fileB.txt")));
+        Assert.Equal("hello from A\n", await File.ReadAllTextAsync(Path.Combine(dirB, "fileA.txt")));
+        Assert.Equal("hello from B\n", await File.ReadAllTextAsync(Path.Combine(dirB, "fileB.txt")));
+
+        // Step 4: Repo A pulls the merge commit
+        await synchronizerA.TriggerRemoteSyncAsync();
+
+        var headA = await clientRepoA.LocalRepository.ReferenceStore.ResolveHeadAsync();
+        Assert.Equal(headB, headA);
+
+        // Both files exist in Repo A
+        Assert.True(File.Exists(Path.Combine(dirA, "fileA.txt")));
+        Assert.True(File.Exists(Path.Combine(dirA, "fileB.txt")));
+        Assert.Equal("hello from A\n", await File.ReadAllTextAsync(Path.Combine(dirA, "fileA.txt")));
+        Assert.Equal("hello from B\n", await File.ReadAllTextAsync(Path.Combine(dirA, "fileB.txt")));
+        Assert.Equal(GitSyncState.Idle, synchronizerA.State);
+    }
+
+    [Fact]
     public async Task HttpServer_SynchronizerService_SetupSynchronizer_WithRemoteClient_CachesAndSyncs()
     {
         CreateServerRepository("service-sync", new[] { ("file.txt", "v1") });

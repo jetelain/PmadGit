@@ -193,7 +193,19 @@ public sealed class GitRepositorySynchronizer : IAsyncDisposable
     /// <see cref="SyncError"/> instead of throwing, and the change remains pending so it is retried
     /// on the next debounced or manual push.
     /// </summary>
-    public async Task FlushPendingPushAsync(CancellationToken cancellationToken = default)
+    private const int MaxAutoReconcileAttempts = 3;
+
+    /// <summary>
+    /// Immediately pushes local changes to the remote, cancelling any pending debounce delay.
+    /// Does nothing when there is no pending change, a synchronization is already running, or a
+    /// conflict is pending resolution. If the push fails, the failure is reported via
+    /// <see cref="SyncError"/> instead of throwing, and the change remains pending so it is retried
+    /// on the next debounced or manual push.
+    /// </summary>
+    public Task FlushPendingPushAsync(CancellationToken cancellationToken = default)
+        => FlushPendingPushCoreAsync(0, cancellationToken);
+
+    private async Task FlushPendingPushCoreAsync(int reconcileAttempt, CancellationToken cancellationToken)
     {
         if (_disposed || !_pushPending || _state == GitSyncState.Conflict)
         {
@@ -217,6 +229,7 @@ public sealed class GitRepositorySynchronizer : IAsyncDisposable
             }
             return;
         }
+        var needsAutoReconcile = false;
         try
         {
             if (_disposed || !_pushPending || _state == GitSyncState.Conflict)
@@ -247,6 +260,19 @@ public sealed class GitRepositorySynchronizer : IAsyncDisposable
                 _pushPending = true;
                 throw;
             }
+            catch (Exception ex) when (IsNonFastForwardRejection(ex))
+            {
+                if (reconcileAttempt < MaxAutoReconcileAttempts)
+                {
+                    needsAutoReconcile = true;
+                }
+                else
+                {
+                    _pushPending = true;
+                    SyncError?.Invoke(this, ex);
+                    return;
+                }
+            }
             catch (Exception ex)
             {
                 // Restore the pending flag so the change is retried on the next debounced/manual
@@ -260,7 +286,11 @@ public sealed class GitRepositorySynchronizer : IAsyncDisposable
             {
                 EndSelfOperation();
             }
-            _lastSuccessfulSyncAt = DateTimeOffset.UtcNow;
+
+            if (!needsAutoReconcile)
+            {
+                _lastSuccessfulSyncAt = DateTimeOffset.UtcNow;
+            }
         }
         finally
         {
@@ -270,6 +300,59 @@ public sealed class GitRepositorySynchronizer : IAsyncDisposable
             }
             _gate.Release();
         }
+
+        if (needsAutoReconcile && !_disposed && _state != GitSyncState.Conflict)
+        {
+            try
+            {
+                await TriggerRemoteSyncAsync(cancellationToken).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                _pushPending = true;
+                throw;
+            }
+            catch (Exception ex)
+            {
+                _pushPending = true;
+                SyncError?.Invoke(this, ex);
+                return;
+            }
+
+            if (_state == GitSyncState.Conflict)
+            {
+                _pushPending = true;
+                return;
+            }
+
+            _pushPending = true;
+            await FlushPendingPushCoreAsync(reconcileAttempt + 1, cancellationToken).ConfigureAwait(false);
+        }
+    }
+
+    private static bool IsNonFastForwardRejection(Exception ex)
+    {
+        var text = ex.ToString();
+        if (text.Contains("non-fast-forward", StringComparison.OrdinalIgnoreCase) ||
+            text.Contains("fetch first", StringComparison.OrdinalIgnoreCase) ||
+            text.Contains("tip of your current branch is behind", StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        if (text.Contains("[rejected]", StringComparison.OrdinalIgnoreCase) ||
+            text.Contains("rejected", StringComparison.OrdinalIgnoreCase))
+        {
+            if (!text.Contains("hook declined", StringComparison.OrdinalIgnoreCase) &&
+                !text.Contains("permission", StringComparison.OrdinalIgnoreCase) &&
+                !text.Contains("unauthorized", StringComparison.OrdinalIgnoreCase) &&
+                !text.Contains("denied", StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /// <summary>
