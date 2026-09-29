@@ -10,20 +10,86 @@ namespace Pmad.Git.CliEmulator;
 /// Managed Git CLI emulator that dispatches git-like commands against a local
 /// <see cref="IGitWorkspaceRepository"/> and optional <see cref="IGitRepositoryWithRemote"/>.
 /// </summary>
-public sealed class GitCliEmulator
+public sealed class GitCliEmulator : IDisposable, IAsyncDisposable
 {
     private readonly IGitWorkspaceRepository _repository;
     private readonly IGitRepositoryWithRemote? _remote;
+    private readonly bool _disposeRepositories;
+
+    /// <summary>
+    /// Gets the underlying local workspace repository.
+    /// </summary>
+    public IGitWorkspaceRepository Repository => _repository;
+
+    /// <summary>
+    /// Gets the underlying remote client repository, or <see langword="null"/> if not configured.
+    /// </summary>
+    public IGitRepositoryWithRemote? Remote => _remote;
 
     /// <summary>
     /// Initializes a new instance of <see cref="GitCliEmulator"/>.
     /// </summary>
+    /// <param name="repository">The local workspace repository (required).</param>
+    /// <param name="remote">Optional remote client.</param>
+    /// <param name="disposeRepositories">
+    /// When <see langword="true"/>, the emulator disposes <paramref name="repository"/> and <paramref name="remote"/>
+    /// when the emulator is disposed. Defaults to <see langword="false"/>.
+    /// </param>
     public GitCliEmulator(
         IGitWorkspaceRepository repository,
-        IGitRepositoryWithRemote? remote = null)
+        IGitRepositoryWithRemote? remote = null,
+        bool disposeRepositories = false)
     {
         _repository = repository ?? throw new ArgumentNullException(nameof(repository));
         _remote = remote;
+        _disposeRepositories = disposeRepositories;
+    }
+
+    /// <summary>
+    /// Initializes a new instance of <see cref="GitCliEmulator"/> wrapping an existing managed <see cref="GitRemoteClientRepository"/>.
+    /// </summary>
+    /// <param name="remoteClient">The remote client repository with an active workspace.</param>
+    /// <param name="disposeRepositories">
+    /// When <see langword="true"/>, the emulator disposes <paramref name="remoteClient"/>
+    /// when the emulator is disposed. Defaults to <see langword="false"/>.
+    /// </param>
+    /// <exception cref="ArgumentException">Thrown when the repository is bare or lacks an active workspace.</exception>
+    public GitCliEmulator(GitRemoteClientRepository remoteClient, bool disposeRepositories = false)
+        : this(
+            remoteClient?.WorkspaceRepository ?? throw new ArgumentException("A non-bare repository with an active workspace is required.", nameof(remoteClient)),
+            remoteClient,
+            disposeRepositories)
+    {
+    }
+
+    /// <summary>
+    /// Opens a local Git repository and configures a pure managed stack (<see cref="GitRepositoryWithIndexAndWorkspace"/>
+    /// and <see cref="GitRemoteClientRepository"/>).
+    /// </summary>
+    /// <param name="path">Path to the working directory or .git directory of the repository.</param>
+    /// <param name="remoteOptions">Optional client options for HTTP communication, credentials, and timeouts.</param>
+    /// <param name="defaultRemoteUrl">Optional default remote URL.</param>
+    /// <param name="lockManager">Optional lock manager for concurrency control.</param>
+    /// <returns>A new <see cref="GitCliEmulator"/> instance that manages the lifetime of the underlying repositories.</returns>
+    public static GitCliEmulator Open(
+        string path,
+        GitRemoteClientOptions? remoteOptions = null,
+        string? defaultRemoteUrl = null,
+        IGitRepositoryLockManager? lockManager = null)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(path);
+
+        var localRepo = GitRepositoryWithIndexAndWorkspace.Open(path, lockManager);
+        try
+        {
+            var remoteRepo = new GitRemoteClientRepository(localRepo, defaultRemoteUrl, remoteOptions);
+            return new GitCliEmulator(localRepo, remoteRepo, disposeRepositories: true);
+        }
+        catch
+        {
+            localRepo.Dispose();
+            throw;
+        }
     }
 
     /// <summary>
@@ -113,5 +179,46 @@ public sealed class GitCliEmulator
         root.Subcommands.Add(PushCommand.Build(ctx));
 
         return root;
+    }
+
+    /// <inheritdoc />
+    public void Dispose()
+    {
+        if (_disposeRepositories)
+        {
+            if (_remote is IDisposable disposableRemote)
+            {
+                disposableRemote.Dispose();
+            }
+            if (_repository is IDisposable disposableWorkspace)
+            {
+                disposableWorkspace.Dispose();
+            }
+        }
+    }
+
+    /// <inheritdoc />
+    public async ValueTask DisposeAsync()
+    {
+        if (_disposeRepositories)
+        {
+            if (_remote is IAsyncDisposable asyncRemote)
+            {
+                await asyncRemote.DisposeAsync().ConfigureAwait(false);
+            }
+            else if (_remote is IDisposable disposableRemote)
+            {
+                disposableRemote.Dispose();
+            }
+
+            if (_repository is IAsyncDisposable asyncWorkspace)
+            {
+                await asyncWorkspace.DisposeAsync().ConfigureAwait(false);
+            }
+            else if (_repository is IDisposable disposableWorkspace)
+            {
+                disposableWorkspace.Dispose();
+            }
+        }
     }
 }

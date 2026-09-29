@@ -16,13 +16,28 @@ Managed Git CLI emulator for AI agents on top of `Pmad.Git.LocalRepositories` an
 
 ## Usage
 
+### Streamlined One-Liner (Full Managed Stack)
+
+```csharp
+using Pmad.Git.CliEmulator;
+using Pmad.Git.RemoteClient;
+
+// Automatically opens local workspace and sets up managed Smart HTTP remote client:
+using var emulator = GitCliEmulator.Open(repositoryPath, new GitRemoteClientOptions
+{
+    Credentials = new GitHttpCredentials("pat", "my-token")
+});
+
+var response = await emulator.InvokeAsync(["status"], userApproval);
+Console.WriteLine(response.StdOut);
+```
+
+### Fluent Extension Methods
+
 ```csharp
 using Pmad.Git.CliEmulator;
 using Pmad.Git.LocalRepositories;
 
 using var repo = GitRepositoryWithIndexAndWorkspace.Open(repositoryPath);
-var emulator = new GitCliEmulator(repo);
-
-var response = await emulator.InvokeAsync(["status"], userApproval);
-Console.WriteLine(response.StdOut);
+var emulator = repo.CreateCliEmulator();
 ```
