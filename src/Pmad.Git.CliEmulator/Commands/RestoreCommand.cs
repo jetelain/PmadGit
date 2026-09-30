@@ -40,12 +40,13 @@ internal static class RestoreCommand
                 }
 
                 await ApprovalHelper.RequireAsync(
-                    ctx.Approval.ApproveDiscardLocalChangesAsync(new DiscardChangesContext
+                    new DiscardChangesContext
                     {
                         Operation = source != null ? $"restore --source {source}" : "restore",
                         AffectedFiles = paths,
-                    }, ct),
-                    "restore");
+                    },
+                    ctx.Approval.ApproveDiscardLocalChangesAsync,
+                    ct);
 
                 if (staged)
                 {

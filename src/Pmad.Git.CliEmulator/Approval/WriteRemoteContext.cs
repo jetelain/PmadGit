@@ -4,7 +4,7 @@ namespace Pmad.Git.CliEmulator.Approval;
 /// Context passed to <see cref="IUserApproval.ApproveWriteRemoteAsync"/> describing
 /// a push operation.
 /// </summary>
-public sealed class WriteRemoteContext
+public sealed class WriteRemoteContext : IApprovalContext
 {
     /// <summary>Name of the remote (e.g. "origin").</summary>
     public string RemoteName { get; init; } = string.Empty;
@@ -20,4 +20,6 @@ public sealed class WriteRemoteContext
 
     /// <summary>Number of local commits ahead of the remote tracking branch.</summary>
     public int CommitsAhead { get; init; }
+
+    string IApprovalContext.Operation => "push";
 }

@@ -39,12 +39,13 @@ internal static class MergeCommand
                 {
                     var conflicts = await ctx.Repository.GetConflictedFilesAsync(ct);
                     await ApprovalHelper.RequireAsync(
-                        ctx.Approval.ApproveDiscardLocalChangesAsync(new DiscardChangesContext
+                        new DiscardChangesContext
                         {
                             Operation = "merge --abort",
                             AffectedFiles = conflicts,
-                        }, ct),
-                        "merge --abort");
+                        }, 
+                        ctx.Approval.ApproveDiscardLocalChangesAsync, 
+                        ct);
                     await ctx.Repository.AbortMergeAsync(ct);
                     await ctx.StdOut.WriteLineAsync("Merge aborted.");
                     return 0;

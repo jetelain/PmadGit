@@ -37,28 +37,30 @@ internal static class PushCommand
                 var remoteUrl = await FetchCommand.ResolveRemoteUrlAsync(ctx, remoteName, ct);
 
                 await ApprovalHelper.RequireAsync(
-                    ctx.Approval.ApproveWriteRemoteAsync(new WriteRemoteContext
+                    new WriteRemoteContext
                     {
                         RemoteName = remoteName,
                         RemoteUrl = ApprovalHelper.SanitizeUrl(remoteUrl),
                         BranchName = currentBranch,
                         IsForce = force,
                         CommitsAhead = tracking.AheadCount,
-                    }, ct),
-                    "push");
+                    },
+                    ctx.Approval.ApproveWriteRemoteAsync, 
+                    ct);
 
                 if (force)
                 {
                     var headCommit = await ctx.Repository.GetCommitAsync(cancellationToken: ct);
                     await ApprovalHelper.RequireAsync(
-                        ctx.Approval.ApproveHistoryRewriteAsync(new HistoryRewriteContext
+                        new HistoryRewriteContext
                         {
                             Operation = "push --force",
                             BranchName = currentBranch,
                             AffectedCommits = [ApprovalHelper.ToSummary(headCommit)],
                             InvolvesRemotePush = true,
-                        }, ct),
-                        "push --force");
+                        },
+                        ctx.Approval.ApproveHistoryRewriteAsync,
+                        ct);
                 }
 
                 await remote.PushAsync(remoteName, branch, force, setUpstream, ct);

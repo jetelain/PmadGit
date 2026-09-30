@@ -4,7 +4,7 @@ namespace Pmad.Git.CliEmulator.Approval;
 /// Context passed to <see cref="IUserApproval.ApproveReadRemoteAsync"/> describing
 /// an operation that reads from a remote (fetch, pull).
 /// </summary>
-public sealed class ReadRemoteContext
+public sealed class ReadRemoteContext : IApprovalContext
 {
     /// <summary>Name of the remote (e.g. "origin").</summary>
     public string RemoteName { get; init; } = string.Empty;

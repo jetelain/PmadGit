@@ -4,7 +4,7 @@ namespace Pmad.Git.CliEmulator.Approval;
 /// Context passed to <see cref="IUserApproval.ApproveUnpushedCommitLossAsync"/> describing
 /// local commits that are not reachable from any remote ref and will be lost.
 /// </summary>
-public sealed class UnpushedCommitLossContext
+public sealed class UnpushedCommitLossContext : IApprovalContext
 {
     /// <summary>Human-readable name of the operation (e.g. "branch -D", "reset --mixed").</summary>
     public string Operation { get; init; } = string.Empty;

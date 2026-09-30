@@ -7,22 +7,22 @@ namespace Pmad.Git.CliEmulator.Internal;
 internal static class ApprovalHelper
 {
     /// <summary>
-    /// Awaits the given approval task and throws the appropriate exception if not approved.
+    /// Awaits the given approval method and throws the appropriate exception if not approved.
     /// <list type="bullet">
     ///   <item><see cref="ApprovalResult.Denied"/> → throws <see cref="GitCliDeniedException"/>.</item>
     ///   <item><see cref="ApprovalResult.Cancelled"/> → throws <see cref="OperationCanceledException"/>.</item>
     /// </list>
     /// </summary>
-    public static async Task RequireAsync(Task<ApprovalResult> approvalTask, string operationName)
+    public static async Task RequireAsync<T>(T context, Func<T, CancellationToken, Task<ApprovalResult>> approvalMethod, CancellationToken ct) where T : class, IApprovalContext
     {
-        var result = await approvalTask.ConfigureAwait(false);
+        var result = await approvalMethod(context, ct).ConfigureAwait(false);
         if (result == ApprovalResult.Denied)
         {
-            throw new GitCliDeniedException(operationName);
+            throw new GitCliDeniedException(context.Operation);
         }
         if (result == ApprovalResult.Cancelled)
         {
-            throw new OperationCanceledException($"Approval for '{operationName}' was cancelled.");
+            throw new OperationCanceledException($"Approval for '{context.Operation}' was cancelled.");
         }
     }
 

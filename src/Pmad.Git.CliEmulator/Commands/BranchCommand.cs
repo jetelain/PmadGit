@@ -49,13 +49,14 @@ internal static class BranchCommand
                     if (forceDelete || lost.Count > 0)
                     {
                         await ApprovalHelper.RequireAsync(
-                            ctx.Approval.ApproveUnpushedCommitLossAsync(new UnpushedCommitLossContext
+                            new UnpushedCommitLossContext
                             {
                                 Operation = forceDelete ? "branch -D" : "branch -d",
                                 BranchName = name,
                                 CommitsToLose = lost,
-                            }, ct),
-                            forceDelete ? "branch -D" : "branch -d");
+                            },
+                            ctx.Approval.ApproveUnpushedCommitLossAsync,
+                            ct);
                     }
                     await ctx.Repository.DeleteBranchAsync(name, force: forceDelete, ct);
                     await ctx.StdOut.WriteLineAsync($"Deleted branch {name}.");

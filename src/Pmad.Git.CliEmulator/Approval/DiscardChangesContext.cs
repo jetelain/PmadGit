@@ -4,7 +4,7 @@ namespace Pmad.Git.CliEmulator.Approval;
 /// Context passed to <see cref="IUserApproval.ApproveDiscardLocalChangesAsync"/> describing
 /// working-tree changes that will be permanently lost.
 /// </summary>
-public sealed class DiscardChangesContext
+public sealed class DiscardChangesContext : IApprovalContext
 {
     /// <summary>Human-readable name of the operation (e.g. "reset --hard", "restore").</summary>
     public string Operation { get; init; } = string.Empty;

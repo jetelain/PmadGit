@@ -33,14 +33,15 @@ internal static class CommitCommand
                     {
                         var branch = await ctx.Repository.GetCurrentBranchNameAsync(ct) ?? "HEAD";
                         await ApprovalHelper.RequireAsync(
-                            ctx.Approval.ApproveHistoryRewriteAsync(new HistoryRewriteContext
+                            new HistoryRewriteContext
                             {
                                 Operation = "commit --amend",
                                 BranchName = branch,
                                 AffectedCommits = [ApprovalHelper.ToSummary(headCommit)],
                                 InvolvesRemotePush = false,
-                            }, ct),
-                            "commit --amend");
+                            }, 
+                            ctx.Approval.ApproveHistoryRewriteAsync, 
+                            ct);
                     }
 
                     var hash = await ctx.Repository.CommitAmendAsync(message, stageAll: all, cancellationToken: ct);

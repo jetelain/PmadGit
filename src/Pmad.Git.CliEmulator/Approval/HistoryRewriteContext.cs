@@ -4,7 +4,7 @@ namespace Pmad.Git.CliEmulator.Approval;
 /// Context passed to <see cref="IUserApproval.ApproveHistoryRewriteAsync"/> describing
 /// a history-rewriting operation (amend of pushed commit, force-push).
 /// </summary>
-public sealed class HistoryRewriteContext
+public sealed class HistoryRewriteContext : IApprovalContext
 {
     /// <summary>Human-readable name of the operation (e.g. "commit --amend", "push --force").</summary>
     public string Operation { get; init; } = string.Empty;

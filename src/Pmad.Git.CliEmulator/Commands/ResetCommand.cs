@@ -40,13 +40,14 @@ internal static class ResetCommand
                     if (lost.Count > 0)
                     {
                         await ApprovalHelper.RequireAsync(
-                            ctx.Approval.ApproveUnpushedCommitLossAsync(new UnpushedCommitLossContext
+                            new UnpushedCommitLossContext
                             {
                                 Operation = $"reset {(hard ? "--hard" : soft ? "--soft" : "--mixed")}",
                                 BranchName = branch,
                                 CommitsToLose = lost,
-                            }, ct),
-                            "reset");
+                            },
+                            ctx.Approval.ApproveUnpushedCommitLossAsync, 
+                            ct);
                     }
                 }
 
@@ -61,12 +62,13 @@ internal static class ResetCommand
                     if (changedFiles.Count > 0)
                     {
                         await ApprovalHelper.RequireAsync(
-                            ctx.Approval.ApproveDiscardLocalChangesAsync(new DiscardChangesContext
+                            new DiscardChangesContext
                             {
                                 Operation = "reset --hard",
                                 AffectedFiles = changedFiles,
-                            }, ct),
-                            "reset --hard");
+                            },
+                            ctx.Approval.ApproveDiscardLocalChangesAsync, 
+                            ct);
                     }
                 }
 

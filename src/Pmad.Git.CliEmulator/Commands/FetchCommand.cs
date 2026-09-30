@@ -32,14 +32,15 @@ internal static class FetchCommand
             {
                 var remoteUrl = await ResolveRemoteUrlAsync(ctx, remoteName, ct);
                 await ApprovalHelper.RequireAsync(
-                    ctx.Approval.ApproveReadRemoteAsync(new ReadRemoteContext
+                    new ReadRemoteContext
                     {
                         Operation = "fetch",
                         RemoteName = remoteName,
                         RemoteUrl = ApprovalHelper.SanitizeUrl(remoteUrl),
                         Branch = branch,
-                    }, ct),
-                    "fetch");
+                    }, 
+                    ctx.Approval.ApproveReadRemoteAsync, 
+                    ct);
                 await remote.FetchAsync(remoteName, branch, prune, ct);
                 await ctx.StdOut.WriteLineAsync("Fetch complete.");
                 return 0;

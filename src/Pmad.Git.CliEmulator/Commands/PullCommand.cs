@@ -29,14 +29,15 @@ internal static class PullCommand
             {
                 var remoteUrl = await FetchCommand.ResolveRemoteUrlAsync(ctx, remoteName, ct);
                 await ApprovalHelper.RequireAsync(
-                    ctx.Approval.ApproveReadRemoteAsync(new ReadRemoteContext
+                    new ReadRemoteContext
                     {
                         Operation = "pull",
                         RemoteName = remoteName,
                         RemoteUrl = ApprovalHelper.SanitizeUrl(remoteUrl),
                         Branch = branch,
-                    }, ct),
-                    "pull");
+                    },
+                    ctx.Approval.ApproveReadRemoteAsync,
+                    ct);
                 var result = await remote.PullAsync(remoteName, branch, rebase: false, ct);
                 if (result.IsSuccess)
                 {
