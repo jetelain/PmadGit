@@ -117,6 +117,34 @@ public class GitAIFunctionFactoryTests
         Assert.Contains("new file", result.ToLowerInvariant());
     }
 
+    [Fact]
+    public async Task CreateFromString_LogNegativeNumber_Works()
+    {
+        using var testRepo = GitTestRepository.Create();
+        using var emulator = GitCliEmulator.Open(testRepo.WorkingDirectory);
+        var fn = GitAIFunctionFactory.CreateFromString(emulator);
+
+        var result = await InvokeWithStringAsync(fn, "log --oneline -10");
+
+        Assert.Contains("Initial commit", result);
+    }
+
+    [Fact]
+    public async Task CreateFromString_EmptyQuotedArgument_Preserved()
+    {
+        using var testRepo = GitTestRepository.Create();
+        using var emulator = GitCliEmulator.Open(testRepo.WorkingDirectory);
+        var fn = GitAIFunctionFactory.CreateFromString(emulator);
+
+        // Setting a config key to empty string
+        var result = await InvokeWithStringAsync(fn, "config test.key \"\"");
+
+        Assert.DoesNotContain("[exit ", result);
+
+        var getResult = await InvokeWithStringAsync(fn, "config --get test.key");
+        Assert.Equal("(success, no output)", getResult.Trim());
+    }
+
     // ── Extension methods ──────────────────────────────────────────────────
 
     [Fact]

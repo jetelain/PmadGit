@@ -32,6 +32,10 @@ internal static class PushCommand
 
             try
             {
+                if (branch == null && await ctx.Repository.IsHeadDetachedAsync(ct))
+                {
+                    return ctx.WriteFatal("You are not currently on a branch.");
+                }
                 var currentBranch = branch ?? await ctx.Repository.GetCurrentBranchNameAsync(ct) ?? "HEAD";
                 var tracking = await ctx.Repository.GetTrackingStatusAsync(currentBranch, ct);
                 var remoteUrl = await FetchCommand.ResolveRemoteUrlAsync(ctx, remoteName, ct);

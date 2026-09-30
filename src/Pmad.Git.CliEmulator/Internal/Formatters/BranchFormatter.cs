@@ -21,11 +21,9 @@ internal static class BranchFormatter
 
             if (verbose)
             {
-                GitHash? tip = null;
                 try
                 {
                     var commit = await repo.GetCommitAsync($"refs/heads/{branch}", ct).ConfigureAwait(false);
-                    tip = commit.Id;
                     var shortHash = commit.Id.ToString()[..7];
                     var subject = commit.Message.Split('\n', 2)[0].Trim();
                     await writer.WriteLineAsync($"{prefix}{branch,-30} {shortHash} {subject}").ConfigureAwait(false);

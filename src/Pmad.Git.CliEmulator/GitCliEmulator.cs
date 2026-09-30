@@ -114,7 +114,7 @@ public sealed class GitCliEmulator : IGitCliEmulator, IDisposable, IAsyncDisposa
         int exitCode;
         try
         {
-            var parseResult = rootCommand.Parse(args);
+            var parseResult = rootCommand.Parse(NormalizeArgs(args));
             exitCode = await parseResult.InvokeAsync(invocationConfig, cancellationToken)
                 .ConfigureAwait(false);
         }
@@ -177,6 +177,44 @@ public sealed class GitCliEmulator : IGitCliEmulator, IDisposable, IAsyncDisposa
         root.Subcommands.Add(PushCommand.Build(ctx));
 
         return root;
+    }
+
+    internal static string[] NormalizeArgs(string[] args)
+    {
+        if (args.Length == 0)
+        {
+            return args;
+        }
+
+        var isLog = false;
+        var list = new List<string>(args.Length);
+
+        for (var i = 0; i < args.Length; i++)
+        {
+            var arg = args[i];
+            if (!isLog)
+            {
+                if (arg == "log")
+                {
+                    isLog = true;
+                }
+                list.Add(arg);
+            }
+            else
+            {
+                if (arg.Length > 1 && arg[0] == '-' && int.TryParse(arg.AsSpan(1), out var count) && count >= 0)
+                {
+                    list.Add("-n");
+                    list.Add(arg[1..]);
+                }
+                else
+                {
+                    list.Add(arg);
+                }
+            }
+        }
+
+        return [.. list];
     }
 
     /// <inheritdoc />

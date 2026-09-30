@@ -31,42 +31,50 @@ internal static class RestoreCommand
                 return ctx.WriteError("No paths specified.");
             }
 
+            var targetWorktree = worktree || !staged;
+            var targetStaged = staged;
+
             try
             {
-                if (staged && !worktree && source == null)
+                if (targetWorktree)
                 {
-                    await ctx.Repository.UnstageAsync(paths, ct);
-                    return 0;
+                    await ApprovalHelper.RequireAsync(
+                        new DiscardChangesContext
+                        {
+                            Operation = source != null ? $"restore --source {source}" : "restore",
+                            AffectedFiles = paths,
+                        },
+                        ctx.Approval.ApproveDiscardLocalChangesAsync,
+                        ct);
                 }
 
-                await ApprovalHelper.RequireAsync(
-                    new DiscardChangesContext
-                    {
-                        Operation = source != null ? $"restore --source {source}" : "restore",
-                        AffectedFiles = paths,
-                    },
-                    ctx.Approval.ApproveDiscardLocalChangesAsync,
-                    ct);
-
-                if (staged)
+                if (targetStaged)
                 {
                     await ctx.Repository.UnstageAsync(paths, ct);
                 }
 
-                if (source != null)
+                if (targetWorktree)
                 {
-                    foreach (var path in paths)
+                    if (source != null)
                     {
-                        var content = await ctx.Repository.ReadFileAsync(path, source, ct);
-                        var fullPath = Path.Combine(ctx.Repository.RootPath, path.Replace('/', Path.DirectorySeparatorChar));
-                        await File.WriteAllBytesAsync(fullPath, content, ct);
+                        foreach (var path in paths)
+                        {
+                            var content = await ctx.Repository.ReadFileAsync(path, source, ct);
+                            var fullPath = Path.Combine(ctx.Repository.RootPath, path.Replace('/', Path.DirectorySeparatorChar));
+                            var dir = Path.GetDirectoryName(fullPath);
+                            if (!string.IsNullOrEmpty(dir))
+                            {
+                                Directory.CreateDirectory(dir);
+                            }
+                            await File.WriteAllBytesAsync(fullPath, content, ct);
+                        }
                     }
-                }
-                else
-                {
-                    foreach (var path in paths)
+                    else
                     {
-                        await ctx.Repository.RestoreFileAsync(path, ct);
+                        foreach (var path in paths)
+                        {
+                            await ctx.Repository.RestoreFileAsync(path, ct);
+                        }
                     }
                 }
                 return 0;

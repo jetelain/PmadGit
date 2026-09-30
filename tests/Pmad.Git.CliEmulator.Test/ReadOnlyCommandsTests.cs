@@ -202,4 +202,106 @@ public class ReadOnlyCommandsTests
 
         Assert.Equal(0, response.ExitCode);
     }
+
+    [Fact]
+    public async Task Config_GetOption_ReturnsValueWithoutOverwriting()
+    {
+        using var testRepo = GitTestRepository.Create();
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+        var emulator = new GitCliEmulator(repo);
+        var approval = new TestUserApproval();
+
+        var response = await emulator.InvokeAsync(["config", "--get", "user.name"], approval);
+
+        Assert.Equal(0, response.ExitCode);
+        Assert.Equal("Test User", response.StdOut.Trim());
+
+        // Ensure --get was not saved as a key
+        var invalidKeyRes = await emulator.InvokeAsync(["config", "--get"], approval);
+        Assert.NotEqual(0, invalidKeyRes.ExitCode);
+    }
+
+    [Fact]
+    public async Task Log_NegativeNumberShorthand_LimitsCommits()
+    {
+        using var testRepo = GitTestRepository.Create();
+        testRepo.Commit("Commit 2", ("f2.txt", "2"));
+        testRepo.Commit("Commit 3", ("f3.txt", "3"));
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+        var emulator = new GitCliEmulator(repo);
+        var approval = new TestUserApproval();
+
+        var response = await emulator.InvokeAsync(["log", "--oneline", "-1"], approval);
+
+        Assert.Equal(0, response.ExitCode);
+        Assert.Contains("Commit 3", response.StdOut);
+        Assert.DoesNotContain("Commit 2", response.StdOut);
+    }
+
+    [Fact]
+    public async Task Status_Short_OutputsCompactStatus()
+    {
+        using var testRepo = GitTestRepository.Create();
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+        var emulator = new GitCliEmulator(repo);
+        var approval = new TestUserApproval();
+
+        File.WriteAllText(Path.Combine(testRepo.WorkingDirectory, "newfile.txt"), "hello");
+
+        var response = await emulator.InvokeAsync(["status", "-s"], approval);
+
+        Assert.Equal(0, response.ExitCode);
+        Assert.Contains("?? newfile.txt", response.StdOut);
+    }
+
+    [Fact]
+    public async Task Show_WithoutArgs_DefaultsToHead()
+    {
+        using var testRepo = GitTestRepository.Create();
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+        var emulator = new GitCliEmulator(repo);
+        var approval = new TestUserApproval();
+
+        var response = await emulator.InvokeAsync(["show"], approval);
+
+        Assert.Equal(0, response.ExitCode);
+        Assert.Contains("Initial commit", response.StdOut);
+        Assert.Contains("commit ", response.StdOut);
+    }
+
+    [Fact]
+    public async Task RevParse_ShowToplevel_And_GitDir()
+    {
+        using var testRepo = GitTestRepository.Create();
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+        var emulator = new GitCliEmulator(repo);
+        var approval = new TestUserApproval();
+
+        var topLevelRes = await emulator.InvokeAsync(["rev-parse", "--show-toplevel"], approval);
+        Assert.Equal(0, topLevelRes.ExitCode);
+        Assert.Equal(testRepo.WorkingDirectory, topLevelRes.StdOut.Trim());
+
+        var gitDirRes = await emulator.InvokeAsync(["rev-parse", "--git-dir"], approval);
+        Assert.Equal(0, gitDirRes.ExitCode);
+        Assert.Equal(Path.Combine(testRepo.WorkingDirectory, ".git"), gitDirRes.StdOut.Trim());
+
+        var insideWorkTreeRes = await emulator.InvokeAsync(["rev-parse", "--is-inside-work-tree"], approval);
+        Assert.Equal(0, insideWorkTreeRes.ExitCode);
+        Assert.Equal("true", insideWorkTreeRes.StdOut.Trim());
+    }
+
+    [Fact]
+    public async Task Branch_Rename_SingleArg_RenamesCurrentBranch()
+    {
+        using var testRepo = GitTestRepository.Create();
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+        var emulator = new GitCliEmulator(repo);
+        var approval = new TestUserApproval();
+
+        var res = await emulator.InvokeAsync(["branch", "-m", "main"], approval);
+        Assert.Equal(0, res.ExitCode);
+
+        var branchListRes = await emulator.InvokeAsync(["branch"], approval);
+        Assert.Contains("main", branchListRes.StdOut);
+    }
 }

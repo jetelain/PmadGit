@@ -65,12 +65,24 @@ internal static class BranchCommand
 
                 if (move)
                 {
-                    if (string.IsNullOrEmpty(name) || string.IsNullOrEmpty(newName))
+                    if (string.IsNullOrEmpty(name))
                     {
-                        return ctx.WriteError("branch -m requires <old-name> <new-name>.");
+                        return ctx.WriteError("branch -m requires <new-name> or <old-name> <new-name>.");
                     }
-                    await ctx.Repository.RenameBranchAsync(name, newName, ct);
-                    await ctx.StdOut.WriteLineAsync($"Renamed branch '{name}' to '{newName}'.");
+                    string oldBranch;
+                    string targetBranch;
+                    if (string.IsNullOrEmpty(newName))
+                    {
+                        oldBranch = await ctx.Repository.GetCurrentBranchNameAsync(ct) ?? throw new InvalidOperationException("Cannot rename branch when HEAD is detached.");
+                        targetBranch = name;
+                    }
+                    else
+                    {
+                        oldBranch = name;
+                        targetBranch = newName;
+                    }
+                    await ctx.Repository.RenameBranchAsync(oldBranch, targetBranch, ct);
+                    await ctx.StdOut.WriteLineAsync($"Renamed branch '{oldBranch}' to '{targetBranch}'.");
                     return 0;
                 }
 

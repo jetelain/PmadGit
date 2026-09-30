@@ -41,7 +41,7 @@ public static class GitAIFunctionFactory
     /// <summary>
     /// Creates a <see cref="AIFunction"/> named <c>git</c> that accepts the full git command line as a
     /// space-separated string (for models that prefer a single string parameter over an array).
-    /// The string is split on spaces; quoted arguments are not supported.
+    /// Single and double quotes are supported for arguments containing whitespace.
     /// </summary>
     /// <param name="emulator">The underlying CLI emulator to invoke.</param>
     /// <param name="userApproval">
@@ -86,26 +86,32 @@ public static class GitAIFunctionFactory
         {
             parts.Add(response.StdErr);
         }
-        return $"[exit {response.ExitCode}] " + string.Join(Environment.NewLine, parts);
+        var message = string.Join(Environment.NewLine, parts);
+        return string.IsNullOrEmpty(message) ? $"[exit {response.ExitCode}]" : $"[exit {response.ExitCode}] {message}";
     }
 
-    private static string[] ParseCommandLine(string commandLine)
+    internal static string[] ParseCommandLine(string commandLine)
     {
         if (string.IsNullOrWhiteSpace(commandLine))
         {
             return [];
         }
 
-        // Simple splitter: honours single/double quotes for basic cases.
         var args = new List<string>();
         var current = new System.Text.StringBuilder();
         char? quote = null;
+        var hadQuotes = false;
 
-        foreach (var ch in commandLine)
+        for (var i = 0; i < commandLine.Length; i++)
         {
+            var ch = commandLine[i];
             if (quote.HasValue)
             {
-                if (ch == quote.Value)
+                if (ch == '\\' && i + 1 < commandLine.Length && (commandLine[i + 1] == quote.Value || commandLine[i + 1] == '\\'))
+                {
+                    current.Append(commandLine[++i]);
+                }
+                else if (ch == quote.Value)
                 {
                     quote = null;
                 }
@@ -117,13 +123,15 @@ public static class GitAIFunctionFactory
             else if (ch is '\'' or '"')
             {
                 quote = ch;
+                hadQuotes = true;
             }
-            else if (ch == ' ')
+            else if (char.IsWhiteSpace(ch))
             {
-                if (current.Length > 0)
+                if (current.Length > 0 || hadQuotes)
                 {
                     args.Add(current.ToString());
                     current.Clear();
+                    hadQuotes = false;
                 }
             }
             else
@@ -132,7 +140,7 @@ public static class GitAIFunctionFactory
             }
         }
 
-        if (current.Length > 0)
+        if (current.Length > 0 || hadQuotes)
         {
             args.Add(current.ToString());
         }

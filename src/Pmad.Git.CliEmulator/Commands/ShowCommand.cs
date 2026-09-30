@@ -9,12 +9,17 @@ internal static class ShowCommand
     public static Command Build(CommandContext ctx)
     {
         var cmd = new Command("show") { Description = "Show various types of objects" };
-        var objArg = new Argument<string>("object") { Description = "Commit/ref, or ref:path to show blob content" };
+        var objArg = new Argument<string?>("object")
+        {
+            Description = "Commit/ref, or ref:path to show blob content",
+            Arity = ArgumentArity.ZeroOrOne,
+            DefaultValueFactory = _ => "HEAD"
+        };
         cmd.Arguments.Add(objArg);
 
         cmd.SetAction(async (ParseResult pr, CancellationToken ct) =>
         {
-            var obj = pr.GetValue(objArg)!;
+            var obj = pr.GetValue(objArg) ?? "HEAD";
             try
             {
                 var colonIdx = obj.IndexOf(':');
@@ -33,7 +38,7 @@ internal static class ShowCommand
                     await ctx.StdOut.WriteLineAsync($"Author: {meta.AuthorName} <{meta.AuthorEmail}>");
                     await ctx.StdOut.WriteLineAsync($"Date:   {meta.AuthorDate:ddd MMM d HH:mm:ss yyyy K}");
                     await ctx.StdOut.WriteLineAsync();
-                    foreach (var line in commit.Message.Split('\n'))
+                    foreach (var line in commit.Message.Replace("\r\n", "\n").Split('\n'))
                     {
                         await ctx.StdOut.WriteLineAsync($"    {line}");
                     }

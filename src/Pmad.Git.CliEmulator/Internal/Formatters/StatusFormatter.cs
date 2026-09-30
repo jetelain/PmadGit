@@ -122,4 +122,39 @@ internal static class StatusFormatter
             await writer.WriteLineAsync("nothing to commit, working tree clean").ConfigureAwait(false);
         }
     }
+
+    public static async Task WriteShortAsync(
+        IGitWorkspaceRepository repo,
+        TextWriter writer,
+        CancellationToken ct)
+    {
+        var status = await repo.GetStatusAsync(includeUntracked: true, cancellationToken: ct).ConfigureAwait(false);
+        foreach (var e in status.Entries.Where(e => !e.IsClean).OrderBy(e => e.Path, StringComparer.Ordinal))
+        {
+            if (e.IsConflicted)
+            {
+                await writer.WriteLineAsync($"UU {e.Path}").ConfigureAwait(false);
+                continue;
+            }
+            char stagedCode = e.StagedStatus switch
+            {
+                GitFileStatus.StagedNew => 'A',
+                GitFileStatus.StagedModified => 'M',
+                GitFileStatus.StagedDeleted => 'D',
+                _ => ' '
+            };
+            char worktreeCode = e.WorkingTreeStatus switch
+            {
+                GitFileStatus.Modified => 'M',
+                GitFileStatus.Deleted => 'D',
+                GitFileStatus.Untracked => '?',
+                _ => ' '
+            };
+            if (worktreeCode == '?')
+            {
+                stagedCode = '?';
+            }
+            await writer.WriteLineAsync($"{stagedCode}{worktreeCode} {e.Path}").ConfigureAwait(false);
+        }
+    }
 }

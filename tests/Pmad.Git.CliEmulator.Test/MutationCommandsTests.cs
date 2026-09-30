@@ -147,4 +147,60 @@ public class MutationCommandsTests
         var unsetRes = await emulator.InvokeAsync(["config", "--unset", "custom.testkey"], approval);
         Assert.Equal(0, unsetRes.ExitCode);
     }
+
+    [Fact]
+    public async Task Restore_CreatesMissingDirectory_WhenRestoringSubdirectoryFile()
+    {
+        using var testRepo = GitTestRepository.Create();
+        testRepo.Commit("Add subfile", ("subdir/subfile.txt", "sub content"));
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+        var emulator = new GitCliEmulator(repo);
+        var approval = new TestUserApproval();
+
+        // Delete the subdirectory completely
+        var subDir = Path.Combine(testRepo.WorkingDirectory, "subdir");
+        Directory.Delete(subDir, recursive: true);
+        Assert.False(Directory.Exists(subDir));
+
+        // Restore from HEAD
+        var restoreRes = await emulator.InvokeAsync(["restore", "--source", "HEAD", "subdir/subfile.txt"], approval);
+        Assert.Equal(0, restoreRes.ExitCode);
+        Assert.True(File.Exists(Path.Combine(subDir, "subfile.txt")));
+        Assert.Equal("sub content", File.ReadAllText(Path.Combine(subDir, "subfile.txt")));
+    }
+
+    [Fact]
+    public async Task Push_DetachedHead_ReturnsFatalError()
+    {
+        using var testRepo = GitTestRepository.Create();
+        // Detach HEAD by writing commit hash directly to .git/HEAD
+        File.WriteAllText(Path.Combine(testRepo.WorkingDirectory, ".git", "HEAD"), testRepo.Head.ToString());
+
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+        var emulator = repo.CreateCliEmulator(defaultRemoteUrl: "https://example.com/repo.git");
+        var approval = new TestUserApproval();
+
+        var pushRes = await emulator.InvokeAsync(["push"], approval);
+        Assert.Equal(128, pushRes.ExitCode);
+        Assert.Contains("You are not currently on a branch", pushRes.StdErr);
+    }
+
+    [Fact]
+    public async Task Restore_StagedAndWorktree_BothUnstagesAndRestoresContent()
+    {
+        using var testRepo = GitTestRepository.Create();
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+        var emulator = new GitCliEmulator(repo);
+        var approval = new TestUserApproval();
+
+        var readmePath = Path.Combine(testRepo.WorkingDirectory, "README.md");
+        File.WriteAllText(readmePath, "staged change");
+        await emulator.InvokeAsync(["add", "README.md"], approval);
+        File.WriteAllText(readmePath, "further worktree change");
+
+        var response = await emulator.InvokeAsync(["restore", "--staged", "--worktree", "README.md"], approval);
+        Assert.Equal(0, response.ExitCode);
+        Assert.Equal("seed", File.ReadAllText(readmePath));
+        Assert.Single(approval.DiscardLocalChangesCalls);
+    }
 }
