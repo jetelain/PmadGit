@@ -304,4 +304,55 @@ public class ReadOnlyCommandsTests
         var branchListRes = await emulator.InvokeAsync(["branch"], approval);
         Assert.Contains("main", branchListRes.StdOut);
     }
+
+    [Fact]
+    public async Task RevParse_HeadTilde1_ReturnsParentHash()
+    {
+        using var testRepo = GitTestRepository.Create();
+        var initialHash = testRepo.Head.ToString();
+        testRepo.Commit("Commit 2", ("f2.txt", "c2"));
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+        var emulator = new GitCliEmulator(repo);
+        var approval = new TestUserApproval();
+
+        var response = await emulator.InvokeAsync(["rev-parse", "HEAD~1"], approval);
+
+        Assert.Equal(0, response.ExitCode);
+        Assert.Equal(initialHash, response.StdOut.Trim());
+    }
+
+    [Fact]
+    public async Task RevParse_HeadCaret_IsSameAsHeadTilde1()
+    {
+        using var testRepo = GitTestRepository.Create();
+        testRepo.Commit("Commit 2", ("f2.txt", "c2"));
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+        var emulator = new GitCliEmulator(repo);
+        var approval = new TestUserApproval();
+
+        var tilde1 = await emulator.InvokeAsync(["rev-parse", "HEAD~1"], approval);
+        var caret = await emulator.InvokeAsync(["rev-parse", "HEAD^"], approval);
+
+        Assert.Equal(0, tilde1.ExitCode);
+        Assert.Equal(tilde1.StdOut.Trim(), caret.StdOut.Trim());
+    }
+
+    [Fact]
+    public async Task Log_WithHeadTilde1_StartsFromParent()
+    {
+        using var testRepo = GitTestRepository.Create();
+        testRepo.Commit("Commit 2", ("f2.txt", "c2"));
+        testRepo.Commit("Commit 3", ("f3.txt", "c3"));
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+        var emulator = new GitCliEmulator(repo);
+        var approval = new TestUserApproval();
+
+        // Starting log from HEAD~1 should exclude the tip commit (Commit 3)
+        var response = await emulator.InvokeAsync(["log", "--oneline", "HEAD~1"], approval);
+
+        Assert.Equal(0, response.ExitCode);
+        Assert.DoesNotContain("Commit 3", response.StdOut);
+        Assert.Contains("Commit 2", response.StdOut);
+    }
 }
+

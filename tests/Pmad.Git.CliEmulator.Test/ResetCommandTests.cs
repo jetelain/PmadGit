@@ -36,15 +36,13 @@ public class ResetCommandTests
     public async Task Reset_Soft_KeepsStagedChanges()
     {
         using var testRepo = GitTestRepository.Create();
-        // Capture the initial commit hash before adding a second one
-        var initialHash = testRepo.Head.ToString();
         testRepo.Commit("Commit 2", ("f2.txt", "content"));
         using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
         var emulator = new GitCliEmulator(repo);
         var approval = new TestUserApproval();
 
-        // Soft reset to the initial commit — commit 2 changes should remain staged
-        var response = await emulator.InvokeAsync(["reset", "--soft", initialHash], approval);
+        // Soft reset to the initial commit using HEAD~1 ancestor notation
+        var response = await emulator.InvokeAsync(["reset", "--soft", "HEAD~1"], approval);
 
         Assert.Equal(0, response.ExitCode);
         Assert.Contains("HEAD is now at", response.StdOut);
@@ -133,7 +131,6 @@ public class ResetCommandTests
     public async Task Reset_ToCommitWithUnpushedLoss_RequiresApproval()
     {
         using var testRepo = GitTestRepository.Create();
-        var initialHash = testRepo.Head.ToString();
         testRepo.Commit("Commit 2", ("f2.txt", "content2"));
         using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
         var emulator = new GitCliEmulator(repo);
@@ -142,8 +139,8 @@ public class ResetCommandTests
             UnpushedCommitLossResult = ApprovalResult.Approved
         };
 
-        // reset back to initial commit — loses "Commit 2" which is unpushed
-        var response = await emulator.InvokeAsync(["reset", "--soft", initialHash], approval);
+        // reset back to initial commit using HEAD~1 — loses "Commit 2" which is unpushed
+        var response = await emulator.InvokeAsync(["reset", "--soft", "HEAD~1"], approval);
 
         Assert.Equal(0, response.ExitCode);
         Assert.Single(approval.UnpushedCommitLossCalls);

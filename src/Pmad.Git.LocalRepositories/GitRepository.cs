@@ -1468,17 +1468,57 @@ public sealed class GitRepository : IGitRepository, IGitRepositoryCacheInvalidat
         }
 
         var nonEmptyReference = reference!;
-        if (GitHash.TryParse(nonEmptyReference, out var hash))
+
+        // Parse and strip ancestor/parent suffixes before resolving the base ref.
+        // Supports:
+        //   ref~N  – walk up N first-parent steps (e.g. HEAD~3, master~1)
+        //   ref~   – shorthand for ref~1
+        //   ref^N  – select the Nth parent at one level (e.g. HEAD^2)
+        //   ref^   – shorthand for ref^1  (≡ ref~1)
+        // Multiple suffixes may be chained (e.g. HEAD~2^2).
+        var (basePart, suffixes) = ParseAncestorSuffixes(nonEmptyReference);
+
+        GitHash baseHash;
+        if (suffixes.Count == 0)
+        {
+            // Fast path: no suffix — proceed with original logic.
+            baseHash = await ResolveBaseReferenceAsync(nonEmptyReference, cancellationToken).ConfigureAwait(false);
+        }
+        else
+        {
+            baseHash = await ResolveBaseReferenceAsync(basePart, cancellationToken).ConfigureAwait(false);
+            foreach (var (tilde, count) in suffixes)
+            {
+                baseHash = tilde
+                    ? await WalkFirstParentsAsync(baseHash, count, reference, cancellationToken).ConfigureAwait(false)
+                    : await SelectParentAsync(baseHash, count, reference, cancellationToken).ConfigureAwait(false);
+            }
+        }
+
+        return baseHash;
+    }
+
+    /// <summary>
+    /// Resolves the "base" portion of a reference string (no ~N / ^N suffix) to a commit hash.
+    /// </summary>
+    private async Task<GitHash> ResolveBaseReferenceAsync(string reference, CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(reference) || reference.Equals("HEAD", StringComparison.OrdinalIgnoreCase))
+        {
+            return await _referenceStore.ResolveHeadAsync(cancellationToken).ConfigureAwait(false);
+        }
+
+        if (GitHash.TryParse(reference, out var hash))
         {
             return hash;
         }
 
         var candidates = new[]
         {
-            nonEmptyReference,
-            $"refs/heads/{nonEmptyReference}",
-            $"refs/tags/{nonEmptyReference}",
-            $"refs/remotes/{nonEmptyReference}"
+            reference,
+            $"refs/heads/{reference}",
+            $"refs/tags/{reference}",
+            $"refs/remotes/{reference}"
         };
 
         foreach (var candidate in candidates)
@@ -1491,6 +1531,88 @@ public sealed class GitRepository : IGitRepository, IGitRepositoryCacheInvalidat
         }
 
         throw new InvalidOperationException($"Unknown reference '{reference}'");
+    }
+
+    /// <summary>
+    /// Walks <paramref name="steps"/> first-parent steps from <paramref name="start"/>.
+    /// </summary>
+    private async Task<GitHash> WalkFirstParentsAsync(GitHash start, int steps, string originalReference, CancellationToken cancellationToken)
+    {
+        var current = start;
+        for (var i = 0; i < steps; i++)
+        {
+            var commit = await GetCommitAsync(current, cancellationToken).ConfigureAwait(false);
+            if (commit.Parents.Count == 0)
+            {
+                throw new InvalidOperationException(
+                    $"Reference '{originalReference}' resolves to a root commit that has no parent at step {i + 1}.");
+            }
+            current = commit.Parents[0];
+        }
+        return current;
+    }
+
+    /// <summary>
+    /// Selects the <paramref name="parentIndex"/>-th parent (1-based) of <paramref name="start"/>.
+    /// </summary>
+    private async Task<GitHash> SelectParentAsync(GitHash start, int parentIndex, string originalReference, CancellationToken cancellationToken)
+    {
+        var commit = await GetCommitAsync(start, cancellationToken).ConfigureAwait(false);
+        if (parentIndex < 1 || parentIndex > commit.Parents.Count)
+        {
+            throw new InvalidOperationException(
+                $"Reference '{originalReference}': commit {start} has {commit.Parents.Count} parent(s); cannot select parent {parentIndex}.");
+        }
+        return commit.Parents[parentIndex - 1];
+    }
+
+    /// <summary>
+    /// Strips all trailing <c>~N</c> / <c>^N</c> suffixes from <paramref name="reference"/> and
+    /// returns the base string together with an ordered list of (isTilde, count) operations to apply.
+    /// </summary>
+    private static (string base_, List<(bool isTilde, int count)> suffixes) ParseAncestorSuffixes(string reference)
+    {
+        var suffixes = new List<(bool, int)>();
+        var span = reference.AsSpan();
+
+        while (span.Length > 0)
+        {
+            var last = span[^1];
+
+            // Handle bare ~ or ^ with no following digit
+            if (last == '~' || last == '^')
+            {
+                suffixes.Add((last == '~', 1));
+                span = span[..^1];
+                continue;
+            }
+
+            // Handle ~N or ^N (one or more digits preceded by ~ or ^)
+            if (char.IsAsciiDigit(last))
+            {
+                var digitEnd = span.Length;
+                var digitStart = digitEnd - 1;
+                while (digitStart > 0 && char.IsAsciiDigit(span[digitStart - 1]))
+                {
+                    digitStart--;
+                }
+
+                if (digitStart > 0 && (span[digitStart - 1] == '~' || span[digitStart - 1] == '^'))
+                {
+                    var isTilde = span[digitStart - 1] == '~';
+                    var count = int.Parse(span[digitStart..digitEnd]);
+                    suffixes.Add((isTilde, count));
+                    span = span[..(digitStart - 1)];
+                    continue;
+                }
+            }
+
+            break;
+        }
+
+        // Suffixes were collected innermost-first; reverse to apply outermost-first.
+        suffixes.Reverse();
+        return (span.ToString(), suffixes);
     }
 
     private static string NormalizeReference(string branchName)
