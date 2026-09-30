@@ -92,17 +92,15 @@ public sealed class GitCliEmulator : IGitCliEmulator, IDisposable, IAsyncDisposa
         }
     }
 
-    /// <summary>
-    /// Invokes a git command and returns the captured output.
-    /// </summary>
-    public async Task<GitCliResponse> InvokeAsync(string[] args, IUserApproval userApproval)
+    /// <inheritdoc />
+    public async Task<GitCliResponse> InvokeAsync(string[] args, IUserApproval? userApproval = null, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(args);
-        ArgumentNullException.ThrowIfNull(userApproval);
 
+        var approval = userApproval ?? AutoApproval.Instance;
         var stdout = new StringWriter();
         var stderr = new StringWriter();
-        var ctx = new CommandContext(_repository, _remote, userApproval, stdout, stderr);
+        var ctx = new CommandContext(_repository, _remote, approval, stdout, stderr);
 
         var rootCommand = BuildRootCommand(ctx);
 
@@ -117,7 +115,7 @@ public sealed class GitCliEmulator : IGitCliEmulator, IDisposable, IAsyncDisposa
         try
         {
             var parseResult = rootCommand.Parse(args);
-            exitCode = await parseResult.InvokeAsync(invocationConfig, userApproval.CancellationToken)
+            exitCode = await parseResult.InvokeAsync(invocationConfig, cancellationToken)
                 .ConfigureAwait(false);
         }
         catch (GitCliDeniedException ex)

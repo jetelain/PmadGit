@@ -54,7 +54,7 @@ internal static class BranchCommand
                                 Operation = forceDelete ? "branch -D" : "branch -d",
                                 BranchName = name,
                                 CommitsToLose = lost,
-                            }),
+                            }, ct),
                             forceDelete ? "branch -D" : "branch -d");
                     }
                     await ctx.Repository.DeleteBranchAsync(name, force: forceDelete, ct);

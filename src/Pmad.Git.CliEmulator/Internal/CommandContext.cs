@@ -25,7 +25,6 @@ internal sealed class CommandContext
     public IUserApproval Approval { get; }
     public TextWriter StdOut { get; }
     public TextWriter StdErr { get; }
-    public CancellationToken CancellationToken => Approval.CancellationToken;
 
     /// <summary>Writes a line to stderr and returns exit code 1.</summary>
     public int WriteError(string message)

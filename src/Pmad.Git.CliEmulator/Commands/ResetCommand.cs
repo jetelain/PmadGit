@@ -45,7 +45,7 @@ internal static class ResetCommand
                                 Operation = $"reset {(hard ? "--hard" : soft ? "--soft" : "--mixed")}",
                                 BranchName = branch,
                                 CommitsToLose = lost,
-                            }),
+                            }, ct),
                             "reset");
                     }
                 }
@@ -65,7 +65,7 @@ internal static class ResetCommand
                             {
                                 Operation = "reset --hard",
                                 AffectedFiles = changedFiles,
-                            }),
+                            }, ct),
                             "reset --hard");
                     }
                 }

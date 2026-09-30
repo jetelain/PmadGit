@@ -39,7 +39,7 @@ internal static class CommitCommand
                                 BranchName = branch,
                                 AffectedCommits = [ApprovalHelper.ToSummary(headCommit)],
                                 InvolvesRemotePush = false,
-                            }),
+                            }, ct),
                             "commit --amend");
                     }
 

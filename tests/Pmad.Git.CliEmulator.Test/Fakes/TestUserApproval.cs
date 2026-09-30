@@ -5,13 +5,11 @@ namespace Pmad.Git.CliEmulator.Test.Fakes;
 
 public class TestUserApproval : IUserApproval
 {
-    public CancellationToken CancellationToken { get; set; } = CancellationToken.None;
-
-    public bool AllowReadRemote { get; set; } = true;
-    public bool AllowWriteRemote { get; set; } = true;
-    public bool AllowDiscardLocalChanges { get; set; } = true;
-    public bool AllowUnpushedCommitLoss { get; set; } = true;
-    public bool AllowHistoryRewrite { get; set; } = true;
+    public ApprovalResult ReadRemoteResult { get; set; } = ApprovalResult.Approved;
+    public ApprovalResult WriteRemoteResult { get; set; } = ApprovalResult.Approved;
+    public ApprovalResult DiscardLocalChangesResult { get; set; } = ApprovalResult.Approved;
+    public ApprovalResult UnpushedCommitLossResult { get; set; } = ApprovalResult.Approved;
+    public ApprovalResult HistoryRewriteResult { get; set; } = ApprovalResult.Approved;
 
     public List<ReadRemoteContext> ReadRemoteCalls { get; } = new();
     public List<WriteRemoteContext> WriteRemoteCalls { get; } = new();
@@ -19,33 +17,33 @@ public class TestUserApproval : IUserApproval
     public List<UnpushedCommitLossContext> UnpushedCommitLossCalls { get; } = new();
     public List<HistoryRewriteContext> HistoryRewriteCalls { get; } = new();
 
-    public Task<bool> ApproveReadRemoteAsync(ReadRemoteContext context)
+    public Task<ApprovalResult> ApproveReadRemoteAsync(ReadRemoteContext context, CancellationToken cancellationToken)
     {
         ReadRemoteCalls.Add(context);
-        return Task.FromResult(AllowReadRemote);
+        return Task.FromResult(ReadRemoteResult);
     }
 
-    public Task<bool> ApproveWriteRemoteAsync(WriteRemoteContext context)
+    public Task<ApprovalResult> ApproveWriteRemoteAsync(WriteRemoteContext context, CancellationToken cancellationToken)
     {
         WriteRemoteCalls.Add(context);
-        return Task.FromResult(AllowWriteRemote);
+        return Task.FromResult(WriteRemoteResult);
     }
 
-    public Task<bool> ApproveDiscardLocalChangesAsync(DiscardChangesContext context)
+    public Task<ApprovalResult> ApproveDiscardLocalChangesAsync(DiscardChangesContext context, CancellationToken cancellationToken)
     {
         DiscardLocalChangesCalls.Add(context);
-        return Task.FromResult(AllowDiscardLocalChanges);
+        return Task.FromResult(DiscardLocalChangesResult);
     }
 
-    public Task<bool> ApproveUnpushedCommitLossAsync(UnpushedCommitLossContext context)
+    public Task<ApprovalResult> ApproveUnpushedCommitLossAsync(UnpushedCommitLossContext context, CancellationToken cancellationToken)
     {
         UnpushedCommitLossCalls.Add(context);
-        return Task.FromResult(AllowUnpushedCommitLoss);
+        return Task.FromResult(UnpushedCommitLossResult);
     }
 
-    public Task<bool> ApproveHistoryRewriteAsync(HistoryRewriteContext context)
+    public Task<ApprovalResult> ApproveHistoryRewriteAsync(HistoryRewriteContext context, CancellationToken cancellationToken)
     {
         HistoryRewriteCalls.Add(context);
-        return Task.FromResult(AllowHistoryRewrite);
+        return Task.FromResult(HistoryRewriteResult);
     }
 }

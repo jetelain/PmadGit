@@ -24,12 +24,11 @@ public static class GitAIFunctionFactory
     {
         ArgumentNullException.ThrowIfNull(emulator);
 
-        var approval = userApproval ?? new AutoApproval(CancellationToken.None);
-
         return AIFunctionFactory.Create(
-            async ([Description("Git sub-command and its arguments (e.g. [\"status\"], [\"commit\", \"-m\", \"msg\"], [\"log\", \"--oneline\", \"-10\"])")] string[] args) =>
+            async ([Description("Git sub-command and its arguments (e.g. [\"status\"], [\"commit\", \"-m\", \"msg\"], [\"log\", \"--oneline\", \"-10\"])")] string[] args,
+                   CancellationToken cancellationToken) =>
             {
-                var response = await emulator.InvokeAsync(args, approval).ConfigureAwait(false);
+                var response = await emulator.InvokeAsync(args, userApproval, cancellationToken).ConfigureAwait(false);
                 return FormatResponse(response);
             },
             "git",
@@ -53,13 +52,12 @@ public static class GitAIFunctionFactory
     {
         ArgumentNullException.ThrowIfNull(emulator);
 
-        var approval = userApproval ?? new AutoApproval(CancellationToken.None);
-
         return AIFunctionFactory.Create(
-            async ([Description("Space-separated git command and arguments, e.g. \"status\", \"commit -m 'Initial commit'\", \"log --oneline -10\"")] string commandLine) =>
+            async ([Description("Space-separated git command and arguments, e.g. \"status\", \"commit -m 'Initial commit'\", \"log --oneline -10\"")] string commandLine,
+                   CancellationToken cancellationToken) =>
             {
                 var args = ParseCommandLine(commandLine);
-                var response = await emulator.InvokeAsync(args, approval).ConfigureAwait(false);
+                var response = await emulator.InvokeAsync(args, userApproval, cancellationToken).ConfigureAwait(false);
                 return FormatResponse(response);
             },
             "git",

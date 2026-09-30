@@ -13,7 +13,7 @@ public class ApprovalGateTests
         var emulator = new GitCliEmulator(repo);
         var approval = new TestUserApproval
         {
-            AllowDiscardLocalChanges = false // DENIED
+            DiscardLocalChangesResult = ApprovalResult.Denied
         };
 
         var readmePath = Path.Combine(testRepo.WorkingDirectory, "README.md");
@@ -29,6 +29,25 @@ public class ApprovalGateTests
     }
 
     [Fact]
+    public async Task Restore_WhenCancelled_ReturnsExitCode130()
+    {
+        using var testRepo = GitTestRepository.Create();
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+        var emulator = new GitCliEmulator(repo);
+        var approval = new TestUserApproval
+        {
+            DiscardLocalChangesResult = ApprovalResult.Cancelled
+        };
+
+        File.WriteAllText(Path.Combine(testRepo.WorkingDirectory, "README.md"), "modified locally");
+
+        var response = await emulator.InvokeAsync(["restore", "README.md"], approval);
+
+        Assert.Equal(130, response.ExitCode);
+        Assert.Contains("cancelled", response.StdErr, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public async Task ResetHard_WhenDenied_ReturnsExitCode130()
     {
         using var testRepo = GitTestRepository.Create();
@@ -36,7 +55,7 @@ public class ApprovalGateTests
         var emulator = new GitCliEmulator(repo);
         var approval = new TestUserApproval
         {
-            AllowDiscardLocalChanges = false // DENIED
+            DiscardLocalChangesResult = ApprovalResult.Denied
         };
 
         File.WriteAllText(Path.Combine(testRepo.WorkingDirectory, "README.md"), "changed");
@@ -55,7 +74,7 @@ public class ApprovalGateTests
         var emulator = new GitCliEmulator(repo);
         var approval = new TestUserApproval
         {
-            AllowUnpushedCommitLoss = true
+            UnpushedCommitLossResult = ApprovalResult.Approved
         };
 
         await emulator.InvokeAsync(["branch", "to-delete"], approval);
@@ -75,7 +94,7 @@ public class ApprovalGateTests
         var emulator = new GitCliEmulator(repo);
         var approval = new TestUserApproval
         {
-            AllowUnpushedCommitLoss = false // DENIED
+            UnpushedCommitLossResult = ApprovalResult.Denied
         };
 
         await emulator.InvokeAsync(["branch", "to-delete-denied"], approval);
@@ -134,7 +153,7 @@ public class ApprovalGateTests
     }
 
     [Fact]
-    public async Task Cancellation_ReturnsExitCode130()
+    public async Task Cancellation_ViaCancellationToken_ReturnsExitCode130()
     {
         using var testRepo = GitTestRepository.Create();
         using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
@@ -142,14 +161,9 @@ public class ApprovalGateTests
         using var cts = new CancellationTokenSource();
         cts.Cancel();
 
-        var approval = new TestUserApproval
-        {
-            CancellationToken = cts.Token
-        };
-
-        var response = await emulator.InvokeAsync(["status"], approval);
+        var response = await emulator.InvokeAsync(["status"], cancellationToken: cts.Token);
 
         Assert.Equal(130, response.ExitCode);
-        Assert.Contains("cancelled", response.StdErr);
+        Assert.Contains("cancelled", response.StdErr, StringComparison.OrdinalIgnoreCase);
     }
 }

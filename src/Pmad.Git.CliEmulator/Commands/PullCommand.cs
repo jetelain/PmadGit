@@ -35,7 +35,7 @@ internal static class PullCommand
                         RemoteName = remoteName,
                         RemoteUrl = ApprovalHelper.SanitizeUrl(remoteUrl),
                         Branch = branch,
-                    }),
+                    }, ct),
                     "pull");
                 var result = await remote.PullAsync(remoteName, branch, rebase: false, ct);
                 if (result.IsSuccess)

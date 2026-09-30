@@ -43,7 +43,7 @@ internal static class MergeCommand
                         {
                             Operation = "merge --abort",
                             AffectedFiles = conflicts,
-                        }),
+                        }, ct),
                         "merge --abort");
                     await ctx.Repository.AbortMergeAsync(ct);
                     await ctx.StdOut.WriteLineAsync("Merge aborted.");

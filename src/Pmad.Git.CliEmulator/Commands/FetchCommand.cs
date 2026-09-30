@@ -38,7 +38,7 @@ internal static class FetchCommand
                         RemoteName = remoteName,
                         RemoteUrl = ApprovalHelper.SanitizeUrl(remoteUrl),
                         Branch = branch,
-                    }),
+                    }, ct),
                     "fetch");
                 await remote.FetchAsync(remoteName, branch, prune, ct);
                 await ctx.StdOut.WriteLineAsync("Fetch complete.");

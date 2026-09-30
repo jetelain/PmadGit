@@ -44,7 +44,7 @@ internal static class RestoreCommand
                     {
                         Operation = source != null ? $"restore --source {source}" : "restore",
                         AffectedFiles = paths,
-                    }),
+                    }, ct),
                     "restore");
 
                 if (staged)

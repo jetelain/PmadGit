@@ -9,20 +9,18 @@ namespace Pmad.Git.CliEmulator.AI.Test;
 /// </summary>
 internal sealed class AlwaysDenyApproval : IUserApproval
 {
-    public CancellationToken CancellationToken => CancellationToken.None;
+    public Task<ApprovalResult> ApproveDiscardLocalChangesAsync(DiscardChangesContext context, CancellationToken cancellationToken) =>
+        Task.FromResult(ApprovalResult.Denied);
 
-    public Task<bool> ApproveDiscardLocalChangesAsync(DiscardChangesContext context) =>
-        Task.FromResult(false);
+    public Task<ApprovalResult> ApproveHistoryRewriteAsync(HistoryRewriteContext context, CancellationToken cancellationToken) =>
+        Task.FromResult(ApprovalResult.Denied);
 
-    public Task<bool> ApproveHistoryRewriteAsync(HistoryRewriteContext context) =>
-        Task.FromResult(false);
+    public Task<ApprovalResult> ApproveReadRemoteAsync(ReadRemoteContext context, CancellationToken cancellationToken) =>
+        Task.FromResult(ApprovalResult.Denied);
 
-    public Task<bool> ApproveReadRemoteAsync(ReadRemoteContext context) =>
-        Task.FromResult(false);
+    public Task<ApprovalResult> ApproveUnpushedCommitLossAsync(UnpushedCommitLossContext context, CancellationToken cancellationToken) =>
+        Task.FromResult(ApprovalResult.Denied);
 
-    public Task<bool> ApproveUnpushedCommitLossAsync(UnpushedCommitLossContext context) =>
-        Task.FromResult(false);
-
-    public Task<bool> ApproveWriteRemoteAsync(WriteRemoteContext context) =>
-        Task.FromResult(false);
+    public Task<ApprovalResult> ApproveWriteRemoteAsync(WriteRemoteContext context, CancellationToken cancellationToken) =>
+        Task.FromResult(ApprovalResult.Denied);
 }

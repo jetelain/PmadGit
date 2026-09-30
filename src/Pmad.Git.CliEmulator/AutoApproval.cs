@@ -1,41 +1,36 @@
-﻿using Pmad.Git.CliEmulator.Approval;
+using Pmad.Git.CliEmulator.Approval;
 
 namespace Pmad.Git.CliEmulator;
 
 /// <summary>
 /// An <see cref="IUserApproval"/> implementation that automatically approves every operation.
-/// Used as the default when no explicit approval gate is provided to the MEAI integration.
+/// Used when <see langword="null"/> is passed as <c>userApproval</c> to
+/// <see cref="IGitCliEmulator.InvokeAsync"/>.
 /// </summary>
 public sealed class AutoApproval : IUserApproval
 {
     /// <summary>
-    /// Initializes a new <see cref="AutoApproval"/> with the given cancellation token.
+    /// Gets the singleton instance of <see cref="AutoApproval"/>.
     /// </summary>
-    public AutoApproval(CancellationToken cancellationToken = default)
-    {
-        CancellationToken = cancellationToken;
-    }
+    public static readonly AutoApproval Instance = new();
 
     /// <inheritdoc/>
-    public CancellationToken CancellationToken { get; }
+    public Task<ApprovalResult> ApproveDiscardLocalChangesAsync(DiscardChangesContext context, CancellationToken cancellationToken) =>
+        Task.FromResult(ApprovalResult.Approved);
 
     /// <inheritdoc/>
-    public Task<bool> ApproveDiscardLocalChangesAsync(DiscardChangesContext context) =>
-        Task.FromResult(true);
+    public Task<ApprovalResult> ApproveHistoryRewriteAsync(HistoryRewriteContext context, CancellationToken cancellationToken) =>
+        Task.FromResult(ApprovalResult.Approved);
 
     /// <inheritdoc/>
-    public Task<bool> ApproveHistoryRewriteAsync(HistoryRewriteContext context) =>
-        Task.FromResult(true);
+    public Task<ApprovalResult> ApproveReadRemoteAsync(ReadRemoteContext context, CancellationToken cancellationToken) =>
+        Task.FromResult(ApprovalResult.Approved);
 
     /// <inheritdoc/>
-    public Task<bool> ApproveReadRemoteAsync(ReadRemoteContext context) =>
-        Task.FromResult(true);
+    public Task<ApprovalResult> ApproveUnpushedCommitLossAsync(UnpushedCommitLossContext context, CancellationToken cancellationToken) =>
+        Task.FromResult(ApprovalResult.Approved);
 
     /// <inheritdoc/>
-    public Task<bool> ApproveUnpushedCommitLossAsync(UnpushedCommitLossContext context) =>
-        Task.FromResult(true);
-
-    /// <inheritdoc/>
-    public Task<bool> ApproveWriteRemoteAsync(WriteRemoteContext context) =>
-        Task.FromResult(true);
+    public Task<ApprovalResult> ApproveWriteRemoteAsync(WriteRemoteContext context, CancellationToken cancellationToken) =>
+        Task.FromResult(ApprovalResult.Approved);
 }

@@ -1,8 +1,8 @@
 namespace Pmad.Git.CliEmulator;
 
 /// <summary>
-/// Thrown when a <see cref="IUserApproval"/> callback returns <see langword="false"/>,
-/// indicating the user denied the requested operation.
+/// Thrown when an <see cref="IUserApproval"/> callback returns <see cref="ApprovalResult.Denied"/>,
+/// indicating the user explicitly rejected the requested operation.
 /// </summary>
 public sealed class GitCliDeniedException : Exception
 {

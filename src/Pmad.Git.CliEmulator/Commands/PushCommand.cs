@@ -44,7 +44,7 @@ internal static class PushCommand
                         BranchName = currentBranch,
                         IsForce = force,
                         CommitsAhead = tracking.AheadCount,
-                    }),
+                    }, ct),
                     "push");
 
                 if (force)
@@ -57,7 +57,7 @@ internal static class PushCommand
                             BranchName = currentBranch,
                             AffectedCommits = [ApprovalHelper.ToSummary(headCommit)],
                             InvolvesRemotePush = true,
-                        }),
+                        }, ct),
                         "push --force");
                 }
 
