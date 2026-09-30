@@ -43,4 +43,14 @@ public static class GitCliEmulatorExtensions
 
         return new GitCliEmulator(remoteRepository, disposeRepositories);
     }
+
+    /// <summary>
+    /// Invokes a git command without user approval and returns the captured output.
+    /// </summary>
+    public static Task<GitCliResponse> InvokeAsync(this IGitCliEmulator emulator, string[] args, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(emulator);
+
+        return emulator.InvokeAsync(args, new AutoApproval(cancellationToken));
+    }
 }

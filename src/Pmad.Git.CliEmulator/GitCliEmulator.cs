@@ -10,7 +10,7 @@ namespace Pmad.Git.CliEmulator;
 /// Managed Git CLI emulator that dispatches git-like commands against a local
 /// <see cref="IGitWorkspaceRepository"/> and optional <see cref="IGitRepositoryWithRemote"/>.
 /// </summary>
-public sealed class GitCliEmulator : IDisposable, IAsyncDisposable
+public sealed class GitCliEmulator : IGitCliEmulator, IDisposable, IAsyncDisposable
 {
     private readonly IGitWorkspaceRepository _repository;
     private readonly IGitRepositoryWithRemote? _remote;
