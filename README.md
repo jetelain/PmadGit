@@ -2,13 +2,14 @@
 
 `Pmad.Git` is a suite of lightweight, modular .NET 8 libraries for inspecting, authoring, synchronizing, and serving Git repositories.
 
-It is split into five focused packages:
+It is split into six focused packages:
 
 | Package | Description | Core Dependencies |
 |:---|:---|:---|
 | **[Pmad.Git.LocalRepositories](src/Pmad.Git.LocalRepositories/README.md)** | 100% managed C# Git engine for local repository inspection, index (DIRC v2) reading/writing, working tree staging, workspace commit management, and synchronization abstractions (`IGitRepositoryWithRemote`, `GitRepositorySynchronizer`). Zero dependency on the `git` CLI or C-bindings. | Pure .NET 8 |
 | **[Pmad.Git.RemoteClient](src/Pmad.Git.RemoteClient/README.md)** | 100% managed C# Smart HTTP client implementing `IGitRepositoryWithRemote` for clone, fetch, pull, push, and automated background synchronization without any CLI dependency. | Pure .NET 8 |
 | **[Pmad.Git.Protocol](src/Pmad.Git.Protocol/README.md)** | Low-level Git wire protocol (pkt-line, capability negotiation) and streaming packfile reader/writer engine. | Pure .NET 8 |
+| **[Pmad.Git.CliEmulator](src/Pmad.Git.CliEmulator/README.md)** | Managed Git CLI emulator for AI agents with a standard `git` command surface (`status`, `log`, `diff`, `add`, `commit`, `branch`, etc.), granular approval gates (`IUserApproval`), exit codes, and Native AOT support. Zero dependency on native Git. | Pure .NET 8 |
 | **[Pmad.Git.Cli](src/Pmad.Git.Cli/README.md)** | High-level Git CLI wrapper for remote synchronization (push/pull/fetch), branch management, tracking status, diff stats, and merge conflict resolution using the local `git` executable. | `git` executable |
 | **[Pmad.Git.HttpServer](src/Pmad.Git.HttpServer/README.md)** | ASP.NET Core middleware enabling repositories to be served over the standard Git Smart HTTP protocol (`git-upload-pack` and `git-receive-pack`) with synchronizer caching service. | ASP.NET Core |
 
@@ -30,6 +31,12 @@ It is split into five focused packages:
 - **Continuous Background Sync**: Wire up any local repository to its remote counterpart via `repository.CreateSynchronizer(new GitRemoteClientSyncOptions { ... })`.
 - **Rich Authentication**: Support for Personal Access Tokens (PAT), HTTP Basic auth, Bearer tokens, and custom authorization headers.
 - **In-Memory Three-Way Merges**: Full support for fast-forward and 3-way merges with conflict detection during pull.
+
+### Git CLI Emulator for AI Agents (`Pmad.Git.CliEmulator`)
+- **Git Command Surface for Agents**: Dispatches standard Git CLI commands (`status`, `log`, `diff`, `add`, `commit`, `branch`, `merge`, `reset`, `push`, `pull`, `fetch`, etc.) via string argument arrays without spawning native processes or installing Git.
+- **Granular Approval Gates**: Fine-grained asynchronous `IUserApproval` callback interface to intercept and approve or reject destructive or network operations (e.g. discarding uncommitted changes, history rewrites, losing unpushed commits, remote push/fetch) with rich context.
+- **Standardized CLI Responses**: Returns `GitCliResponse` with structured `ExitCode`, `StdOut`, and `StdErr`, including exit code 130 on denial or cancellation.
+- **Native AOT Compatible**: Fully compatible with Ahead-of-Time compilation (`<PublishAot>true</PublishAot>`).
 
 ### Git CLI Wrapper (`Pmad.Git.Cli`)
 - **CLI-Backed Synchronization**: Alternative synchronizer implementation that offloads push/pull/fetch to the native `git` executable when present on the system.
@@ -85,6 +92,23 @@ await using var synchronizer = repo.CreateSynchronizer(new GitRemoteClientSyncOp
 // Any local commit automatically triggers a debounced push to the remote server!
 await repo.StageAsync("README.md");
 await repo.CommitAsync("Updated documentation");
+```
+
+### Git CLI Emulation for AI Agents (Zero CLI)
+
+```csharp
+using Pmad.Git.CliEmulator;
+using Pmad.Git.RemoteClient;
+
+// Open repository with managed Smart HTTP remote and run commands with approval gates
+using var emulator = GitCliEmulator.Open("/path/to/repo", new GitRemoteClientOptions
+{
+    Credentials = GitHttpCredentials.PersonalAccessToken("your-token")
+});
+
+// Run commands returning structured exit code and output
+var response = await emulator.InvokeAsync(["status"]);
+Console.WriteLine(response.StdOut);
 ```
 
 ### Remote Tracking and Synchronization via CLI
