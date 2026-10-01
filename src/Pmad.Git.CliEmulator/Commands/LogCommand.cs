@@ -11,10 +11,9 @@ internal static class LogCommand
         var cmd = new Command("log") { Description = "Show commit logs" };
 
         var onelineOpt = new Option<bool>("--oneline") { Description = "Abbreviate each commit to a single line" };
-        var maxCountOpt = new Option<int>("-n", "--max-count")
+        var maxCountOpt = new Option<int?>("-n", "--max-count")
         {
-            Description = "Maximum number of commits to show",
-            DefaultValueFactory = _ => 100
+            Description = "Maximum number of commits to show"
         };
         var refArg = new Argument<string?>("ref")
         {
@@ -34,9 +33,11 @@ internal static class LogCommand
 
             try
             {
-                var commits = ctx.Repository
-                    .EnumerateCommitsAsync(startRef, ct)
-                    .Take(maxCount, ct);
+                var commits = ctx.Repository.EnumerateCommitsAsync(startRef, ct);
+                if (maxCount.HasValue && maxCount.Value > 0)
+                {
+                    commits = commits.Take(maxCount.Value, ct);
+                }
 
                 if (oneline)
                 {

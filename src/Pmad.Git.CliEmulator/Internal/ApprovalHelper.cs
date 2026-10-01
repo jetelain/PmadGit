@@ -53,18 +53,13 @@ internal static class ApprovalHelper
         int maxCount,
         CancellationToken ct)
     {
-        // Find remote tracking refs
-        var remoteRefs = await repo.GetReferencesByPrefixAsync("refs/remotes/", ct).ConfigureAwait(false);
-        var remoteHashes = new HashSet<GitHash>(remoteRefs.Values);
-
         var result = new List<GitCommitSummary>();
         await foreach (var commit in repo.EnumerateCommitsAsync(branchName, ct).ConfigureAwait(false))
         {
-            if (remoteHashes.Contains(commit.Id))
+            if (await repo.IsCommitPushedAsync(commit.Id, null, ct).ConfigureAwait(false))
             {
                 break;
             }
-            // Also stop if reachable from any remote (expensive check skipped for performance; hash equality is good enough)
             result.Add(ToSummary(commit));
             if (result.Count >= maxCount)
             {

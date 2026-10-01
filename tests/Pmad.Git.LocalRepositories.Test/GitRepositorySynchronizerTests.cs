@@ -253,6 +253,14 @@ public sealed class GitRepositorySynchronizerTests
         Assert.NotNull(synchronizer.Conflict);
         Assert.Equal(new[] { "conflict.txt" }, synchronizer.Conflict!.ConflictedFiles);
     }
+
+    [Fact]
+    public async Task GetRemoteUrlAsync_DefaultImplementation_ReturnsNull()
+    {
+        IGitRepositoryWithRemote fake = new FakeRemoteRepository();
+        var url = await fake.GetRemoteUrlAsync("origin");
+        Assert.Null(url);
+    }
 }
 
 

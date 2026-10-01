@@ -1553,11 +1553,16 @@ public sealed class GitRepository : IGitRepository, IGitRepositoryCacheInvalidat
     }
 
     /// <summary>
-    /// Selects the <paramref name="parentIndex"/>-th parent (1-based) of <paramref name="start"/>.
+    /// Selects the <paramref name="parentIndex"/>-th parent (1-based) of <paramref name="start"/>,
+    /// or <paramref name="start"/> itself when <paramref name="parentIndex"/> is 0 (<c>^0</c>).
     /// </summary>
     private async Task<GitHash> SelectParentAsync(GitHash start, int parentIndex, string originalReference, CancellationToken cancellationToken)
     {
         var commit = await GetCommitAsync(start, cancellationToken).ConfigureAwait(false);
+        if (parentIndex == 0)
+        {
+            return commit.Id;
+        }
         if (parentIndex < 1 || parentIndex > commit.Parents.Count)
         {
             throw new InvalidOperationException(
@@ -2454,7 +2459,7 @@ public sealed class GitRepository : IGitRepository, IGitRepositoryCacheInvalidat
                normalizedPath.StartsWith(normalizedFilter + "/", StringComparison.Ordinal);
     }
 
-    private async Task<byte[]> GetEntryDiffContentAsync(TreeLeaf leaf, CancellationToken cancellationToken)
+    internal async Task<byte[]> GetEntryDiffContentAsync(TreeLeaf leaf, CancellationToken cancellationToken)
     {
         if (leaf.Mode == SubmoduleMode)
         {

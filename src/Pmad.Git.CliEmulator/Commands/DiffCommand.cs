@@ -37,6 +37,10 @@ internal static class DiffCommand
                 {
                     diff = await ctx.Repository.GetUnstagedDiffAsync(path, ct);
                 }
+                else if (from != null && to == null)
+                {
+                    diff = await ctx.Repository.GetWorktreeDiffAsync(from, path, ct);
+                }
                 else
                 {
                     diff = await ctx.Repository.GetDiffAsync(from, to, path, ct);

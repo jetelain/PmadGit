@@ -54,13 +54,13 @@ internal static class PushCommand
 
                 if (force)
                 {
-                    var headCommit = await ctx.Repository.GetCommitAsync(cancellationToken: ct);
+                    var branchCommit = await ctx.Repository.GetCommitAsync(currentBranch, cancellationToken: ct);
                     await ApprovalHelper.RequireAsync(
                         new HistoryRewriteContext
                         {
                             Operation = "push --force",
                             BranchName = currentBranch,
-                            AffectedCommits = [ApprovalHelper.ToSummary(headCommit)],
+                            AffectedCommits = [ApprovalHelper.ToSummary(branchCommit)],
                             InvolvesRemotePush = true,
                         },
                         ctx.Approval.ApproveHistoryRewriteAsync,

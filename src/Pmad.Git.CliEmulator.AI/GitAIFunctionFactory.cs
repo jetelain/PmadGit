@@ -16,19 +16,20 @@ public static class GitAIFunctionFactory
     /// </summary>
     /// <param name="emulator">The underlying CLI emulator to invoke.</param>
     /// <param name="userApproval">
-    /// Optional approval gate. When <see langword="null"/> all operations are auto-approved
-    /// (equivalent to <c>NoUserApproval</c>).
+    /// Optional approval gate. When <see langword="null"/> all gated operations are denied
+    /// (equivalent to <see cref="DenyApproval.Instance"/>).
     /// </param>
     /// <returns>An <see cref="AIFunction"/> ready to be placed in <see cref="ChatOptions.Tools"/>.</returns>
     public static AIFunction Create(IGitCliEmulator emulator, IUserApproval? userApproval = null)
     {
         ArgumentNullException.ThrowIfNull(emulator);
+        var approval = userApproval ?? DenyApproval.Instance;
 
         return AIFunctionFactory.Create(
             async ([Description("Git sub-command and its arguments (e.g. [\"status\"], [\"commit\", \"-m\", \"msg\"], [\"log\", \"--oneline\", \"-10\"])")] string[] args,
                    CancellationToken cancellationToken) =>
             {
-                var response = await emulator.InvokeAsync(args, userApproval, cancellationToken).ConfigureAwait(false);
+                var response = await emulator.InvokeAsync(args, approval, cancellationToken).ConfigureAwait(false);
                 return FormatResponse(response);
             },
             "git",
@@ -45,19 +46,21 @@ public static class GitAIFunctionFactory
     /// </summary>
     /// <param name="emulator">The underlying CLI emulator to invoke.</param>
     /// <param name="userApproval">
-    /// Optional approval gate. When <see langword="null"/> all operations are auto-approved.
+    /// Optional approval gate. When <see langword="null"/> all gated operations are denied
+    /// (equivalent to <see cref="DenyApproval.Instance"/>).
     /// </param>
     /// <returns>An <see cref="AIFunction"/> ready to be placed in <see cref="ChatOptions.Tools"/>.</returns>
     public static AIFunction CreateFromString(IGitCliEmulator emulator, IUserApproval? userApproval = null)
     {
         ArgumentNullException.ThrowIfNull(emulator);
+        var approval = userApproval ?? DenyApproval.Instance;
 
         return AIFunctionFactory.Create(
             async ([Description("Space-separated git command and arguments, e.g. \"status\", \"commit -m 'Initial commit'\", \"log --oneline -10\"")] string commandLine,
                    CancellationToken cancellationToken) =>
             {
                 var args = ParseCommandLine(commandLine);
-                var response = await emulator.InvokeAsync(args, userApproval, cancellationToken).ConfigureAwait(false);
+                var response = await emulator.InvokeAsync(args, approval, cancellationToken).ConfigureAwait(false);
                 return FormatResponse(response);
             },
             "git",

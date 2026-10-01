@@ -30,6 +30,11 @@ internal static class ConfigCommand
 
             try
             {
+                if (global && (unset || value != null))
+                {
+                    return ctx.WriteError("Modifying global configuration is not supported.");
+                }
+
                 if (unset)
                 {
                     await ctx.Repository.UnsetConfigAsync(key, global, ct);

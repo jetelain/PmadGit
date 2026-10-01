@@ -50,31 +50,21 @@ internal static class RestoreCommand
 
                 if (targetStaged)
                 {
-                    await ctx.Repository.UnstageAsync(paths, ct);
+                    if (source != null)
+                    {
+                        await ctx.Repository.RestoreIndexAsync(paths, source, ct);
+                    }
+                    else
+                    {
+                        await ctx.Repository.UnstageAsync(paths, ct);
+                    }
                 }
 
                 if (targetWorktree)
                 {
-                    if (source != null)
+                    foreach (var path in paths)
                     {
-                        foreach (var path in paths)
-                        {
-                            var content = await ctx.Repository.ReadFileAsync(path, source, ct);
-                            var fullPath = Path.Combine(ctx.Repository.RootPath, path.Replace('/', Path.DirectorySeparatorChar));
-                            var dir = Path.GetDirectoryName(fullPath);
-                            if (!string.IsNullOrEmpty(dir))
-                            {
-                                Directory.CreateDirectory(dir);
-                            }
-                            await File.WriteAllBytesAsync(fullPath, content, ct);
-                        }
-                    }
-                    else
-                    {
-                        foreach (var path in paths)
-                        {
-                            await ctx.Repository.RestoreFileAsync(path, ct);
-                        }
+                        await ctx.Repository.RestoreFileAsync(path, source, ct);
                     }
                 }
                 return 0;

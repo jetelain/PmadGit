@@ -79,6 +79,22 @@ public interface IGitWorkspaceRepository : IGitRepository, IDisposable
     Task RestoreFileAsync(string relativePath, CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Discards working tree modifications for a file by restoring its content from a specified source tree-ish.
+    /// </summary>
+    /// <param name="relativePath">Repository-relative file path.</param>
+    /// <param name="source">Commit or tree-ish to restore from.</param>
+    /// <param name="cancellationToken">Token used to cancel the async operation.</param>
+    Task RestoreFileAsync(string relativePath, string? source, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Restores index entries for the specified files from the specified tree-ish (or HEAD if not specified).
+    /// </summary>
+    /// <param name="relativePaths">Collection of repository-relative file paths.</param>
+    /// <param name="source">Optional commit or tree-ish to restore from.</param>
+    /// <param name="cancellationToken">Token used to cancel the async operation.</param>
+    Task RestoreIndexAsync(IEnumerable<string> relativePaths, string? source = null, CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// Discards all working tree modifications and deletions.
     /// </summary>
     /// <param name="removeUntracked">Whether to also delete untracked files from disk.</param>
@@ -169,6 +185,18 @@ public interface IGitWorkspaceRepository : IGitRepository, IDisposable
     /// <param name="cancellationToken">Cancellation token.</param>
     /// <returns>The unified diff text.</returns>
     Task<string> GetStagedDiffAsync(
+        string? path = null,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Computes the unified diff between the specified commit and the current working tree (including staged and unstaged changes).
+    /// </summary>
+    /// <param name="commitIsh">The commit or tree-ish to compare the working tree against.</param>
+    /// <param name="path">Optional path filter.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>The unified diff text.</returns>
+    Task<string> GetWorktreeDiffAsync(
+        string commitIsh,
         string? path = null,
         CancellationToken cancellationToken = default);
 

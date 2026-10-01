@@ -26,7 +26,7 @@ public static class GitCliEmulatorExtensions
         ArgumentNullException.ThrowIfNull(repository);
 
         var remote = new GitRemoteClientRepository(repository, defaultRemoteUrl, remoteOptions);
-        return new GitCliEmulator(repository, remote, disposeRepositories);
+        return new GitCliEmulator(repository, remote, disposeWorkspace: disposeRepositories, disposeRemote: true);
     }
 
     /// <summary>

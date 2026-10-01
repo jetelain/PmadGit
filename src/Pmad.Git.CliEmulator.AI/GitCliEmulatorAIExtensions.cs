@@ -14,7 +14,7 @@ public static class GitCliEmulatorAIExtensions
     /// </summary>
     /// <param name="emulator">The CLI emulator to wrap.</param>
     /// <param name="userApproval">
-    /// Optional approval gate.  When <see langword="null"/> all operations are auto-approved.
+    /// Optional approval gate.  When <see langword="null"/> all gated operations are denied.
     /// </param>
     /// <returns>An <see cref="AIFunction"/> ready to register in <see cref="ChatOptions.Tools"/>.</returns>
     public static AIFunction CreateAIFunction(
@@ -29,7 +29,7 @@ public static class GitCliEmulatorAIExtensions
     /// </summary>
     /// <param name="emulator">The CLI emulator to wrap.</param>
     /// <param name="userApproval">
-    /// Optional approval gate.  When <see langword="null"/> all operations are auto-approved.
+    /// Optional approval gate.  When <see langword="null"/> all gated operations are denied.
     /// </param>
     /// <returns>An <see cref="AIFunction"/> ready to register in <see cref="ChatOptions.Tools"/>.</returns>
     public static AIFunction CreateAIFunctionFromString(

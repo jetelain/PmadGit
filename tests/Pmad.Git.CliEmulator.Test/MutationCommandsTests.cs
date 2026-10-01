@@ -149,6 +149,56 @@ public class MutationCommandsTests
     }
 
     [Fact]
+    public async Task Config_Global_Writes_Rejected()
+    {
+        using var testRepo = GitTestRepository.Create();
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+        var emulator = new GitCliEmulator(repo);
+        var approval = new TestUserApproval();
+
+        var setGlobal = await emulator.InvokeAsync(["config", "--global", "user.name", "attacker"], approval);
+        Assert.NotEqual(0, setGlobal.ExitCode);
+        Assert.Contains("Modifying global configuration is not supported", setGlobal.StdErr);
+
+        var unsetGlobal = await emulator.InvokeAsync(["config", "--global", "--unset", "user.name"], approval);
+        Assert.NotEqual(0, unsetGlobal.ExitCode);
+        Assert.Contains("Modifying global configuration is not supported", unsetGlobal.StdErr);
+    }
+
+    [Fact]
+    public async Task Restore_Staged_Source_AppliesSourceTreeToIndex()
+    {
+        using var testRepo = GitTestRepository.Create();
+        var initialHash = testRepo.Head.ToString();
+        testRepo.Commit("Second commit", ("README.md", "version 2"));
+
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+        var emulator = new GitCliEmulator(repo);
+        var approval = new TestUserApproval();
+
+        // Staged restore from initial commit
+        var res = await emulator.InvokeAsync(["restore", "--staged", "--source", initialHash, "README.md"], approval);
+        Assert.Equal(0, res.ExitCode);
+
+        // Index now has initial version ("seed"), while HEAD has "version 2"
+        var diffRes = await emulator.InvokeAsync(["diff", "--staged"], approval);
+        Assert.Contains("-version 2", diffRes.StdOut);
+        Assert.Contains("+seed", diffRes.StdOut);
+    }
+
+    [Fact]
+    public async Task Restore_Source_TraversalPath_Rejected()
+    {
+        using var testRepo = GitTestRepository.Create();
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+        var emulator = new GitCliEmulator(repo);
+        var approval = new TestUserApproval();
+
+        var resTraversal = await emulator.InvokeAsync(["restore", "--source", "HEAD", "../outside.txt"], approval);
+        Assert.NotEqual(0, resTraversal.ExitCode);
+    }
+
+    [Fact]
     public async Task Restore_CreatesMissingDirectory_WhenRestoringSubdirectoryFile()
     {
         using var testRepo = GitTestRepository.Create();

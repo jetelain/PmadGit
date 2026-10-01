@@ -812,6 +812,28 @@ public sealed class GitRemoteClientRepository : IGitRepositoryWithRemote, IDispo
     public Task<bool> IsCommitPushedAsync(GitHash commitHash, string? remoteBranch = null, CancellationToken cancellationToken = default)
         => _repo.IsCommitPushedAsync(commitHash, remoteBranch, cancellationToken);
 
+    /// <inheritdoc />
+    public async Task<string?> GetRemoteUrlAsync(string remoteName, CancellationToken cancellationToken = default)
+    {
+        var configPath = Path.Combine(_repo.GitDirectory, "config");
+        if (File.Exists(configPath))
+        {
+            var config = await GitConfigFile.ReadWithIncludesAsync(configPath, cancellationToken).ConfigureAwait(false);
+            var configuredUrl = config.GetValue("remote", remoteName, "url");
+            if (!string.IsNullOrEmpty(configuredUrl))
+            {
+                return configuredUrl;
+            }
+        }
+
+        if (!string.IsNullOrEmpty(DefaultRemoteUrl))
+        {
+            return DefaultRemoteUrl;
+        }
+
+        return null;
+    }
+
     private void EnsureWorkspace()
     {
         if (_workspaceRepo is null)

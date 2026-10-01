@@ -19,8 +19,9 @@ public static class GitCliEmulatorAIServiceCollectionExtensions
     /// <param name="repositoryPath">Path to the working directory or <c>.git</c> directory.</param>
     /// <param name="remoteOptions">Optional HTTP / credentials options for remote operations.</param>
     /// <param name="userApproval">
-    /// Optional approval gate factory.  When <see langword="null"/> all operations are auto-approved.
-    /// Receives the <see cref="IServiceProvider"/> so you can resolve scoped services if needed.
+    /// Optional approval gate factory. When <see langword="null"/>, or when the factory returns <see langword="null"/>,
+    /// all gated operations are denied. Receives the root <see cref="IServiceProvider"/>; because the emulator and
+    /// <see cref="AIFunction"/> are registered as singletons, only singleton dependencies may be resolved.
     /// </param>
     /// <returns>The same <see cref="IServiceCollection"/> for chaining.</returns>
     public static IServiceCollection AddGitCliEmulatorAI(

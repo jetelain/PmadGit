@@ -46,7 +46,7 @@ internal static class StatusFormatter
                     }
                 }
             }
-            catch { /* tracking info is best-effort */ }
+            catch (Exception ex) when (ex is not OperationCanceledException) { /* tracking info is best-effort */ }
         }
 
         await writer.WriteLineAsync().ConfigureAwait(false);

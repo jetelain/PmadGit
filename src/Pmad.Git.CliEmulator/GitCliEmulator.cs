@@ -14,7 +14,8 @@ public sealed class GitCliEmulator : IGitCliEmulator, IDisposable, IAsyncDisposa
 {
     private readonly IGitWorkspaceRepository _repository;
     private readonly IGitRepositoryWithRemote? _remote;
-    private readonly bool _disposeRepositories;
+    private readonly bool _disposeWorkspace;
+    private readonly bool _disposeRemote;
 
     /// <summary>
     /// Gets the underlying local workspace repository.
@@ -39,10 +40,20 @@ public sealed class GitCliEmulator : IGitCliEmulator, IDisposable, IAsyncDisposa
         IGitWorkspaceRepository repository,
         IGitRepositoryWithRemote? remote = null,
         bool disposeRepositories = false)
+        : this(repository, remote, disposeWorkspace: disposeRepositories, disposeRemote: disposeRepositories)
+    {
+    }
+
+    internal GitCliEmulator(
+        IGitWorkspaceRepository repository,
+        IGitRepositoryWithRemote? remote,
+        bool disposeWorkspace,
+        bool disposeRemote)
     {
         _repository = repository ?? throw new ArgumentNullException(nameof(repository));
         _remote = remote;
-        _disposeRepositories = disposeRepositories;
+        _disposeWorkspace = disposeWorkspace;
+        _disposeRemote = disposeRemote;
     }
 
     /// <summary>
@@ -58,7 +69,8 @@ public sealed class GitCliEmulator : IGitCliEmulator, IDisposable, IAsyncDisposa
         : this(
             remoteClient?.WorkspaceRepository ?? throw new ArgumentException("A non-bare repository with an active workspace is required.", nameof(remoteClient)),
             remoteClient,
-            disposeRepositories)
+            disposeWorkspace: disposeRepositories,
+            disposeRemote: disposeRepositories)
     {
     }
 
@@ -220,23 +232,20 @@ public sealed class GitCliEmulator : IGitCliEmulator, IDisposable, IAsyncDisposa
     /// <inheritdoc />
     public void Dispose()
     {
-        if (_disposeRepositories)
+        if (_disposeRemote && _remote is IDisposable disposableRemote)
         {
-            if (_remote is IDisposable disposableRemote)
-            {
-                disposableRemote.Dispose();
-            }
-            if (_repository is IDisposable disposableWorkspace)
-            {
-                disposableWorkspace.Dispose();
-            }
+            disposableRemote.Dispose();
+        }
+        if (_disposeWorkspace && _repository is IDisposable disposableWorkspace)
+        {
+            disposableWorkspace.Dispose();
         }
     }
 
     /// <inheritdoc />
     public async ValueTask DisposeAsync()
     {
-        if (_disposeRepositories)
+        if (_disposeRemote)
         {
             if (_remote is IAsyncDisposable asyncRemote)
             {
@@ -246,7 +255,10 @@ public sealed class GitCliEmulator : IGitCliEmulator, IDisposable, IAsyncDisposa
             {
                 disposableRemote.Dispose();
             }
+        }
 
+        if (_disposeWorkspace)
+        {
             if (_repository is IAsyncDisposable asyncWorkspace)
             {
                 await asyncWorkspace.DisposeAsync().ConfigureAwait(false);

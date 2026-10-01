@@ -28,7 +28,7 @@ internal static class BranchFormatter
                     var subject = commit.Message.Split('\n', 2)[0].Trim();
                     await writer.WriteLineAsync($"{prefix}{branch,-30} {shortHash} {subject}").ConfigureAwait(false);
                 }
-                catch
+                catch (Exception ex) when (ex is not OperationCanceledException)
                 {
                     await writer.WriteLineAsync($"{prefix}{branch}").ConfigureAwait(false);
                 }

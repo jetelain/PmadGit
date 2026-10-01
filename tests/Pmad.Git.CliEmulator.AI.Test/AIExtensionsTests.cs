@@ -41,6 +41,21 @@ public class AIExtensionsTests
         Assert.StartsWith("[exit 130]", result?.ToString());
     }
 
+    [Fact]
+    public async Task CreateAIFunction_DefaultApproval_DeniesDestructiveOperation()
+    {
+        using var testRepo = GitTestRepository.Create();
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+        using var emulator = new GitCliEmulator(repo);
+
+        File.WriteAllText(Path.Combine(testRepo.WorkingDirectory, "README.md"), "modified");
+
+        var fn = emulator.CreateAIFunction();
+        var result = await fn.InvokeAsync(new AIFunctionArguments { ["args"] = new[] { "restore", "README.md" } });
+
+        Assert.StartsWith("[exit 130]", result?.ToString());
+    }
+
     // ── CreateAIFunctionFromString ─────────────────────────────────────────
 
     [Fact]
@@ -66,6 +81,21 @@ public class AIExtensionsTests
         File.WriteAllText(Path.Combine(testRepo.WorkingDirectory, "README.md"), "modified");
 
         var fn = emulator.CreateAIFunctionFromString(new AlwaysDenyApproval());
+        var result = await fn.InvokeAsync(new AIFunctionArguments { ["commandLine"] = "restore README.md" });
+
+        Assert.StartsWith("[exit 130]", result?.ToString());
+    }
+
+    [Fact]
+    public async Task CreateAIFunctionFromString_DefaultApproval_DeniesDestructiveOperation()
+    {
+        using var testRepo = GitTestRepository.Create();
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+        using var emulator = new GitCliEmulator(repo);
+
+        File.WriteAllText(Path.Combine(testRepo.WorkingDirectory, "README.md"), "modified");
+
+        var fn = emulator.CreateAIFunctionFromString();
         var result = await fn.InvokeAsync(new AIFunctionArguments { ["commandLine"] = "restore README.md" });
 
         Assert.StartsWith("[exit 130]", result?.ToString());

@@ -116,6 +116,18 @@ public class GitRepositoryAncestorNotationTests
         }
     }
 
+    [Fact]
+    public async Task GetCommitAsync_Caret0_ReturnsSameCommit()
+    {
+        var (repo, testRepo, hashes) = CreateLinearHistory(1);
+        using (testRepo)
+        {
+            var commit = await repo.GetCommitAsync("HEAD^0");
+
+            Assert.Equal(hashes[0], commit.Id.ToString());
+        }
+    }
+
     // ── Chained suffixes ─────────────────────────────────────────────────
 
     [Fact]

@@ -224,6 +224,109 @@ public sealed class GitIndexManagerTests
     }
 
     [Fact]
+    public async Task RestoreFileAsync_WithSource_RestoresFromSpecifiedCommitTree()
+    {
+        using var testRepo = GitTestRepository.Create();
+        var c1 = testRepo.Commit("Initial", ("file.txt", "version-1"));
+        testRepo.Commit("Second", ("file.txt", "version-2"));
+
+        await File.WriteAllTextAsync(Path.Combine(testRepo.WorkingDirectory, "file.txt"), "version-3-dirty");
+
+        var repo = GitRepository.Open(testRepo.WorkingDirectory);
+        var manager = repo.IndexManager!;
+
+        await manager.RestoreFileAsync("file.txt", source: c1.Value);
+
+        Assert.Equal("version-1", await File.ReadAllTextAsync(Path.Combine(testRepo.WorkingDirectory, "file.txt")));
+
+        // Index still matches commit 2 ("version-2"), so status reports modified in working tree
+        var status = await manager.GetStatusAsync();
+        var entry = status.FindEntry("file.txt");
+        Assert.NotNull(entry);
+        Assert.Equal(GitFileStatus.Modified, entry.WorkingTreeStatus);
+    }
+
+    [Fact]
+    public async Task RestoreFileAsync_WithSource_WhenFileNotFound_ThrowsFileNotFoundException()
+    {
+        using var testRepo = GitTestRepository.Create();
+        var c1 = testRepo.Commit("Initial", ("file.txt", "version-1"));
+
+        var repo = GitRepository.Open(testRepo.WorkingDirectory);
+        var manager = repo.IndexManager!;
+
+        await Assert.ThrowsAsync<FileNotFoundException>(() => manager.RestoreFileAsync("nonexistent.txt", source: c1.Value));
+    }
+
+    [Fact]
+    public async Task RestoreIndexAsync_WithoutSource_ResetsIndexEntryToHead()
+    {
+        using var testRepo = GitTestRepository.Create();
+        testRepo.Commit("Initial", ("file.txt", "initial-content"));
+
+        // Stage modified content
+        await File.WriteAllTextAsync(Path.Combine(testRepo.WorkingDirectory, "file.txt"), "staged-content");
+        var repo = GitRepository.Open(testRepo.WorkingDirectory);
+        var manager = repo.IndexManager!;
+        await manager.StageAsync("file.txt");
+
+        // Further dirty the working tree
+        await File.WriteAllTextAsync(Path.Combine(testRepo.WorkingDirectory, "file.txt"), "workingtree-content");
+
+        await manager.RestoreIndexAsync(new[] { "file.txt" });
+
+        // Working tree should still have "workingtree-content"
+        Assert.Equal("workingtree-content", await File.ReadAllTextAsync(Path.Combine(testRepo.WorkingDirectory, "file.txt")));
+
+        // Index should be restored to match HEAD ("initial-content"), not staged
+        var status = await manager.GetStatusAsync();
+        var entry = status.FindEntry("file.txt")!;
+        Assert.Equal(GitFileStatus.Clean, entry.StagedStatus);
+        Assert.Equal(GitFileStatus.Modified, entry.WorkingTreeStatus);
+    }
+
+    [Fact]
+    public async Task RestoreIndexAsync_WithSource_AppliesSourceCommitTreeToIndex()
+    {
+        using var testRepo = GitTestRepository.Create();
+        var c1 = testRepo.Commit("Initial", ("file.txt", "version-1"));
+        testRepo.Commit("Second", ("file.txt", "version-2"));
+
+        var repo = GitRepository.Open(testRepo.WorkingDirectory);
+        var manager = repo.IndexManager!;
+
+        await manager.RestoreIndexAsync(new[] { "file.txt" }, source: c1.Value);
+
+        // Status shows staged modification because index has v1 while HEAD has v2
+        var status = await manager.GetStatusAsync();
+        var entry = status.FindEntry("file.txt")!;
+        Assert.Equal(GitFileStatus.StagedModified, entry.StagedStatus);
+
+        // Read blob content from index
+        var index = await GitIndex.ReadAsync(manager.IndexPath);
+        var indexEntry = index.FindEntry("file.txt")!;
+        var blob = (await repo.ObjectStore.ReadObjectAsync(indexEntry.Hash)).Content;
+        Assert.Equal("version-1", Encoding.UTF8.GetString(blob));
+    }
+
+    [Fact]
+    public async Task RestoreIndexAsync_WhenPathNotInSource_RemovesFromIndex()
+    {
+        using var testRepo = GitTestRepository.Create();
+        testRepo.Commit("Initial", ("existing.txt", "keep"));
+
+        await File.WriteAllTextAsync(Path.Combine(testRepo.WorkingDirectory, "newfile.txt"), "new");
+        var repo = GitRepository.Open(testRepo.WorkingDirectory);
+        var manager = repo.IndexManager!;
+        await manager.StageAsync("newfile.txt");
+
+        await manager.RestoreIndexAsync(new[] { "newfile.txt" }, source: "HEAD");
+
+        var index = await GitIndex.ReadAsync(manager.IndexPath);
+        Assert.Null(index.FindEntry("newfile.txt"));
+    }
+
+    [Fact]
     public async Task RestoreAllAsync_DiscardsAllWorkingTreeChanges()
     {
         using var testRepo = GitTestRepository.Create();

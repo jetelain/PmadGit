@@ -73,4 +73,29 @@ public class DiffCommandTests
         Assert.Equal(0, response.ExitCode);
         Assert.True(string.IsNullOrWhiteSpace(response.StdOut));
     }
+
+    [Fact]
+    public async Task Diff_SingleCommit_ComparesAgainstWorkingTree()
+    {
+        using var testRepo = GitTestRepository.Create();
+        var initialHash = testRepo.Head.ToString();
+
+        var readmePath = Path.Combine(testRepo.WorkingDirectory, "README.md");
+        File.WriteAllText(readmePath, "staged change");
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+        var emulator = new GitCliEmulator(repo);
+        var approval = new TestUserApproval();
+
+        await emulator.InvokeAsync(["add", "README.md"], approval);
+
+        File.WriteAllText(Path.Combine(testRepo.WorkingDirectory, "unstaged.txt"), "unstaged content");
+        await emulator.InvokeAsync(["add", "unstaged.txt"], approval);
+        File.WriteAllText(Path.Combine(testRepo.WorkingDirectory, "unstaged.txt"), "unstaged content modified");
+
+        var response = await emulator.InvokeAsync(["diff", initialHash], approval);
+
+        Assert.Equal(0, response.ExitCode);
+        Assert.Contains("+staged change", response.StdOut);
+        Assert.Contains("+unstaged content modified", response.StdOut);
+    }
 }

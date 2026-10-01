@@ -45,13 +45,13 @@ internal static class BranchCommand
                         return ctx.WriteError("Branch name required for delete.");
                     }
 
-                    var lost = await ApprovalHelper.CollectUnpushedCommitsAsync(ctx.Repository, $"refs/heads/{name}", 50, ct);
-                    if (forceDelete || lost.Count > 0)
+                    if (forceDelete)
                     {
+                        var lost = await ApprovalHelper.CollectUnpushedCommitsAsync(ctx.Repository, $"refs/heads/{name}", 50, ct);
                         await ApprovalHelper.RequireAsync(
                             new UnpushedCommitLossContext
                             {
-                                Operation = forceDelete ? "branch -D" : "branch -d",
+                                Operation = "branch -D",
                                 BranchName = name,
                                 CommitsToLose = lost,
                             },

@@ -166,4 +166,91 @@ public class ApprovalGateTests
         Assert.Equal(130, response.ExitCode);
         Assert.Contains("cancelled", response.StdErr, StringComparison.OrdinalIgnoreCase);
     }
+
+    [Fact]
+    public async Task Fetch_WithDefaultRemoteUrl_PassesEffectiveUrlToApproval()
+    {
+        using var testRepo = GitTestRepository.Create();
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+        using var emulator = repo.CreateCliEmulator(defaultRemoteUrl: "https://example.com/test-remote.git");
+        var approval = new TestUserApproval
+        {
+            ReadRemoteResult = ApprovalResult.Denied
+        };
+
+        var response = await emulator.InvokeAsync(["fetch"], approval);
+
+        Assert.Equal(130, response.ExitCode);
+        Assert.Single(approval.ReadRemoteCalls);
+        Assert.Equal("https://example.com/test-remote.git", approval.ReadRemoteCalls[0].RemoteUrl);
+    }
+
+    [Fact]
+    public async Task Push_ForceNonCurrentBranch_PassesTargetBranchCommitToApproval()
+    {
+        using var testRepo = GitTestRepository.Create();
+        var initialHash = testRepo.Head.ToString();
+        testRepo.Commit("Second commit", ("file2.txt", "content2"));
+
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+        using var emulator = repo.CreateCliEmulator(defaultRemoteUrl: "https://example.com/test-remote.git");
+        var approval = new TestUserApproval
+        {
+            HistoryRewriteResult = ApprovalResult.Denied
+        };
+
+        await emulator.InvokeAsync(["branch", "old-branch", initialHash], approval);
+
+        var response = await emulator.InvokeAsync(["push", "--force", "origin", "old-branch"], approval);
+
+        Assert.Equal(130, response.ExitCode);
+        Assert.Single(approval.HistoryRewriteCalls);
+        Assert.Equal("old-branch", approval.HistoryRewriteCalls[0].BranchName);
+        Assert.Equal(initialHash, approval.HistoryRewriteCalls[0].AffectedCommits[0].Hash);
+    }
+
+    [Fact]
+    public async Task CatFile_Cancelled_Returns130()
+    {
+        using var testRepo = GitTestRepository.Create();
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+        var emulator = new GitCliEmulator(repo);
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+
+        var response = await emulator.InvokeAsync(["cat-file", "-p", "HEAD"], cancellationToken: cts.Token);
+
+        Assert.Equal(130, response.ExitCode);
+        Assert.Contains("cancelled", response.StdErr, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task Branch_Verbose_Cancelled_Returns130()
+    {
+        using var testRepo = GitTestRepository.Create();
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+        var emulator = new GitCliEmulator(repo);
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+
+        var response = await emulator.InvokeAsync(["branch", "-v"], cancellationToken: cts.Token);
+
+        Assert.Equal(130, response.ExitCode);
+        Assert.Contains("cancelled", response.StdErr, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void CreateCliEmulator_DisposesCreatedRemoteClientRepository()
+    {
+        using var testRepo = GitTestRepository.Create();
+        var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+        var emulator = repo.CreateCliEmulator(defaultRemoteUrl: "https://example.com/test.git", disposeRepositories: false);
+
+        var remote = emulator.Remote as IDisposable;
+        Assert.NotNull(remote);
+
+        emulator.Dispose();
+
+        Assert.NotNull(repo.IndexManager);
+    }
 }

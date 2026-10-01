@@ -104,4 +104,12 @@ public interface IGitRepositoryWithRemote
     /// <param name="cancellationToken">Cancellation token.</param>
     /// <returns><see langword="true"/> if the commit is reachable from the remote branch (or any remote branch); otherwise, <see langword="false"/>.</returns>
     Task<bool> IsCommitPushedAsync(GitHash commitHash, string? remoteBranch = null, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Resolves the effective URL for the specified remote name, or returns <see langword="null"/> if not configured.
+    /// </summary>
+    /// <param name="remoteName">Name of the remote.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>The remote URL if known; otherwise <see langword="null"/>.</returns>
+    Task<string?> GetRemoteUrlAsync(string remoteName, CancellationToken cancellationToken = default) => Task.FromResult<string?>(null);
 }

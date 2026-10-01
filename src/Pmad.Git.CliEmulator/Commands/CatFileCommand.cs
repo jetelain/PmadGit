@@ -49,7 +49,7 @@ internal static class CatFileCommand
                 }
                 return 0;
             }
-            catch (Exception)
+            catch (Exception ex) when (ex is not OperationCanceledException and not GitCliDeniedException)
             {
                 try
                 {

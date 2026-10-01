@@ -55,8 +55,26 @@ internal static class FetchCommand
 
     internal static async Task<string> ResolveRemoteUrlAsync(CommandContext ctx, string remoteName, CancellationToken ct)
     {
+        if (ctx.Remote != null)
+        {
+            var remoteUrl = await ctx.Remote.GetRemoteUrlAsync(remoteName, ct).ConfigureAwait(false);
+            if (!string.IsNullOrEmpty(remoteUrl))
+            {
+                return remoteUrl;
+            }
+        }
+
         var configPath = Path.Combine(ctx.Repository.GitDirectory, "config");
-        var config = await GitConfigFile.ReadFromFileAsync(configPath, ct).ConfigureAwait(false);
-        return config.GetValue("remote", remoteName, "url") ?? remoteName;
+        if (File.Exists(configPath))
+        {
+            var config = await GitConfigFile.ReadFromFileAsync(configPath, ct).ConfigureAwait(false);
+            var url = config.GetValue("remote", remoteName, "url");
+            if (!string.IsNullOrEmpty(url))
+            {
+                return url;
+            }
+        }
+
+        return remoteName;
     }
 }

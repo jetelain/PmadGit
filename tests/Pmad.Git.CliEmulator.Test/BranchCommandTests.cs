@@ -58,6 +58,26 @@ public class BranchCommandTests
     }
 
     [Fact]
+    public async Task Branch_SafeDelete_MergedBranch_Succeeds_WhenUnpushedLossDenied()
+    {
+        using var testRepo = GitTestRepository.Create();
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+        var emulator = new GitCliEmulator(repo);
+        var approval = new TestUserApproval
+        {
+            UnpushedCommitLossResult = ApprovalResult.Denied
+        };
+
+        await emulator.InvokeAsync(["branch", "merged-branch-safe"], approval);
+
+        var response = await emulator.InvokeAsync(["branch", "-d", "merged-branch-safe"], approval);
+
+        Assert.Equal(0, response.ExitCode);
+        Assert.Contains("Deleted branch merged-branch-safe", response.StdOut);
+        Assert.Empty(approval.UnpushedCommitLossCalls);
+    }
+
+    [Fact]
     public async Task Branch_Delete_WithoutName_ReturnsError()
     {
         using var testRepo = GitTestRepository.Create();
