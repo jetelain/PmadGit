@@ -70,6 +70,38 @@ internal static class ApprovalHelper
         return result;
     }
 
+    /// <summary>
+    /// Collects commits reachable from <paramref name="fromTip"/> that are not reachable from <paramref name="target"/>
+    /// and not present on any remote tracking ref.
+    /// </summary>
+    public static async Task<IReadOnlyList<GitCommitSummary>> CollectLostCommitsAsync(
+        IGitRepository repo,
+        GitHash fromTip,
+        GitHash target,
+        CancellationToken ct)
+    {
+        var remoteRefs = await repo.GetReferencesByPrefixAsync("refs/remotes/", ct).ConfigureAwait(false);
+        var remoteHashes = new HashSet<GitHash>(remoteRefs.Values);
+
+        var result = new List<GitCommitSummary>();
+        await foreach (var commit in repo.EnumerateCommitsAsync(fromTip.ToString(), ct).ConfigureAwait(false))
+        {
+            if (commit.Id.Equals(target))
+            {
+                break;
+            }
+            if (!remoteHashes.Contains(commit.Id))
+            {
+                result.Add(ToSummary(commit));
+            }
+            if (result.Count >= 50)
+            {
+                break;
+            }
+        }
+        return result;
+    }
+
     /// <summary>Strips credentials from a URL for display.</summary>
     public static string SanitizeUrl(string url)
     {

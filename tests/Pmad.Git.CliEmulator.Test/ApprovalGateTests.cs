@@ -278,4 +278,115 @@ public class ApprovalGateTests
         Assert.Contains("denied", response.StdErr);
         Assert.Equal("modified locally", File.ReadAllText(readmePath));
     }
+
+    [Fact]
+    public async Task Switch_DiscardChanges_WhenDenied_ReturnsExitCode130()
+    {
+        using var testRepo = GitTestRepository.Create();
+        testRepo.CreateBranch("feature");
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+        var emulator = new GitCliEmulator(repo);
+        var approval = new TestUserApproval
+        {
+            DiscardLocalChangesResult = ApprovalResult.Denied
+        };
+
+        var readmePath = Path.Combine(testRepo.WorkingDirectory, "README.md");
+        File.WriteAllText(readmePath, "modified locally");
+
+        var response = await emulator.InvokeAsync(["switch", "--discard-changes", "feature"], approval);
+
+        Assert.Equal(130, response.ExitCode);
+        Assert.Contains("denied", response.StdErr);
+        Assert.Equal("modified locally", File.ReadAllText(readmePath));
+        Assert.Equal("master", await repo.GetCurrentBranchNameAsync());
+    }
+
+    [Fact]
+    public async Task Switch_DiscardChanges_WhenApproved_Succeeds()
+    {
+        using var testRepo = GitTestRepository.Create();
+        testRepo.CreateBranch("feature");
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+        var emulator = new GitCliEmulator(repo);
+        var approval = new TestUserApproval
+        {
+            DiscardLocalChangesResult = ApprovalResult.Approved
+        };
+
+        var readmePath = Path.Combine(testRepo.WorkingDirectory, "README.md");
+        File.WriteAllText(readmePath, "modified locally");
+
+        var response = await emulator.InvokeAsync(["switch", "--discard-changes", "feature"], approval);
+
+        Assert.Equal(0, response.ExitCode);
+        Assert.Contains("Switched to branch 'feature'", response.StdOut);
+        Assert.Equal("feature", await repo.GetCurrentBranchNameAsync());
+    }
+
+    [Fact]
+    public async Task Checkout_Force_WhenDenied_ReturnsExitCode130()
+    {
+        using var testRepo = GitTestRepository.Create();
+        testRepo.CreateBranch("feature");
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+        var emulator = new GitCliEmulator(repo);
+        var approval = new TestUserApproval
+        {
+            DiscardLocalChangesResult = ApprovalResult.Denied
+        };
+
+        var readmePath = Path.Combine(testRepo.WorkingDirectory, "README.md");
+        File.WriteAllText(readmePath, "modified locally");
+
+        var response = await emulator.InvokeAsync(["checkout", "-f", "feature"], approval);
+
+        Assert.Equal(130, response.ExitCode);
+        Assert.Contains("denied", response.StdErr);
+        Assert.Equal("modified locally", File.ReadAllText(readmePath));
+    }
+
+    [Fact]
+    public async Task Switch_ForceCreate_LosingUnpushedCommits_WhenDenied_ReturnsExitCode130()
+    {
+        using var testRepo = GitTestRepository.Create();
+        testRepo.CreateBranch("feature");
+        testRepo.Switch("feature");
+        testRepo.Commit("Feature commit", ("feature.txt", "feat"));
+        testRepo.Switch("master");
+
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+        var emulator = new GitCliEmulator(repo);
+        var approval = new TestUserApproval
+        {
+            UnpushedCommitLossResult = ApprovalResult.Denied
+        };
+
+        var response = await emulator.InvokeAsync(["switch", "-C", "feature"], approval);
+
+        Assert.Equal(130, response.ExitCode);
+        Assert.Contains("denied", response.StdErr);
+    }
+
+    [Fact]
+    public async Task Checkout_ForceCreate_LosingUnpushedCommits_WhenDenied_ReturnsExitCode130()
+    {
+        using var testRepo = GitTestRepository.Create();
+        testRepo.CreateBranch("feature");
+        testRepo.Switch("feature");
+        testRepo.Commit("Feature commit", ("feature.txt", "feat"));
+        testRepo.Switch("master");
+
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+        var emulator = new GitCliEmulator(repo);
+        var approval = new TestUserApproval
+        {
+            UnpushedCommitLossResult = ApprovalResult.Denied
+        };
+
+        var response = await emulator.InvokeAsync(["checkout", "-B", "feature"], approval);
+
+        Assert.Equal(130, response.ExitCode);
+        Assert.Contains("denied", response.StdErr);
+    }
 }

@@ -77,6 +77,25 @@ public sealed class GitTestRepository : IDisposable
         return head;
     }
 
+    public void CreateBranch(string branchName, string? startPoint = null)
+    {
+        if (string.IsNullOrEmpty(startPoint))
+        {
+            RunGit($"branch \"{branchName}\"");
+        }
+        else
+        {
+            RunGit($"branch \"{branchName}\" \"{startPoint}\"");
+        }
+    }
+
+    public void Switch(string branchName)
+    {
+        RunGit($"switch \"{branchName}\"");
+        var head = new GitHash(RunGit("rev-parse HEAD").Trim());
+        _head = head;
+    }
+
     public string RunGit(string arguments)
     {
         return TestHelper.RunGit(WorkingDirectory, arguments);

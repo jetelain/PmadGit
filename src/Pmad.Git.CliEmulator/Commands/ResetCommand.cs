@@ -36,7 +36,7 @@ internal static class ResetCommand
 
                 if (!headCommit.Id.Equals(targetCommit.Id))
                 {
-                    var lost = await CollectLostCommitsAsync(ctx.Repository, headCommit.Id, targetCommit.Id, ct);
+                    var lost = await ApprovalHelper.CollectLostCommitsAsync(ctx.Repository, headCommit.Id, targetCommit.Id, ct);
                     if (lost.Count > 0)
                     {
                         await ApprovalHelper.RequireAsync(
@@ -82,33 +82,5 @@ internal static class ResetCommand
             }
         });
         return cmd;
-    }
-
-    private static async Task<IReadOnlyList<GitCommitSummary>> CollectLostCommitsAsync(
-        IGitRepository repo,
-        GitHash fromTip,
-        GitHash target,
-        CancellationToken ct)
-    {
-        var remoteRefs = await repo.GetReferencesByPrefixAsync("refs/remotes/", ct).ConfigureAwait(false);
-        var remoteHashes = new HashSet<GitHash>(remoteRefs.Values);
-
-        var result = new List<GitCommitSummary>();
-        await foreach (var commit in repo.EnumerateCommitsAsync(fromTip.ToString(), ct).ConfigureAwait(false))
-        {
-            if (commit.Id.Equals(target))
-            {
-                break;
-            }
-            if (!remoteHashes.Contains(commit.Id))
-            {
-                result.Add(ApprovalHelper.ToSummary(commit));
-            }
-            if (result.Count >= 50)
-            {
-                break;
-            }
-        }
-        return result;
     }
 }

@@ -1244,6 +1244,263 @@ public sealed class GitRepositoryWithIndexAndWorkspace : IGitWorkspaceRepository
 
     #endregion
 
+    #region Branch Checkout
+
+    /// <inheritdoc />
+    public async Task CheckoutBranchAsync(
+        string branchName,
+        bool createBranch = false,
+        string? startPoint = null,
+        bool force = false,
+        CancellationToken cancellationToken = default)
+    {
+        ValidateBranchName(branchName, nameof(branchName));
+
+        var normalized = branchName.Trim().Replace('\\', '/');
+        if (normalized.StartsWith("refs/heads/", StringComparison.Ordinal))
+        {
+            normalized = normalized["refs/heads/".Length..];
+        }
+        else if (normalized.StartsWith("heads/", StringComparison.Ordinal))
+        {
+            normalized = normalized["heads/".Length..];
+        }
+
+        var branchRef = $"refs/heads/{normalized}";
+
+        using (await _indexManager.AcquireIndexMutationLockAsync(branchRef, cancellationToken).ConfigureAwait(false))
+        {
+            if (await IsMergeInProgressAsync(cancellationToken).ConfigureAwait(false))
+            {
+                throw new InvalidOperationException("Cannot switch branch while a merge is in progress.");
+            }
+
+            var currentBranch = await ReferenceStore.GetCurrentBranchNameAsync(cancellationToken).ConfigureAwait(false);
+            if (string.Equals(currentBranch, normalized, StringComparison.Ordinal))
+            {
+                if (createBranch && !force)
+                {
+                    throw new InvalidOperationException($"A branch named '{normalized}' already exists.");
+                }
+                if (!createBranch && !force)
+                {
+                    return;
+                }
+            }
+
+            var existingBranch = await ReferenceStore.TryResolveReferenceAsync(branchRef, cancellationToken).ConfigureAwait(false);
+            if (createBranch && existingBranch.HasValue && !force)
+            {
+                throw new InvalidOperationException($"A branch named '{normalized}' already exists.");
+            }
+
+            if (!createBranch && !existingBranch.HasValue)
+            {
+                throw new InvalidOperationException($"Branch '{normalized}' not found.");
+            }
+
+            var headHash = await ReferenceStore.TryResolveReferenceAsync("HEAD", cancellationToken).ConfigureAwait(false);
+            if (!headHash.HasValue)
+            {
+                if (createBranch)
+                {
+                    if (startPoint != null)
+                    {
+                        throw new InvalidOperationException($"Cannot specify start point '{startPoint}' on an empty repository.");
+                    }
+                    var headPath = Path.Combine(GitDirectory, "HEAD");
+                    var tempPath = Path.Combine(GitDirectory, $"HEAD.{Guid.NewGuid():N}.tmp");
+                    await File.WriteAllTextAsync(tempPath, $"ref: {branchRef}\n", cancellationToken).ConfigureAwait(false);
+                    File.Move(tempPath, headPath, overwrite: true);
+                    InvalidateCaches();
+                    return;
+                }
+                else
+                {
+                    throw new InvalidOperationException($"Branch '{normalized}' not found.");
+                }
+            }
+
+            GitCommit targetCommit;
+            if (createBranch)
+            {
+                if (startPoint == null)
+                {
+                    targetCommit = await _repo.GetCommitAsync(headHash.Value.Value, cancellationToken).ConfigureAwait(false);
+                }
+                else
+                {
+                    targetCommit = await _repo.GetCommitAsync(startPoint, cancellationToken).ConfigureAwait(false);
+                }
+            }
+            else
+            {
+                targetCommit = await _repo.GetCommitAsync(existingBranch!.Value.Value, cancellationToken).ConfigureAwait(false);
+            }
+
+            var isSameCommit = headHash.Value.Equals(targetCommit.Id);
+
+            if (!isSameCommit)
+            {
+                if (!force)
+                {
+                    var status = await GetStatusAsync(includeUntracked: false, includeClean: false, cancellationToken).ConfigureAwait(false);
+                    if (status.Entries.Any(e => e.IsStaged || e.HasWorkingTreeChanges || e.IsConflicted))
+                    {
+                        throw new InvalidOperationException("Cannot switch branch because the working tree or index has uncommitted changes.");
+                    }
+
+                    var currentLeaves = await _repo.LoadLeafEntriesAsync((await _repo.GetCommitAsync(headHash.Value.Value, cancellationToken).ConfigureAwait(false)).Tree, cancellationToken).ConfigureAwait(false);
+                    var targetLeaves = await _repo.LoadLeafEntriesAsync(targetCommit.Tree, cancellationToken).ConfigureAwait(false);
+
+                    foreach (var (path, _) in targetLeaves)
+                    {
+                        var normalizedPath = _indexManager.NormalizeAndValidateRelativePath(path);
+                        if (!currentLeaves.ContainsKey(normalizedPath))
+                        {
+                            var fullPath = Path.Combine(RootPath, normalizedPath.Replace('/', Path.DirectorySeparatorChar));
+                            if (File.Exists(fullPath) || Directory.Exists(fullPath))
+                            {
+                                throw new InvalidOperationException($"The untracked working tree file '{normalizedPath}' would be overwritten by checkout.");
+                            }
+                        }
+                    }
+                }
+            }
+            else if (!force)
+            {
+                var conflicted = await GetConflictedFilesAsync(cancellationToken).ConfigureAwait(false);
+                if (conflicted.Count > 0)
+                {
+                    throw new InvalidOperationException("Cannot switch branch with unmerged (conflicted) entries in the index.");
+                }
+            }
+
+            if (createBranch)
+            {
+                if (_repo.ReferenceStore is GitReferenceStore localRefStore)
+                {
+                    await localRefStore.WriteReferenceWithoutLockAsync(branchRef, targetCommit.Id, cancellationToken).ConfigureAwait(false);
+                }
+                else
+                {
+                    await ReferenceStore.CreateReferenceAsync(branchRef, targetCommit.Id, overwrite: force, cancellationToken).ConfigureAwait(false);
+                }
+            }
+
+            var hp = Path.Combine(GitDirectory, "HEAD");
+            var tp = Path.Combine(GitDirectory, $"HEAD.{Guid.NewGuid():N}.tmp");
+            await File.WriteAllTextAsync(tp, $"ref: {branchRef}\n", cancellationToken).ConfigureAwait(false);
+            File.Move(tp, hp, overwrite: true);
+
+            if (!isSameCommit || force)
+            {
+                await SyncWorkspaceToCommitAsync(targetCommit, cancellationToken).ConfigureAwait(false);
+            }
+
+            InvalidateCaches();
+        }
+    }
+
+    /// <inheritdoc />
+    public async Task CheckoutCommitAsync(
+        string commitIsh,
+        bool force = false,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(commitIsh);
+
+        using (await _indexManager.AcquireIndexMutationLockAsync(null, cancellationToken).ConfigureAwait(false))
+        {
+            if (await IsMergeInProgressAsync(cancellationToken).ConfigureAwait(false))
+            {
+                throw new InvalidOperationException("Cannot switch while a merge is in progress.");
+            }
+
+            var targetCommit = await _repo.GetCommitAsync(commitIsh, cancellationToken).ConfigureAwait(false);
+            var headHash = await ReferenceStore.TryResolveReferenceAsync("HEAD", cancellationToken).ConfigureAwait(false);
+            var isSameCommit = headHash.HasValue && headHash.Value.Equals(targetCommit.Id);
+
+            if (!isSameCommit)
+            {
+                if (!force)
+                {
+                    var status = await GetStatusAsync(includeUntracked: false, includeClean: false, cancellationToken).ConfigureAwait(false);
+                    if (status.Entries.Any(e => e.IsStaged || e.HasWorkingTreeChanges || e.IsConflicted))
+                    {
+                        throw new InvalidOperationException("Cannot switch because the working tree or index has uncommitted changes.");
+                    }
+
+                    var currentLeaves = headHash.HasValue
+                        ? await _repo.LoadLeafEntriesAsync((await _repo.GetCommitAsync(headHash.Value.Value, cancellationToken).ConfigureAwait(false)).Tree, cancellationToken).ConfigureAwait(false)
+                        : new Dictionary<string, TreeLeaf>(StringComparer.Ordinal);
+                    var targetLeaves = await _repo.LoadLeafEntriesAsync(targetCommit.Tree, cancellationToken).ConfigureAwait(false);
+
+                    foreach (var (path, _) in targetLeaves)
+                    {
+                        var normalizedPath = _indexManager.NormalizeAndValidateRelativePath(path);
+                        if (!currentLeaves.ContainsKey(normalizedPath))
+                        {
+                            var fullPath = Path.Combine(RootPath, normalizedPath.Replace('/', Path.DirectorySeparatorChar));
+                            if (File.Exists(fullPath) || Directory.Exists(fullPath))
+                            {
+                                throw new InvalidOperationException($"The untracked working tree file '{normalizedPath}' would be overwritten by checkout.");
+                            }
+                        }
+                    }
+                }
+            }
+            else if (!force)
+            {
+                var conflicted = await GetConflictedFilesAsync(cancellationToken).ConfigureAwait(false);
+                if (conflicted.Count > 0)
+                {
+                    throw new InvalidOperationException("Cannot switch with unmerged (conflicted) entries in the index.");
+                }
+            }
+
+            var hp = Path.Combine(GitDirectory, "HEAD");
+            var tp = Path.Combine(GitDirectory, $"HEAD.{Guid.NewGuid():N}.tmp");
+            await File.WriteAllTextAsync(tp, targetCommit.Id.ToString() + "\n", cancellationToken).ConfigureAwait(false);
+            File.Move(tp, hp, overwrite: true);
+
+            if (!isSameCommit || force)
+            {
+                await SyncWorkspaceToCommitAsync(targetCommit, cancellationToken).ConfigureAwait(false);
+            }
+
+            InvalidateCaches();
+        }
+    }
+
+    private static void ValidateBranchName(string branchName, string paramName = "branchName")
+    {
+        if (string.IsNullOrWhiteSpace(branchName))
+        {
+            throw new ArgumentException("Branch name cannot be empty.", paramName);
+        }
+
+        var fullRef = branchName.StartsWith("refs/", StringComparison.Ordinal)
+            ? branchName
+            : $"refs/heads/{branchName}";
+
+        try
+        {
+            GitReferenceStore.NormalizeAbsoluteReferencePath(fullRef);
+        }
+        catch (ArgumentException ex)
+        {
+            throw new ArgumentException($"Invalid branch name '{branchName}': {ex.Message}", paramName, ex);
+        }
+
+        if (branchName.Contains("@{", StringComparison.Ordinal) || branchName.EndsWith('/'))
+        {
+            throw new ArgumentException($"Invalid branch name '{branchName}'.", paramName);
+        }
+    }
+
+    #endregion
+
     #region Helpers
 
     private void RemoveMergeStateFiles()
