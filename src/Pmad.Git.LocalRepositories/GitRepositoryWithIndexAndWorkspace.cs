@@ -1272,7 +1272,14 @@ public sealed class GitRepositoryWithIndexAndWorkspace : IGitWorkspaceRepository
         {
             if (await IsMergeInProgressAsync(cancellationToken).ConfigureAwait(false))
             {
-                throw new InvalidOperationException("Cannot switch branch while a merge is in progress.");
+                if (force)
+                {
+                    RemoveMergeStateFiles();
+                }
+                else
+                {
+                    throw new InvalidOperationException("Cannot switch branch while a merge is in progress.");
+                }
             }
 
             var currentBranch = await ReferenceStore.GetCurrentBranchNameAsync(cancellationToken).ConfigureAwait(false);
@@ -1414,7 +1421,14 @@ public sealed class GitRepositoryWithIndexAndWorkspace : IGitWorkspaceRepository
         {
             if (await IsMergeInProgressAsync(cancellationToken).ConfigureAwait(false))
             {
-                throw new InvalidOperationException("Cannot switch while a merge is in progress.");
+                if (force)
+                {
+                    RemoveMergeStateFiles();
+                }
+                else
+                {
+                    throw new InvalidOperationException("Cannot switch while a merge is in progress.");
+                }
             }
 
             var targetCommit = await _repo.GetCommitAsync(commitIsh, cancellationToken).ConfigureAwait(false);
@@ -1468,6 +1482,69 @@ public sealed class GitRepositoryWithIndexAndWorkspace : IGitWorkspaceRepository
             {
                 await SyncWorkspaceToCommitAsync(targetCommit, cancellationToken).ConfigureAwait(false);
             }
+
+            InvalidateCaches();
+        }
+    }
+
+    /// <inheritdoc />
+    public async Task CheckoutOrphanBranchAsync(
+        string branchName,
+        bool empty = false,
+        string? startPoint = null,
+        CancellationToken cancellationToken = default)
+    {
+        ValidateBranchName(branchName, nameof(branchName));
+
+        var normalized = branchName.Trim().Replace('\\', '/');
+        if (normalized.StartsWith("refs/heads/", StringComparison.Ordinal))
+        {
+            normalized = normalized["refs/heads/".Length..];
+        }
+        else if (normalized.StartsWith("heads/", StringComparison.Ordinal))
+        {
+            normalized = normalized["heads/".Length..];
+        }
+
+        var branchRef = $"refs/heads/{normalized}";
+
+        using (await _indexManager.AcquireIndexMutationLockAsync(branchRef, cancellationToken).ConfigureAwait(false))
+        {
+            if (await IsMergeInProgressAsync(cancellationToken).ConfigureAwait(false))
+            {
+                throw new InvalidOperationException("Cannot switch branch while a merge is in progress.");
+            }
+
+            var existingBranch = await ReferenceStore.TryResolveReferenceAsync(branchRef, cancellationToken).ConfigureAwait(false);
+            if (existingBranch.HasValue)
+            {
+                throw new InvalidOperationException($"A branch named '{normalized}' already exists.");
+            }
+
+            if (empty)
+            {
+                var index = await GitIndex.ReadAsync(_indexManager.IndexPath, HashLengthBytes, cancellationToken).ConfigureAwait(false);
+                foreach (var entry in index.Entries)
+                {
+                    var fullPath = Path.Combine(RootPath, entry.Path.Replace('/', Path.DirectorySeparatorChar));
+                    if (File.Exists(fullPath))
+                    {
+                        File.Delete(fullPath);
+                    }
+                }
+                index.Entries.Clear();
+                await index.WriteAsync(_indexManager.IndexPath, HashLengthBytes, cancellationToken).ConfigureAwait(false);
+            }
+            else if (!string.IsNullOrEmpty(startPoint))
+            {
+                var targetCommit = await _repo.GetCommitAsync(startPoint, cancellationToken).ConfigureAwait(false);
+                await SyncWorkspaceToCommitAsync(targetCommit, cancellationToken).ConfigureAwait(false);
+            }
+
+            var hp = Path.Combine(GitDirectory, "HEAD");
+            var tp = Path.Combine(GitDirectory, $"HEAD.{Guid.NewGuid():N}.tmp");
+            await File.WriteAllTextAsync(tp, $"ref: {branchRef}\n", cancellationToken).ConfigureAwait(false);
+            File.Move(tp, hp, overwrite: true);
 
             InvalidateCaches();
         }

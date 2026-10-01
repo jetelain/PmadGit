@@ -9,36 +9,24 @@ internal static class SwitchCommand
 {
     public static Command Build(CommandContext ctx)
     {
-        return BuildCore("switch", "Switch branches", ctx);
-    }
-
-    public static Command BuildCheckout(CommandContext ctx)
-    {
-        return BuildCore("checkout", "Switch branches or restore working tree files", ctx);
-    }
-
-    private static Command BuildCore(string commandName, string description, CommandContext ctx)
-    {
-        var cmd = new Command(commandName) { Description = description };
+        var cmd = new Command("switch") { Description = "Switch branches" };
 
         var createOpt = new Option<string?>("-c", "--create") { Description = "Create and switch to a new branch" };
         var forceCreateOpt = new Option<string?>("-C", "--force-create") { Description = "Create/reset and switch to a branch" };
-        var bOpt = new Option<string?>("-b") { Description = "Create and checkout a new branch" };
-        var forceBOpt = new Option<string?>("-B") { Description = "Create/reset and checkout a branch" };
         var detachOpt = new Option<bool>("-d", "--detach") { Description = "Detach HEAD at named commit" };
         var discardChangesOpt = new Option<bool>("--discard-changes") { Description = "Proceed even if the index or the working tree differs from HEAD" };
         var forceOpt = new Option<bool>("-f", "--force") { Description = "Proceed even if the index or the working tree differs from HEAD" };
+        var orphanOpt = new Option<string?>("--orphan") { Description = "Create a new orphan branch, starting with an empty index and working tree" };
 
         var branchArg = new Argument<string?>("branch") { Description = "Branch name or commit to switch/detach to", Arity = ArgumentArity.ZeroOrOne };
         var startPointArg = new Argument<string?>("start-point") { Description = "Start point when creating a new branch", Arity = ArgumentArity.ZeroOrOne };
 
         cmd.Options.Add(createOpt);
         cmd.Options.Add(forceCreateOpt);
-        cmd.Options.Add(bOpt);
-        cmd.Options.Add(forceBOpt);
         cmd.Options.Add(detachOpt);
         cmd.Options.Add(discardChangesOpt);
         cmd.Options.Add(forceOpt);
+        cmd.Options.Add(orphanOpt);
 
         cmd.Arguments.Add(branchArg);
         cmd.Arguments.Add(startPointArg);
@@ -46,12 +34,63 @@ internal static class SwitchCommand
         cmd.SetAction(async (ParseResult pr, CancellationToken ct) =>
         {
             var isDetach = pr.GetValue(detachOpt);
-            var forceBranchName = pr.GetValue(forceCreateOpt) ?? pr.GetValue(forceBOpt);
-            var regularCreateBranchName = pr.GetValue(createOpt) ?? pr.GetValue(bOpt);
+            var forceBranchName = pr.GetValue(forceCreateOpt);
+            var regularCreateBranchName = pr.GetValue(createOpt);
             var isForceCreate = !string.IsNullOrEmpty(forceBranchName);
             var isCreate = isForceCreate || !string.IsNullOrEmpty(regularCreateBranchName);
             var createBranchName = forceBranchName ?? regularCreateBranchName;
             var isDiscardChanges = pr.GetValue(discardChangesOpt) || pr.GetValue(forceOpt);
+            var orphanBranch = pr.GetValue(orphanOpt);
+
+            // Switching using --force / --discard-changes now fails if there are unmerged entries
+            if (await ctx.Repository.IsMergeInProgressAsync(ct).ConfigureAwait(false))
+            {
+                return ctx.WriteError("Cannot switch branch while a merge is in progress.");
+            }
+            var conflicted = await ctx.Repository.GetConflictedFilesAsync(ct).ConfigureAwait(false);
+            if (conflicted.Count > 0)
+            {
+                return ctx.WriteError("Cannot switch branch with unmerged (conflicted) entries in the index.");
+            }
+
+            // Case 1: Orphan branch
+            if (!string.IsNullOrEmpty(orphanBranch))
+            {
+                var startPt = pr.GetValue(branchArg) ?? pr.GetValue(startPointArg);
+                if (!string.IsNullOrWhiteSpace(startPt))
+                {
+                    return ctx.WriteError("Cannot use start-point with --orphan.");
+                }
+
+                try
+                {
+                    var status = await ctx.Repository.GetStatusAsync(includeUntracked: false, cancellationToken: ct).ConfigureAwait(false);
+                    var changedFiles = status.Entries
+                        .Where(e => !e.IsClean)
+                        .Select(e => e.Path)
+                        .ToList();
+
+                    if (changedFiles.Count > 0)
+                    {
+                        await ApprovalHelper.RequireAsync(
+                            new DiscardChangesContext
+                            {
+                                Operation = "switch --orphan",
+                                AffectedFiles = changedFiles,
+                            },
+                            ctx.Approval.ApproveDiscardLocalChangesAsync,
+                            ct).ConfigureAwait(false);
+                    }
+
+                    await ctx.Repository.CheckoutOrphanBranchAsync(orphanBranch, empty: true, startPoint: null, cancellationToken: ct).ConfigureAwait(false);
+                    await ctx.StdOut.WriteLineAsync($"Switched to a new branch '{orphanBranch}'").ConfigureAwait(false);
+                    return 0;
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException and not GitCliDeniedException)
+                {
+                    return ctx.WriteError(ex.Message);
+                }
+            }
 
             string? branchOrCommit;
             string? startPoint;
@@ -85,10 +124,7 @@ internal static class SwitchCommand
 
                     if (changedFiles.Count > 0)
                     {
-                        var opName = commandName == "switch"
-                            ? (pr.GetValue(discardChangesOpt) ? "switch --discard-changes" : "switch -f")
-                            : "checkout -f";
-
+                        var opName = pr.GetValue(discardChangesOpt) ? "switch --discard-changes" : "switch -f";
                         await ApprovalHelper.RequireAsync(
                             new DiscardChangesContext
                             {
@@ -116,7 +152,7 @@ internal static class SwitchCommand
                                 await ApprovalHelper.RequireAsync(
                                     new UnpushedCommitLossContext
                                     {
-                                        Operation = commandName == "switch" ? "switch --detach" : "checkout --detach",
+                                        Operation = "switch --detach",
                                         BranchName = "HEAD",
                                         CommitsToLose = lost,
                                     },
@@ -129,6 +165,23 @@ internal static class SwitchCommand
                     await ctx.Repository.CheckoutCommitAsync(targetCommit.Id.ToString(), force: isDiscardChanges, cancellationToken: ct).ConfigureAwait(false);
                     await ctx.StdOut.WriteLineAsync($"HEAD is now at {targetCommit.Id.ToString()[..7]} {targetCommit.Message.Split('\n', 2)[0].Trim()}").ConfigureAwait(false);
                     return 0;
+                }
+
+                // If not creating and not detaching:
+                // --detach (or -d) is now always required when switching to a detached head.
+                // A local branch is expected.
+                var branchRef = await ctx.Repository.ReferenceStore.TryResolveReferenceAsync($"refs/heads/{branchOrCommit}", ct).ConfigureAwait(false);
+                if (!isCreate && !branchRef.HasValue)
+                {
+                    try
+                    {
+                        await ctx.Repository.GetCommitAsync(branchOrCommit, ct).ConfigureAwait(false);
+                        return ctx.WriteError($"fatal: a branch is expected, got commit '{branchOrCommit}'\nIf you want to detach HEAD at the commit, try switch --detach {branchOrCommit}");
+                    }
+                    catch
+                    {
+                        return ctx.WriteError($"fatal: invalid reference: {branchOrCommit}");
+                    }
                 }
 
                 // Branch checkout
@@ -159,26 +212,21 @@ internal static class SwitchCommand
                 }
                 else
                 {
-                    var existingHash = await ctx.Repository.ReferenceStore.TryResolveReferenceAsync($"refs/heads/{branchOrCommit}", ct).ConfigureAwait(false);
-                    if (existingHash.HasValue)
-                    {
-                        targetCommitForLoss = await ctx.Repository.GetCommitAsync(existingHash.Value.ToString(), ct).ConfigureAwait(false);
-                    }
+                    targetCommitForLoss = await ctx.Repository.GetCommitAsync(branchRef!.Value.ToString(), ct).ConfigureAwait(false);
                 }
 
-                // Gate 2b: Unpushed commit loss if force-resetting an existing branch
-                var existingBranchRef = await ctx.Repository.ReferenceStore.TryResolveReferenceAsync($"refs/heads/{branchOrCommit}", ct).ConfigureAwait(false);
-                if (isForceCreate && existingBranchRef.HasValue && targetCommitForLoss != null)
+                // Gate 2b: Unpushed commit loss if force-resetting an existing branch (-C)
+                if (isForceCreate && branchRef.HasValue && targetCommitForLoss != null)
                 {
-                    if (!existingBranchRef.Value.Equals(targetCommitForLoss.Id))
+                    if (!branchRef.Value.Equals(targetCommitForLoss.Id))
                     {
-                        var lost = await ApprovalHelper.CollectLostCommitsAsync(ctx.Repository, existingBranchRef.Value, targetCommitForLoss.Id, ct).ConfigureAwait(false);
+                        var lost = await ApprovalHelper.CollectLostCommitsAsync(ctx.Repository, branchRef.Value, targetCommitForLoss.Id, ct).ConfigureAwait(false);
                         if (lost.Count > 0)
                         {
                             await ApprovalHelper.RequireAsync(
                                 new UnpushedCommitLossContext
                                 {
-                                    Operation = commandName == "switch" ? "switch -C" : "checkout -B",
+                                    Operation = "switch -C",
                                     BranchName = branchOrCommit,
                                     CommitsToLose = lost,
                                 },
@@ -200,7 +248,7 @@ internal static class SwitchCommand
                             await ApprovalHelper.RequireAsync(
                                 new UnpushedCommitLossContext
                                 {
-                                    Operation = commandName == "switch" ? "switch" : "checkout",
+                                    Operation = "switch",
                                     BranchName = "HEAD",
                                     CommitsToLose = lost,
                                 },
@@ -219,7 +267,7 @@ internal static class SwitchCommand
 
                 if (isCreate)
                 {
-                    if (isForceCreate && existingBranchRef.HasValue)
+                    if (isForceCreate && branchRef.HasValue)
                     {
                         await ctx.StdOut.WriteLineAsync($"Reset branch '{branchOrCommit}'").ConfigureAwait(false);
                     }
@@ -241,5 +289,10 @@ internal static class SwitchCommand
         });
 
         return cmd;
+    }
+
+    public static Command BuildCheckout(CommandContext ctx)
+    {
+        return CheckoutCommand.Build(ctx);
     }
 }

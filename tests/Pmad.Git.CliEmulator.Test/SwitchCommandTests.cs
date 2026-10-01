@@ -288,4 +288,152 @@ public class SwitchCommandTests
         Assert.Equal("feature", await repo.GetCurrentBranchNameAsync());
         Assert.Equal("seed", await File.ReadAllTextAsync(Path.Combine(testRepo.WorkingDirectory, "README.md")));
     }
+
+    [Fact]
+    public async Task Switch_CommitWithoutDetachFlag_FailsWithBranchExpected()
+    {
+        using var testRepo = GitTestRepository.Create();
+        var initialHash = testRepo.Head;
+
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+        var emulator = new GitCliEmulator(repo);
+        var approval = new TestUserApproval();
+
+        var response = await emulator.InvokeAsync(["switch", initialHash.ToString()], approval);
+
+        Assert.NotEqual(0, response.ExitCode);
+        Assert.Contains("a branch is expected, got commit", response.StdErr);
+        Assert.Contains("--detach", response.StdErr);
+    }
+
+    [Fact]
+    public async Task Checkout_CommitWithoutDetachFlag_AutomaticallyDetachesHead()
+    {
+        using var testRepo = GitTestRepository.Create();
+        var initialHash = testRepo.Head;
+
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+        var emulator = new GitCliEmulator(repo);
+        var approval = new TestUserApproval();
+
+        var response = await emulator.InvokeAsync(["checkout", initialHash.ToString()], approval);
+
+        Assert.Equal(0, response.ExitCode);
+        Assert.Contains($"HEAD is now at {initialHash.ToString()[..7]}", response.StdOut);
+        Assert.True(await repo.IsHeadDetachedAsync());
+    }
+
+    [Fact]
+    public async Task Switch_Orphan_StartsEmptyAndGatesOnDirtyChanges()
+    {
+        using var testRepo = GitTestRepository.Create();
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+        await File.WriteAllTextAsync(Path.Combine(testRepo.WorkingDirectory, "README.md"), "dirty");
+
+        var emulator = new GitCliEmulator(repo);
+        var approval = new TestUserApproval { DiscardLocalChangesResult = ApprovalResult.Approved };
+
+        var response = await emulator.InvokeAsync(["switch", "--orphan", "empty-branch"], approval);
+
+        Assert.Equal(0, response.ExitCode);
+        Assert.Contains("Switched to a new branch 'empty-branch'", response.StdOut);
+        Assert.Single(approval.DiscardLocalChangesCalls);
+        Assert.Equal("empty-branch", await repo.ReferenceStore.GetCurrentBranchNameAsync(allowUnborn: true));
+        Assert.False(File.Exists(Path.Combine(testRepo.WorkingDirectory, "README.md")));
+    }
+
+    [Fact]
+    public async Task Checkout_Orphan_KeepsWorkingTreeFiles()
+    {
+        using var testRepo = GitTestRepository.Create();
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+
+        var emulator = new GitCliEmulator(repo);
+        var approval = new TestUserApproval();
+
+        var response = await emulator.InvokeAsync(["checkout", "--orphan", "orphan-branch"], approval);
+
+        Assert.Equal(0, response.ExitCode);
+        Assert.Contains("Switched to a new branch 'orphan-branch'", response.StdOut);
+        Assert.Equal("orphan-branch", await repo.ReferenceStore.GetCurrentBranchNameAsync(allowUnborn: true));
+        Assert.True(File.Exists(Path.Combine(testRepo.WorkingDirectory, "README.md")));
+    }
+
+    [Fact]
+    public async Task Checkout_RestoreFile_RestoresFromIndexAndGates()
+    {
+        using var testRepo = GitTestRepository.Create();
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+        var readmePath = Path.Combine(testRepo.WorkingDirectory, "README.md");
+        await File.WriteAllTextAsync(readmePath, "overwritten content");
+
+        var emulator = new GitCliEmulator(repo);
+        var approval = new TestUserApproval { DiscardLocalChangesResult = ApprovalResult.Approved };
+
+        var response = await emulator.InvokeAsync(["checkout", "--", "README.md"], approval);
+
+        Assert.Equal(0, response.ExitCode);
+        Assert.Single(approval.DiscardLocalChangesCalls);
+        Assert.Contains("README.md", approval.DiscardLocalChangesCalls[0].AffectedFiles);
+        Assert.Equal("seed", await File.ReadAllTextAsync(readmePath));
+    }
+
+    [Fact]
+    public async Task Restore_WithDashS_RestoresFromSourceTreeIsh()
+    {
+        using var testRepo = GitTestRepository.Create();
+        var readmePath = Path.Combine(testRepo.WorkingDirectory, "README.md");
+        await File.WriteAllTextAsync(readmePath, "overwritten content");
+
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+        var emulator = new GitCliEmulator(repo);
+        var approval = new TestUserApproval { DiscardLocalChangesResult = ApprovalResult.Approved };
+
+        var response = await emulator.InvokeAsync(["restore", "-s", "HEAD", "README.md"], approval);
+
+        Assert.Equal(0, response.ExitCode);
+        Assert.Single(approval.DiscardLocalChangesCalls);
+        Assert.Equal("seed", await File.ReadAllTextAsync(readmePath));
+    }
+
+    [Fact]
+    public async Task Switch_DiscardChanges_FailsIfMergeInProgress()
+    {
+        using var testRepo = GitTestRepository.Create();
+        testRepo.CreateBranch("feature");
+
+        // Simulate merge in progress
+        var mergeHeadPath = Path.Combine(testRepo.WorkingDirectory, ".git", "MERGE_HEAD");
+        await File.WriteAllTextAsync(mergeHeadPath, testRepo.Head.ToString());
+
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+        var emulator = new GitCliEmulator(repo);
+        var approval = new TestUserApproval { DiscardLocalChangesResult = ApprovalResult.Approved };
+
+        var response = await emulator.InvokeAsync(["switch", "--discard-changes", "feature"], approval);
+
+        Assert.NotEqual(0, response.ExitCode);
+        Assert.Contains("merge is in progress", response.StdErr);
+    }
+
+    [Fact]
+    public async Task Checkout_Force_SucceedsIfMergeInProgress()
+    {
+        using var testRepo = GitTestRepository.Create();
+        testRepo.CreateBranch("feature");
+
+        // Simulate merge in progress
+        var mergeHeadPath = Path.Combine(testRepo.WorkingDirectory, ".git", "MERGE_HEAD");
+        await File.WriteAllTextAsync(mergeHeadPath, testRepo.Head.ToString());
+
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+        var emulator = new GitCliEmulator(repo);
+        var approval = new TestUserApproval { DiscardLocalChangesResult = ApprovalResult.Approved };
+
+        var response = await emulator.InvokeAsync(["checkout", "-f", "feature"], approval);
+
+        Assert.Equal(0, response.ExitCode);
+        Assert.Contains("Switched to branch 'feature'", response.StdOut);
+        Assert.False(File.Exists(mergeHeadPath));
+    }
 }

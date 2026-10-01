@@ -276,4 +276,17 @@ public interface IGitWorkspaceRepository : IGitRepository, IDisposable
         string commitIsh,
         bool force = false,
         CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Creates and switches to a new orphan branch (unborn branch with no commits yet).
+    /// </summary>
+    /// <param name="branchName">The name of the new orphan branch.</param>
+    /// <param name="empty">When true (e.g. switch --orphan), starts with an empty index and working tree. When false (e.g. checkout --orphan), keeps index and working tree (or synchronizes to startPoint).</param>
+    /// <param name="startPoint">Optional commit or tree-ish to start from when <paramref name="empty"/> is false.</param>
+    /// <param name="cancellationToken">Token used to cancel the async operation.</param>
+    Task CheckoutOrphanBranchAsync(
+        string branchName,
+        bool empty = false,
+        string? startPoint = null,
+        CancellationToken cancellationToken = default);
 }

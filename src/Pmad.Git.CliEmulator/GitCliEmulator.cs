@@ -188,7 +188,7 @@ public sealed class GitCliEmulator : IGitCliEmulator, IDisposable, IAsyncDisposa
         root.Subcommands.Add(PullCommand.Build(ctx));
         root.Subcommands.Add(PushCommand.Build(ctx));
         root.Subcommands.Add(SwitchCommand.Build(ctx));
-        root.Subcommands.Add(SwitchCommand.BuildCheckout(ctx));
+        root.Subcommands.Add(CheckoutCommand.Build(ctx));
 
         return root;
     }
