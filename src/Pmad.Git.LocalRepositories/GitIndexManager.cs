@@ -355,11 +355,12 @@ public sealed class GitIndexManager
     }
 
     /// <summary>
-    /// Unstages multiple files by reverting their index entries to match HEAD.
+    /// Restores index entries for the specified relative paths from a source tree (or HEAD if source is null).
     /// </summary>
     /// <param name="relativePaths">Collection of repository-relative file paths.</param>
+    /// <param name="source">Optional commit or tree-ish to restore from.</param>
     /// <param name="cancellationToken">Token used to cancel the async operation.</param>
-    public async Task UnstageAsync(IEnumerable<string> relativePaths, CancellationToken cancellationToken = default)
+    public async Task RestoreIndexAsync(IEnumerable<string> relativePaths, string? source = null, CancellationToken cancellationToken = default)
     {
         if (relativePaths is null)
         {
@@ -371,7 +372,9 @@ public sealed class GitIndexManager
         using (await AcquireIndexMutationLockAsync(cancellationToken).ConfigureAwait(false))
         {
             var index = await GitIndex.ReadAsync(IndexPath, _repository.HashLengthBytes, cancellationToken).ConfigureAwait(false);
-            var headFiles = await GetHeadFilesAsync(cancellationToken).ConfigureAwait(false);
+            var sourceFiles = source != null
+                ? await GetTreeFilesAsync(source, cancellationToken).ConfigureAwait(false)
+                : await GetHeadFilesAsync(cancellationToken).ConfigureAwait(false);
 
             foreach (var path in pathsList)
             {
@@ -382,14 +385,14 @@ public sealed class GitIndexManager
                 index.Remove(path, stage: 2);
                 index.Remove(path, stage: 3);
 
-                if (headFiles.TryGetValue(path, out var headEntry))
+                if (sourceFiles.TryGetValue(path, out var sourceEntry))
                 {
-                    var entry = new GitIndexEntry(path, headEntry.Hash, headEntry.Mode);
+                    var entry = new GitIndexEntry(path, sourceEntry.Hash, sourceEntry.Mode);
                     index.AddOrUpdate(entry);
                 }
                 else
                 {
-                    // File was not in HEAD: completely remove from index
+                    // File was not in source: completely remove from index
                     index.Remove(path, stage: 0);
                 }
             }
@@ -397,6 +400,14 @@ public sealed class GitIndexManager
             await index.WriteAsync(IndexPath, _repository.HashLengthBytes, cancellationToken).ConfigureAwait(false);
         }
     }
+
+    /// <summary>
+    /// Unstages multiple files by reverting their index entries to match HEAD.
+    /// </summary>
+    /// <param name="relativePaths">Collection of repository-relative file paths.</param>
+    /// <param name="cancellationToken">Token used to cancel the async operation.</param>
+    public Task UnstageAsync(IEnumerable<string> relativePaths, CancellationToken cancellationToken = default) =>
+        RestoreIndexAsync(relativePaths, null, cancellationToken);
 
     /// <summary>
     /// Unstages all files, resetting the entire index (.git/index) to match HEAD.
@@ -426,26 +437,50 @@ public sealed class GitIndexManager
     /// </summary>
     /// <param name="relativePath">Repository-relative file path.</param>
     /// <param name="cancellationToken">Token used to cancel the async operation.</param>
-    public async Task RestoreFileAsync(string relativePath, CancellationToken cancellationToken = default)
+    public Task RestoreFileAsync(string relativePath, CancellationToken cancellationToken = default) =>
+        RestoreFileAsync(relativePath, null, cancellationToken);
+
+    /// <summary>
+    /// Discards working tree changes for the specified file by restoring its content
+    /// and executable file mode from the index, HEAD, or a specified source tree-ish.
+    /// </summary>
+    /// <param name="relativePath">Repository-relative file path.</param>
+    /// <param name="source">Optional commit or tree-ish to restore from.</param>
+    /// <param name="cancellationToken">Token used to cancel the async operation.</param>
+    public async Task RestoreFileAsync(string relativePath, string? source, CancellationToken cancellationToken = default)
     {
         var path = NormalizeAndValidateRelativePath(relativePath);
-        var index = await GitIndex.ReadAsync(IndexPath, _repository.HashLengthBytes, cancellationToken).ConfigureAwait(false);
-        var entry = index.FindEntry(path);
 
         GitHash? targetHash = null;
         int? targetMode = null;
-        if (entry is not null)
+
+        if (source is not null)
         {
-            targetHash = entry.Hash;
-            targetMode = entry.FileMode;
+            var sourceFiles = await GetTreeFilesAsync(source, cancellationToken).ConfigureAwait(false);
+            if (sourceFiles.TryGetValue(path, out var sourceEntry))
+            {
+                targetHash = sourceEntry.Hash;
+                targetMode = sourceEntry.Mode;
+            }
         }
         else
         {
-            var headFiles = await GetHeadFilesAsync(cancellationToken).ConfigureAwait(false);
-            if (headFiles.TryGetValue(path, out var headEntry))
+            var index = await GitIndex.ReadAsync(IndexPath, _repository.HashLengthBytes, cancellationToken).ConfigureAwait(false);
+            var entry = index.FindEntry(path);
+
+            if (entry is not null)
             {
-                targetHash = headEntry.Hash;
-                targetMode = headEntry.Mode;
+                targetHash = entry.Hash;
+                targetMode = entry.FileMode;
+            }
+            else
+            {
+                var headFiles = await GetHeadFilesAsync(cancellationToken).ConfigureAwait(false);
+                if (headFiles.TryGetValue(path, out var headEntry))
+                {
+                    targetHash = headEntry.Hash;
+                    targetMode = headEntry.Mode;
+                }
             }
         }
 
@@ -678,6 +713,20 @@ public sealed class GitIndexManager
         }
 
         return headFiles;
+    }
+
+    private async Task<Dictionary<string, GitTreeEntry>> GetTreeFilesAsync(string treeIsh, CancellationToken cancellationToken)
+    {
+        var files = new Dictionary<string, GitTreeEntry>(StringComparer.Ordinal);
+        var commit = await _repository.GetCommitAsync(treeIsh, cancellationToken).ConfigureAwait(false);
+        await foreach (var item in _repository.EnumerateCommitTreeAsync(commit.Id.ToString(), null, SearchOption.AllDirectories, cancellationToken).ConfigureAwait(false))
+        {
+            if (item.Entry.Kind == GitTreeEntryKind.Blob)
+            {
+                files[item.Path] = item.Entry;
+            }
+        }
+        return files;
     }
 
     private static void ScanWorkingDirectory(

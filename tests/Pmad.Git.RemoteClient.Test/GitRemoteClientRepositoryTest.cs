@@ -393,8 +393,42 @@ public sealed class GitRemoteClientRepositoryTest : IDisposable
         Assert.Contains("Invalid branch name", ex.Message);
     }
 
+    [Fact]
+    public async Task GetRemoteUrlAsync_ReturnsConfiguredUrl_WhenConfigured()
+    {
+        var repo = GitRepositoryWithIndexAndWorkspace.Init(_workingDir);
+        var configPath = Path.Combine(repo.GitDirectory, "config");
+        await File.AppendAllTextAsync(configPath, "\n[remote \"upstream\"]\n\turl = https://example.com/upstream.git\n");
+
+        using var clientRepo = new GitRemoteClientRepository(repo, "https://example.com/default.git");
+
+        var upstreamUrl = await clientRepo.GetRemoteUrlAsync("upstream");
+        Assert.Equal("https://example.com/upstream.git", upstreamUrl);
+    }
+
+    [Fact]
+    public async Task GetRemoteUrlAsync_ReturnsDefaultRemoteUrl_WhenNotConfigured()
+    {
+        var repo = GitRepositoryWithIndexAndWorkspace.Init(_workingDir);
+        using var clientRepo = new GitRemoteClientRepository(repo, "https://example.com/default.git");
+
+        var originUrl = await clientRepo.GetRemoteUrlAsync("origin");
+        Assert.Equal("https://example.com/default.git", originUrl);
+    }
+
+    [Fact]
+    public async Task GetRemoteUrlAsync_ReturnsNull_WhenNeitherConfiguredNorDefault()
+    {
+        var repo = GitRepositoryWithIndexAndWorkspace.Init(_workingDir);
+        using var clientRepo = new GitRemoteClientRepository(repo);
+
+        var url = await clientRepo.GetRemoteUrlAsync("custom");
+        Assert.Null(url);
+    }
+
     public void Dispose()
     {
         TestHelper.TryDeleteDirectory(_workingDir);
     }
 }
+

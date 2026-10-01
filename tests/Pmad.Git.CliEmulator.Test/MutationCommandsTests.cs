@@ -1,0 +1,256 @@
+using Pmad.Git.CliEmulator.Test.Fakes;
+using Pmad.Git.LocalRepositories;
+
+namespace Pmad.Git.CliEmulator.Test;
+
+public class MutationCommandsTests
+{
+    [Fact]
+    public async Task Add_And_Commit_CreatesNewCommit()
+    {
+        using var testRepo = GitTestRepository.Create();
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+        var emulator = new GitCliEmulator(repo);
+        var approval = new TestUserApproval();
+
+        var newFilePath = Path.Combine(testRepo.WorkingDirectory, "newfile.txt");
+        File.WriteAllText(newFilePath, "contents");
+
+        var addResponse = await emulator.InvokeAsync(["add", "newfile.txt"], approval);
+        Assert.Equal(0, addResponse.ExitCode);
+
+        var commitResponse = await emulator.InvokeAsync(["commit", "-m", "Add new file"], approval);
+        Assert.Equal(0, commitResponse.ExitCode);
+        Assert.Contains("Add new file", commitResponse.StdOut);
+
+        var logResponse = await emulator.InvokeAsync(["log", "--oneline", "-n", "1"], approval);
+        Assert.Contains("Add new file", logResponse.StdOut);
+    }
+
+    [Fact]
+    public async Task Commit_Amend_Unpushed_DoesNotRequireApproval()
+    {
+        using var testRepo = GitTestRepository.Create();
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+        var emulator = new GitCliEmulator(repo);
+        var approval = new TestUserApproval();
+
+        var newFilePath = Path.Combine(testRepo.WorkingDirectory, "newfile.txt");
+        File.WriteAllText(newFilePath, "contents");
+        await emulator.InvokeAsync(["add", "newfile.txt"], approval);
+        await emulator.InvokeAsync(["commit", "-m", "Initial new file"], approval);
+
+        var amendResponse = await emulator.InvokeAsync(["commit", "--amend", "-m", "Amended new file"], approval);
+
+        Assert.Equal(0, amendResponse.ExitCode);
+        Assert.Contains("Amended new file", amendResponse.StdOut);
+        Assert.Empty(approval.HistoryRewriteCalls);
+    }
+
+    [Fact]
+    public async Task Restore_Staged_UnstagesFileWithoutApproval()
+    {
+        using var testRepo = GitTestRepository.Create();
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+        var emulator = new GitCliEmulator(repo);
+        var approval = new TestUserApproval();
+
+        var newFilePath = Path.Combine(testRepo.WorkingDirectory, "staged.txt");
+        File.WriteAllText(newFilePath, "content");
+        await emulator.InvokeAsync(["add", "staged.txt"], approval);
+
+        var statusBefore = await emulator.InvokeAsync(["status"], approval);
+        Assert.Contains("Changes to be committed:", statusBefore.StdOut);
+
+        var restoreResponse = await emulator.InvokeAsync(["restore", "--staged", "staged.txt"], approval);
+        Assert.Equal(0, restoreResponse.ExitCode);
+        Assert.Empty(approval.DiscardLocalChangesCalls);
+
+        var statusAfter = await emulator.InvokeAsync(["status"], approval);
+        Assert.DoesNotContain("Changes to be committed:", statusAfter.StdOut);
+        Assert.Contains("Untracked files:", statusAfter.StdOut);
+    }
+
+    [Fact]
+    public async Task Restore_Worktree_RequiresApproval_AndRestoresContent()
+    {
+        using var testRepo = GitTestRepository.Create();
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+        var emulator = new GitCliEmulator(repo);
+        var approval = new TestUserApproval();
+
+        var readmePath = Path.Combine(testRepo.WorkingDirectory, "README.md");
+        File.WriteAllText(readmePath, "overwritten content");
+
+        var response = await emulator.InvokeAsync(["restore", "README.md"], approval);
+
+        Assert.Equal(0, response.ExitCode);
+        Assert.Single(approval.DiscardLocalChangesCalls);
+        Assert.Contains("README.md", approval.DiscardLocalChangesCalls[0].AffectedFiles);
+        Assert.Equal("seed", File.ReadAllText(readmePath));
+    }
+
+    [Fact]
+    public async Task Branch_Create_And_Rename()
+    {
+        using var testRepo = GitTestRepository.Create();
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+        var emulator = new GitCliEmulator(repo);
+        var approval = new TestUserApproval();
+
+        var createRes = await emulator.InvokeAsync(["branch", "feat-1"], approval);
+        Assert.Equal(0, createRes.ExitCode);
+
+        var renameRes = await emulator.InvokeAsync(["branch", "-m", "feat-1", "feat-renamed"], approval);
+        Assert.Equal(0, renameRes.ExitCode);
+
+        var listRes = await emulator.InvokeAsync(["branch"], approval);
+        Assert.Contains("feat-renamed", listRes.StdOut);
+        Assert.DoesNotContain("feat-1", listRes.StdOut);
+    }
+
+    [Fact]
+    public async Task Tag_Create_And_Delete()
+    {
+        using var testRepo = GitTestRepository.Create();
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+        var emulator = new GitCliEmulator(repo);
+        var approval = new TestUserApproval();
+
+        var createTag = await emulator.InvokeAsync(["tag", "v1.0"], approval);
+        Assert.Equal(0, createTag.ExitCode);
+
+        var listTag = await emulator.InvokeAsync(["tag"], approval);
+        Assert.Contains("v1.0", listTag.StdOut);
+
+        var deleteTag = await emulator.InvokeAsync(["tag", "-d", "v1.0"], approval);
+        Assert.Equal(0, deleteTag.ExitCode);
+
+        var listTag2 = await emulator.InvokeAsync(["tag"], approval);
+        Assert.DoesNotContain("v1.0", listTag2.StdOut);
+    }
+
+    [Fact]
+    public async Task Config_Set_And_Unset()
+    {
+        using var testRepo = GitTestRepository.Create();
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+        var emulator = new GitCliEmulator(repo);
+        var approval = new TestUserApproval();
+
+        var setRes = await emulator.InvokeAsync(["config", "custom.testkey", "testval"], approval);
+        Assert.Equal(0, setRes.ExitCode);
+
+        var getRes = await emulator.InvokeAsync(["config", "custom.testkey"], approval);
+        Assert.Equal("testval", getRes.StdOut.Trim());
+
+        var unsetRes = await emulator.InvokeAsync(["config", "--unset", "custom.testkey"], approval);
+        Assert.Equal(0, unsetRes.ExitCode);
+    }
+
+    [Fact]
+    public async Task Config_Global_Writes_Rejected()
+    {
+        using var testRepo = GitTestRepository.Create();
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+        var emulator = new GitCliEmulator(repo);
+        var approval = new TestUserApproval();
+
+        var setGlobal = await emulator.InvokeAsync(["config", "--global", "user.name", "attacker"], approval);
+        Assert.NotEqual(0, setGlobal.ExitCode);
+        Assert.Contains("Modifying global configuration is not supported", setGlobal.StdErr);
+
+        var unsetGlobal = await emulator.InvokeAsync(["config", "--global", "--unset", "user.name"], approval);
+        Assert.NotEqual(0, unsetGlobal.ExitCode);
+        Assert.Contains("Modifying global configuration is not supported", unsetGlobal.StdErr);
+    }
+
+    [Fact]
+    public async Task Restore_Staged_Source_AppliesSourceTreeToIndex()
+    {
+        using var testRepo = GitTestRepository.Create();
+        var initialHash = testRepo.Head.ToString();
+        testRepo.Commit("Second commit", ("README.md", "version 2"));
+
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+        var emulator = new GitCliEmulator(repo);
+        var approval = new TestUserApproval();
+
+        // Staged restore from initial commit
+        var res = await emulator.InvokeAsync(["restore", "--staged", "--source", initialHash, "README.md"], approval);
+        Assert.Equal(0, res.ExitCode);
+
+        // Index now has initial version ("seed"), while HEAD has "version 2"
+        var diffRes = await emulator.InvokeAsync(["diff", "--staged"], approval);
+        Assert.Contains("-version 2", diffRes.StdOut);
+        Assert.Contains("+seed", diffRes.StdOut);
+    }
+
+    [Fact]
+    public async Task Restore_Source_TraversalPath_Rejected()
+    {
+        using var testRepo = GitTestRepository.Create();
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+        var emulator = new GitCliEmulator(repo);
+        var approval = new TestUserApproval();
+
+        var resTraversal = await emulator.InvokeAsync(["restore", "--source", "HEAD", "../outside.txt"], approval);
+        Assert.NotEqual(0, resTraversal.ExitCode);
+    }
+
+    [Fact]
+    public async Task Restore_CreatesMissingDirectory_WhenRestoringSubdirectoryFile()
+    {
+        using var testRepo = GitTestRepository.Create();
+        testRepo.Commit("Add subfile", ("subdir/subfile.txt", "sub content"));
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+        var emulator = new GitCliEmulator(repo);
+        var approval = new TestUserApproval();
+
+        // Delete the subdirectory completely
+        var subDir = Path.Combine(testRepo.WorkingDirectory, "subdir");
+        Directory.Delete(subDir, recursive: true);
+        Assert.False(Directory.Exists(subDir));
+
+        // Restore from HEAD
+        var restoreRes = await emulator.InvokeAsync(["restore", "--source", "HEAD", "subdir/subfile.txt"], approval);
+        Assert.Equal(0, restoreRes.ExitCode);
+        Assert.True(File.Exists(Path.Combine(subDir, "subfile.txt")));
+        Assert.Equal("sub content", File.ReadAllText(Path.Combine(subDir, "subfile.txt")));
+    }
+
+    [Fact]
+    public async Task Push_DetachedHead_ReturnsFatalError()
+    {
+        using var testRepo = GitTestRepository.Create();
+        // Detach HEAD by writing commit hash directly to .git/HEAD
+        File.WriteAllText(Path.Combine(testRepo.WorkingDirectory, ".git", "HEAD"), testRepo.Head.ToString());
+
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+        var emulator = repo.CreateCliEmulator(defaultRemoteUrl: "https://example.com/repo.git");
+        var approval = new TestUserApproval();
+
+        var pushRes = await emulator.InvokeAsync(["push"], approval);
+        Assert.Equal(128, pushRes.ExitCode);
+        Assert.Contains("You are not currently on a branch", pushRes.StdErr);
+    }
+
+    [Fact]
+    public async Task Restore_StagedAndWorktree_BothUnstagesAndRestoresContent()
+    {
+        using var testRepo = GitTestRepository.Create();
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+        var emulator = new GitCliEmulator(repo);
+        var approval = new TestUserApproval();
+
+        var readmePath = Path.Combine(testRepo.WorkingDirectory, "README.md");
+        File.WriteAllText(readmePath, "staged change");
+        await emulator.InvokeAsync(["add", "README.md"], approval);
+        File.WriteAllText(readmePath, "further worktree change");
+
+        var response = await emulator.InvokeAsync(["restore", "--staged", "--worktree", "README.md"], approval);
+        Assert.Equal(0, response.ExitCode);
+        Assert.Equal("seed", File.ReadAllText(readmePath));
+        Assert.Single(approval.DiscardLocalChangesCalls);
+    }
+}

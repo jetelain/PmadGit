@@ -470,4 +470,28 @@ public class GitCliRepositoryUnitTests
         await Assert.ThrowsAsync<ArgumentException>(() => repository.CreateBranchAsync(invalidBranch));
         await Assert.ThrowsAsync<ArgumentException>(() => repository.CheckoutAsync(invalidBranch));
     }
+
+    [Fact]
+    public async Task GetRemoteUrlAsync_ReturnsTrimmedUrl_WhenCommandSucceeds()
+    {
+        var runner = new FakeGitRunner().Enqueue(0, stdout: "https://example.com/repo.git\n");
+        var repository = new GitCliRepository(ExistingDirectory, runner);
+
+        var url = await repository.GetRemoteUrlAsync("origin");
+
+        Assert.Equal("https://example.com/repo.git", url);
+        Assert.Equal(new[] { "remote", "get-url", "origin" }, runner.Calls.Single());
+    }
+
+    [Fact]
+    public async Task GetRemoteUrlAsync_ReturnsNull_WhenCommandFails()
+    {
+        var runner = new FakeGitRunner().Enqueue(128, stderr: "fatal: No such remote 'unknown'");
+        var repository = new GitCliRepository(ExistingDirectory, runner);
+
+        var url = await repository.GetRemoteUrlAsync("unknown");
+
+        Assert.Null(url);
+        Assert.Equal(new[] { "remote", "get-url", "unknown" }, runner.Calls.Single());
+    }
 }

@@ -936,6 +936,13 @@ public class GitCliRepository : IGitRepositoryWithRemote
         }
     }
 
+    /// <inheritdoc/>
+    public async Task<string?> GetRemoteUrlAsync(string remoteName, CancellationToken cancellationToken = default)
+    {
+        var response = await RunGit(cancellationToken, "remote", "get-url", remoteName).ConfigureAwait(false);
+        return response.ExitCode == 0 ? response.StdOut.Trim() : null;
+    }
+
     private Task<GitResponse> RunGit(CancellationToken cancellationToken, params string[] arguments)
     {
         return _gitRunner.RunGit(RootPath, arguments, cancellationToken);

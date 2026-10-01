@@ -442,5 +442,142 @@ public sealed class GitRepositoryWithIndexAndWorkspaceTests
         // Index and working tree must be clean
         Assert.True(await repo.IsWorkingTreeCleanAsync());
     }
+
+    [Fact]
+    public async Task RestoreFileAsync_RestoresFromIndex_AndFromSourceTree()
+    {
+        using var testRepo = GitTestRepository.Create();
+        testRepo.Commit("First", ("file.txt", "first-version"));
+        testRepo.Commit("Second", ("file.txt", "second-version"));
+
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+
+        // Dirty the file in working tree
+        var filePath = Path.Combine(testRepo.WorkingDirectory, "file.txt");
+        await File.WriteAllTextAsync(filePath, "dirty-version");
+
+        // Restore without source -> restores from index (second-version)
+        await repo.RestoreFileAsync("file.txt");
+        Assert.Equal("second-version", await File.ReadAllTextAsync(filePath));
+
+        // Restore with source -> restores from HEAD~1 (first-version)
+        await repo.RestoreFileAsync("file.txt", "HEAD~1");
+        Assert.Equal("first-version", await File.ReadAllTextAsync(filePath));
+    }
+
+    [Fact]
+    public async Task RestoreIndexAsync_RestoresToHead_AndToSourceTree()
+    {
+        using var testRepo = GitTestRepository.Create();
+        testRepo.Commit("First", ("file.txt", "first-version"));
+        testRepo.Commit("Second", ("file.txt", "second-version"));
+
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+        var filePath = Path.Combine(testRepo.WorkingDirectory, "file.txt");
+
+        // Stage modified content
+        await File.WriteAllTextAsync(filePath, "staged-version");
+        await repo.StageAsync("file.txt");
+
+        // Restore index without source -> restores to HEAD (second-version)
+        await repo.RestoreIndexAsync(new[] { "file.txt" });
+        var statusAfterHeadRestore = await repo.IndexManager!.GetStatusAsync();
+        var entryAfterHead = statusAfterHeadRestore.FindEntry("file.txt")!;
+        Assert.Equal(GitFileStatus.Clean, entryAfterHead.StagedStatus);
+
+        // Restore index with source -> restores to HEAD~1 (first-version)
+        await repo.RestoreIndexAsync(new[] { "file.txt" }, "HEAD~1");
+        var statusAfterSourceRestore = await repo.IndexManager.GetStatusAsync();
+        var entryAfterSource = statusAfterSourceRestore.FindEntry("file.txt")!;
+        Assert.Equal(GitFileStatus.StagedModified, entryAfterSource.StagedStatus);
+    }
+
+    [Fact]
+    public async Task GetWorktreeDiffAsync_ReturnsCombinedStagedAndUnstagedChanges()
+    {
+        using var testRepo = GitTestRepository.Create();
+        testRepo.Commit("Initial", ("f1.txt", "line1\n"), ("f2.txt", "line1\n"));
+
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+
+        // Stage change in f1.txt
+        await File.WriteAllTextAsync(Path.Combine(testRepo.WorkingDirectory, "f1.txt"), "line1\nstaged\n");
+        await repo.StageAsync("f1.txt");
+
+        // Unstaged change in f2.txt
+        await File.WriteAllTextAsync(Path.Combine(testRepo.WorkingDirectory, "f2.txt"), "line1\nunstaged\n");
+
+        var diff = await repo.GetWorktreeDiffAsync("HEAD");
+
+        Assert.Contains("diff --git a/f1.txt b/f1.txt", diff);
+        Assert.Contains("+staged", diff);
+        Assert.Contains("diff --git a/f2.txt b/f2.txt", diff);
+        Assert.Contains("+unstaged", diff);
+    }
+
+    [Fact]
+    public async Task GetWorktreeDiffAsync_WithPathFilter_FiltersToPath()
+    {
+        using var testRepo = GitTestRepository.Create();
+        testRepo.Commit("Initial", ("f1.txt", "line1\n"), ("f2.txt", "line1\n"));
+
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+
+        await File.WriteAllTextAsync(Path.Combine(testRepo.WorkingDirectory, "f1.txt"), "line1\nchanged1\n");
+        await repo.StageAsync("f1.txt");
+        await File.WriteAllTextAsync(Path.Combine(testRepo.WorkingDirectory, "f2.txt"), "line1\nchanged2\n");
+
+        var diff = await repo.GetWorktreeDiffAsync("HEAD", path: "f1.txt");
+
+        Assert.Contains("f1.txt", diff);
+        Assert.DoesNotContain("f2.txt", diff);
+    }
+
+    [Fact]
+    public async Task GetWorktreeDiffAsync_AgainstPriorCommit_ShowsCumulativeDiff()
+    {
+        using var testRepo = GitTestRepository.Create();
+        testRepo.Commit("First", ("f.txt", "v1\n"));
+        testRepo.Commit("Second", ("f.txt", "v2\n"));
+
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+        await File.WriteAllTextAsync(Path.Combine(testRepo.WorkingDirectory, "f.txt"), "v3\n");
+
+        var diff = await repo.GetWorktreeDiffAsync("HEAD~1");
+
+        Assert.Contains("-v1", diff);
+        Assert.Contains("+v3", diff);
+    }
+
+    [Fact]
+    public async Task GetWorktreeDiffAsync_WhenTrackedPathStagedForDeletion_ButRecreatedInWorkingTree_ComparesAgainstCommit()
+    {
+        using var testRepo = GitTestRepository.Create();
+        testRepo.Commit("Initial", ("f1.txt", "initial-content\n"));
+
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+        var f1Path = Path.Combine(testRepo.WorkingDirectory, "f1.txt");
+
+        // Delete file and stage deletion (StageAsync removes deleted file from index)
+        File.Delete(f1Path);
+        await repo.StageAsync("f1.txt");
+
+        // Recreate file in working tree with modified content
+        await File.WriteAllTextAsync(f1Path, "recreated-content\n");
+
+        var diff = await repo.GetWorktreeDiffAsync("HEAD");
+
+        // Should not be reported as deleted (/dev/null), but compared with commit content
+        Assert.DoesNotContain("+++ /dev/null", diff);
+        Assert.Contains("--- a/f1.txt", diff);
+        Assert.Contains("+++ b/f1.txt", diff);
+        Assert.Contains("-initial-content", diff);
+        Assert.Contains("+recreated-content", diff);
+
+        // Recreate with identical content to commit -> diff should be empty
+        await File.WriteAllTextAsync(f1Path, "initial-content\n");
+        var diffIdentical = await repo.GetWorktreeDiffAsync("HEAD");
+        Assert.Equal(string.Empty, diffIdentical);
+    }
 }
 
