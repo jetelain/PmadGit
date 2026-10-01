@@ -340,7 +340,7 @@ public sealed class GitRepositoryWithIndexAndWorkspace : IGitWorkspaceRepository
 
     /// <inheritdoc />
     public Task RestoreFileAsync(string relativePath, CancellationToken cancellationToken = default) =>
-        _indexManager.RestoreFileAsync(relativePath, null, cancellationToken);
+        _indexManager.RestoreFileAsync(relativePath, cancellationToken);
 
     /// <inheritdoc />
     public Task RestoreFileAsync(string relativePath, string? source, CancellationToken cancellationToken = default) =>
@@ -505,9 +505,9 @@ public sealed class GitRepositoryWithIndexAndWorkspace : IGitWorkspaceRepository
             var fullPath = Path.Combine(RootPath, p.Replace('/', Path.DirectorySeparatorChar));
             var fileExists = File.Exists(fullPath);
 
-            if (inOld && (!inIndex || !fileExists))
+            if (inOld && !fileExists)
             {
-                // File in commit was removed from index or deleted in working tree
+                // File in commit was deleted in working tree
                 var oldContent = await _repo.GetEntryDiffContentAsync(oldLeaf, cancellationToken).ConfigureAwait(false);
                 var (diffText, _, _) = UnifiedDiffFormatter.FormatFileDiff(
                     oldPath: p,
@@ -518,25 +518,6 @@ public sealed class GitRepositoryWithIndexAndWorkspace : IGitWorkspaceRepository
                     newContent: null,
                     oldMode: GitRepository.FormatFileMode(oldLeaf.Mode),
                     newMode: null);
-                sb.Append(diffText);
-            }
-            else if (!inOld && inIndex && fileExists)
-            {
-                // File newly added (tracked in index and present in working tree)
-                var fileInfo = new FileInfo(fullPath);
-                var workingBytes = await File.ReadAllBytesAsync(fullPath, cancellationToken).ConfigureAwait(false);
-                var workingHash = GitHashHelper.ComputeBlobHash(workingBytes, HashLengthBytes);
-                int currentMode = GitIndexEntry.GetFileMode(fileInfo);
-
-                var (diffText, _, _) = UnifiedDiffFormatter.FormatFileDiff(
-                    oldPath: null,
-                    newPath: p,
-                    oldHash: null,
-                    newHash: workingHash,
-                    oldContent: null,
-                    newContent: workingBytes,
-                    oldMode: null,
-                    newMode: GitRepository.FormatFileMode(currentMode));
                 sb.Append(diffText);
             }
             else if (inOld && fileExists)
@@ -561,6 +542,25 @@ public sealed class GitRepositoryWithIndexAndWorkspace : IGitWorkspaceRepository
                     oldContent: oldContent,
                     newContent: workingBytes,
                     oldMode: GitRepository.FormatFileMode(oldLeaf.Mode),
+                    newMode: GitRepository.FormatFileMode(currentMode));
+                sb.Append(diffText);
+            }
+            else if (!inOld && inIndex && fileExists)
+            {
+                // File newly added (tracked in index and present in working tree)
+                var fileInfo = new FileInfo(fullPath);
+                var workingBytes = await File.ReadAllBytesAsync(fullPath, cancellationToken).ConfigureAwait(false);
+                var workingHash = GitHashHelper.ComputeBlobHash(workingBytes, HashLengthBytes);
+                int currentMode = GitIndexEntry.GetFileMode(fileInfo);
+
+                var (diffText, _, _) = UnifiedDiffFormatter.FormatFileDiff(
+                    oldPath: null,
+                    newPath: p,
+                    oldHash: null,
+                    newHash: workingHash,
+                    oldContent: null,
+                    newContent: workingBytes,
+                    oldMode: null,
                     newMode: GitRepository.FormatFileMode(currentMode));
                 sb.Append(diffText);
             }

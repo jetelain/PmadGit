@@ -253,4 +253,29 @@ public class ApprovalGateTests
 
         Assert.NotNull(repo.IndexManager);
     }
+
+    [Fact]
+    public async Task ApprovalResult_DefaultValue_FailsClosedAndDenies()
+    {
+        Assert.Equal(ApprovalResult.Denied, default);
+        Assert.Equal(0, (int)ApprovalResult.Denied);
+        Assert.NotEqual(0, (int)ApprovalResult.Approved);
+
+        using var testRepo = GitTestRepository.Create();
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+        var emulator = new GitCliEmulator(repo);
+        var approval = new TestUserApproval
+        {
+            DiscardLocalChangesResult = default // uninitialized/default value
+        };
+
+        var readmePath = Path.Combine(testRepo.WorkingDirectory, "README.md");
+        File.WriteAllText(readmePath, "modified locally");
+
+        var response = await emulator.InvokeAsync(["restore", "README.md"], approval);
+
+        Assert.Equal(130, response.ExitCode);
+        Assert.Contains("denied", response.StdErr);
+        Assert.Equal("modified locally", File.ReadAllText(readmePath));
+    }
 }

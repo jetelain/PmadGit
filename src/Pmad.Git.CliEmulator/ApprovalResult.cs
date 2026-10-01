@@ -5,14 +5,14 @@ namespace Pmad.Git.CliEmulator;
 /// </summary>
 public enum ApprovalResult
 {
-    /// <summary>The user approved the operation; it may proceed.</summary>
-    Approved,
-
     /// <summary>
-    /// The user explicitly denied the operation.
+    /// The user explicitly denied the operation (or uninitialized default).
     /// The emulator returns exit code 130 with a denial message.
     /// </summary>
-    Denied,
+    Denied = 0,
+
+    /// <summary>The user approved the operation; it may proceed.</summary>
+    Approved = 1,
 
     /// <summary>
     /// The user (or the approval UI) cancelled the overall operation
@@ -20,5 +20,5 @@ public enum ApprovalResult
     /// The emulator propagates this as <see cref="OperationCanceledException"/>,
     /// which also results in exit code 130.
     /// </summary>
-    Cancelled,
+    Cancelled = 2,
 }

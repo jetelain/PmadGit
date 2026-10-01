@@ -16,14 +16,15 @@ internal static class ApprovalHelper
     public static async Task RequireAsync<T>(T context, Func<T, CancellationToken, Task<ApprovalResult>> approvalMethod, CancellationToken ct) where T : class, IApprovalContext
     {
         var result = await approvalMethod(context, ct).ConfigureAwait(false);
-        if (result == ApprovalResult.Denied)
+        if (result == ApprovalResult.Approved)
         {
-            throw new GitCliDeniedException(context.Operation);
+            return;
         }
         if (result == ApprovalResult.Cancelled)
         {
             throw new OperationCanceledException($"Approval for '{context.Operation}' was cancelled.");
         }
+        throw new GitCliDeniedException(context.Operation);
     }
 
     /// <summary>Builds a <see cref="GitCommitSummary"/> from a <see cref="GitCommit"/>.</summary>

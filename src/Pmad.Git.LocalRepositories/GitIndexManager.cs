@@ -462,10 +462,6 @@ public sealed class GitIndexManager
                 targetHash = sourceEntry.Hash;
                 targetMode = sourceEntry.Mode;
             }
-            else
-            {
-                throw new FileNotFoundException($"Path '{relativePath}' does not exist in '{source}'");
-            }
         }
         else
         {

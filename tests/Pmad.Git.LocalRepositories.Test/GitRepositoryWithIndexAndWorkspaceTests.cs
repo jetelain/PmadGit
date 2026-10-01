@@ -548,5 +548,36 @@ public sealed class GitRepositoryWithIndexAndWorkspaceTests
         Assert.Contains("-v1", diff);
         Assert.Contains("+v3", diff);
     }
+
+    [Fact]
+    public async Task GetWorktreeDiffAsync_WhenTrackedPathStagedForDeletion_ButRecreatedInWorkingTree_ComparesAgainstCommit()
+    {
+        using var testRepo = GitTestRepository.Create();
+        testRepo.Commit("Initial", ("f1.txt", "initial-content\n"));
+
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+        var f1Path = Path.Combine(testRepo.WorkingDirectory, "f1.txt");
+
+        // Delete file and stage deletion (StageAsync removes deleted file from index)
+        File.Delete(f1Path);
+        await repo.StageAsync("f1.txt");
+
+        // Recreate file in working tree with modified content
+        await File.WriteAllTextAsync(f1Path, "recreated-content\n");
+
+        var diff = await repo.GetWorktreeDiffAsync("HEAD");
+
+        // Should not be reported as deleted (/dev/null), but compared with commit content
+        Assert.DoesNotContain("+++ /dev/null", diff);
+        Assert.Contains("--- a/f1.txt", diff);
+        Assert.Contains("+++ b/f1.txt", diff);
+        Assert.Contains("-initial-content", diff);
+        Assert.Contains("+recreated-content", diff);
+
+        // Recreate with identical content to commit -> diff should be empty
+        await File.WriteAllTextAsync(f1Path, "initial-content\n");
+        var diffIdentical = await repo.GetWorktreeDiffAsync("HEAD");
+        Assert.Equal(string.Empty, diffIdentical);
+    }
 }
 

@@ -73,6 +73,36 @@ public class ReadOnlyCommandsTests
     }
 
     [Fact]
+    public async Task Log_MaxCountZero_ReturnsNoCommits()
+    {
+        using var testRepo = GitTestRepository.Create();
+        testRepo.Commit("Commit 2", ("f2.txt", "2"));
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+        var emulator = new GitCliEmulator(repo);
+        var approval = new TestUserApproval();
+
+        var response = await emulator.InvokeAsync(["log", "--oneline", "-n", "0"], approval);
+
+        Assert.Equal(0, response.ExitCode);
+        Assert.Equal(string.Empty, response.StdOut.Trim());
+    }
+
+    [Fact]
+    public async Task Log_ZeroShorthand_ReturnsNoCommits()
+    {
+        using var testRepo = GitTestRepository.Create();
+        testRepo.Commit("Commit 2", ("f2.txt", "2"));
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+        var emulator = new GitCliEmulator(repo);
+        var approval = new TestUserApproval();
+
+        var response = await emulator.InvokeAsync(["log", "--oneline", "-0"], approval);
+
+        Assert.Equal(0, response.ExitCode);
+        Assert.Equal(string.Empty, response.StdOut.Trim());
+    }
+
+    [Fact]
     public async Task Diff_Unstaged_ShowsFileDiff()
     {
         using var testRepo = GitTestRepository.Create();

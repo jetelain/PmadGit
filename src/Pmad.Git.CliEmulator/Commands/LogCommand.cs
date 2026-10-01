@@ -34,7 +34,7 @@ internal static class LogCommand
             try
             {
                 var commits = ctx.Repository.EnumerateCommitsAsync(startRef, ct);
-                if (maxCount.HasValue && maxCount.Value > 0)
+                if (maxCount.HasValue && maxCount.Value >= 0)
                 {
                     commits = commits.Take(maxCount.Value, ct);
                 }

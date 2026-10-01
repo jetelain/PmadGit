@@ -247,15 +247,24 @@ public sealed class GitIndexManagerTests
     }
 
     [Fact]
-    public async Task RestoreFileAsync_WithSource_WhenFileNotFound_ThrowsFileNotFoundException()
+    public async Task RestoreFileAsync_WithSource_WhenFileNotFoundInSource_RemovesFileFromWorkingTree()
     {
         using var testRepo = GitTestRepository.Create();
         var c1 = testRepo.Commit("Initial", ("file.txt", "version-1"));
+        testRepo.Commit("Second", ("file.txt", "version-1"), ("newfile.txt", "new-content"));
 
         var repo = GitRepository.Open(testRepo.WorkingDirectory);
         var manager = repo.IndexManager!;
 
-        await Assert.ThrowsAsync<FileNotFoundException>(() => manager.RestoreFileAsync("nonexistent.txt", source: c1.Value));
+        var newFilePath = Path.Combine(testRepo.WorkingDirectory, "newfile.txt");
+        Assert.True(File.Exists(newFilePath));
+
+        // Restoring from c1 where newfile.txt does not exist should remove the file from working tree
+        await manager.RestoreFileAsync("newfile.txt", c1.Value);
+        Assert.False(File.Exists(newFilePath));
+
+        // When the file doesn't exist either, it succeeds silently
+        await manager.RestoreFileAsync("nonexistent.txt", c1.Value);
     }
 
     [Fact]

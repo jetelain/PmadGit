@@ -8,7 +8,7 @@ Exposes the managed Git CLI emulator as a single `git` **`AIFunction`** that any
 
 - **One `git` tool, all sub-commands** — `status`, `log`, `diff`, `show`, `add`, `restore`, `commit`, `reset`, `revert`, `merge`, `branch`, `tag`, `config`, `remote`, `ls-tree`, `rev-parse`, `cat-file`, `fetch`, `pull`, `push`.
 - **Array-args _or_ string-args** — pick the variant that best matches the model you're using.
-- **Auto-approval by default** — all operations are approved automatically unless you supply an `IUserApproval` implementation.
+- **Safe by default** — gated operations (destructive and network operations) are denied automatically unless you supply an `IUserApproval` implementation.
 - **DI-friendly** — one-line `IServiceCollection` registration via `AddGitCliEmulatorAI`.
 - **No native Git dependency** — pure managed C#, AOT-compatible via the underlying `Pmad.Git.CliEmulator`.
 
@@ -76,7 +76,7 @@ app.MapGet("/agent", async (AIFunction gitTool, IChatClient chat) =>
 
 ## Approval Gates
 
-By default all operations (including destructive ones like `reset --hard` or `push --force`) are auto-approved. To add your own approval logic, implement `IUserApproval` from `Pmad.Git.CliEmulator` and pass it to any of the factory/extension methods:
+By default, gated operations (destructive operations like `reset --hard` or network operations like `push`) are denied (`DenyApproval.Instance`) to protect repositories from unintended AI modifications. To permit gated operations or implement custom approval logic, provide an `IUserApproval` implementation (or `AutoApproval.Instance` to approve all operations) to any of the factory or extension methods:
 
 ```csharp
 IUserApproval myApproval = new MyApproval(CancellationToken.None);
