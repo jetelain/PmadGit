@@ -1307,6 +1307,11 @@ public sealed class GitRepositoryWithIndexAndWorkspace : IGitWorkspaceRepository
                 throw new InvalidOperationException($"Branch '{normalized}' not found.");
             }
 
+            if (createBranch)
+            {
+                await CheckReferenceDirectoryFileConflictAsync(branchRef, cancellationToken).ConfigureAwait(false);
+            }
+
             var headHash = await ReferenceStore.TryResolveReferenceAsync("HEAD", cancellationToken).ConfigureAwait(false);
             if (!headHash.HasValue)
             {
@@ -1504,6 +1509,8 @@ public sealed class GitRepositoryWithIndexAndWorkspace : IGitWorkspaceRepository
                 throw new InvalidOperationException($"A branch named '{normalized}' already exists.");
             }
 
+            await CheckReferenceDirectoryFileConflictAsync(branchRef, cancellationToken).ConfigureAwait(false);
+
             if (empty)
             {
                 var index = await GitIndex.ReadAsync(_indexManager.IndexPath, HashLengthBytes, cancellationToken).ConfigureAwait(false);
@@ -1567,6 +1574,37 @@ public sealed class GitRepositoryWithIndexAndWorkspace : IGitWorkspaceRepository
         if (branchName.Contains("@{", StringComparison.Ordinal) || branchName.EndsWith('/'))
         {
             throw new ArgumentException($"Invalid branch name '{branchName}'.", paramName);
+        }
+    }
+
+    private async Task CheckReferenceDirectoryFileConflictAsync(string fullRef, CancellationToken cancellationToken)
+    {
+        if (_repo.ReferenceStore is GitReferenceStore localRefStore)
+        {
+            await localRefStore.CheckDirectoryFileConflictAsync(fullRef, cancellationToken).ConfigureAwait(false);
+        }
+        else
+        {
+            var allRefs = await ReferenceStore.GetReferencesAsync(cancellationToken).ConfigureAwait(false);
+            var prefix = fullRef;
+            int lastSlash;
+            while ((lastSlash = prefix.LastIndexOf('/')) > 0)
+            {
+                prefix = prefix[..lastSlash];
+                if (allRefs.ContainsKey(prefix))
+                {
+                    throw new InvalidOperationException($"Cannot create reference '{fullRef}' because '{prefix}' exists as a reference.");
+                }
+            }
+
+            var prefixWithSlash = fullRef + "/";
+            foreach (var existingRef in allRefs.Keys)
+            {
+                if (existingRef.StartsWith(prefixWithSlash, StringComparison.Ordinal))
+                {
+                    throw new InvalidOperationException($"Cannot create reference '{fullRef}' because '{existingRef}' exists under it.");
+                }
+            }
         }
     }
 
@@ -1700,26 +1738,29 @@ public sealed class GitRepositoryWithIndexAndWorkspace : IGitWorkspaceRepository
             .Select(e => _indexManager.NormalizeAndValidateRelativePath(e.Path))
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
 
-        if (untrackedFiles.Count == 0)
-        {
-            return;
-        }
-
         foreach (var (path, _) in targetLeaves)
         {
             var normalizedPath = _indexManager.NormalizeAndValidateRelativePath(path);
+            var fullPath = Path.Combine(RootPath, normalizedPath.Replace('/', Path.DirectorySeparatorChar));
 
-            // 1. Direct collision: an untracked file has the exact same path as a target leaf
-            if (untrackedFiles.Contains(normalizedPath))
+            // 1. Direct collision: target is a blob and disk has a file that is not in currentLeaves
+            if (File.Exists(fullPath) && !currentLeaves.ContainsKey(normalizedPath))
             {
                 throw new InvalidOperationException($"The untracked working tree file '{normalizedPath}' would be overwritten by checkout.");
             }
 
-            // 2. Directory-to-file collision: target leaf is 'foo', and on disk 'foo' is a directory containing untracked file(s)
-            var conflictingInsideDir = untrackedFiles.FirstOrDefault(u => u.StartsWith(normalizedPath + "/", StringComparison.OrdinalIgnoreCase));
-            if (conflictingInsideDir != null)
+            // 2. Directory-to-file collision: target leaf is 'foo', and on disk 'foo' is a directory
+            if (Directory.Exists(fullPath) && !File.Exists(fullPath))
             {
-                throw new InvalidOperationException($"The untracked working tree file '{conflictingInsideDir}' would be overwritten by checkout.");
+                var filesInDir = Directory.EnumerateFiles(fullPath, "*", SearchOption.AllDirectories);
+                foreach (var filePath in filesInDir)
+                {
+                    var relPath = Path.GetRelativePath(RootPath, filePath).Replace('\\', '/');
+                    if (!currentLeaves.ContainsKey(relPath))
+                    {
+                        throw new InvalidOperationException($"The untracked working tree file '{relPath}' would be overwritten by checkout.");
+                    }
+                }
             }
 
             // 3. File-to-directory collision: target leaf is 'foo/bar', and on disk an ancestor 'foo' is an untracked file
@@ -1728,10 +1769,17 @@ public sealed class GitRepositoryWithIndexAndWorkspace : IGitWorkspaceRepository
             for (var i = 0; i < parts.Length - 1; i++)
             {
                 prefix = i == 0 ? parts[0] : prefix + "/" + parts[i];
-                if (untrackedFiles.Contains(prefix))
+                var ancestorFullPath = Path.Combine(RootPath, prefix.Replace('/', Path.DirectorySeparatorChar));
+                if (File.Exists(ancestorFullPath) && !currentLeaves.ContainsKey(prefix))
                 {
                     throw new InvalidOperationException($"The untracked working tree file '{prefix}' would be overwritten by checkout.");
                 }
+            }
+
+            // 4. Fallback check for any untrackedFiles recorded by status
+            if (untrackedFiles.Contains(normalizedPath))
+            {
+                throw new InvalidOperationException($"The untracked working tree file '{normalizedPath}' would be overwritten by checkout.");
             }
         }
     }
@@ -1739,7 +1787,7 @@ public sealed class GitRepositoryWithIndexAndWorkspace : IGitWorkspaceRepository
     private async Task SyncWorkspaceToCommitAsync(GitCommit targetCommit, bool force, CancellationToken cancellationToken)
     {
         var oldIndex = await GitIndex.ReadAsync(_indexManager.IndexPath, HashLengthBytes, cancellationToken).ConfigureAwait(false);
-        var targetFiles = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var targetFiles = new HashSet<string>(StringComparer.Ordinal);
         var targetItems = new List<(string normalizedPath, GitTreeItem item)>();
         var newIndex = new GitIndex();
 
@@ -1753,8 +1801,13 @@ public sealed class GitRepositoryWithIndexAndWorkspace : IGitWorkspaceRepository
             }
         }
 
-        // Remove conflicting old tracked paths (including ancestor/descendant conflicts) before creating target paths
-        var removedPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        // Remove conflicting old tracked paths (including ancestor/descendant and case conflicts) before creating target paths
+        var isCaseInsensitiveFs = OperatingSystem.IsWindows() || OperatingSystem.IsMacOS();
+        var targetFilesIgnoreCase = isCaseInsensitiveFs
+            ? targetFiles.ToDictionary(f => f, f => f, StringComparer.OrdinalIgnoreCase)
+            : null;
+
+        var removedPaths = new HashSet<string>(StringComparer.Ordinal);
         foreach (var oldEntry in oldIndex.Entries)
         {
             var oldNorm = _indexManager.NormalizeAndValidateRelativePath(oldEntry.Path);
@@ -1762,7 +1815,11 @@ public sealed class GitRepositoryWithIndexAndWorkspace : IGitWorkspaceRepository
             {
                 var isAncestorConflict = targetFiles.Any(t => t.StartsWith(oldNorm + "/", StringComparison.OrdinalIgnoreCase));
                 var isDescendantConflict = targetFiles.Any(t => oldNorm.StartsWith(t + "/", StringComparison.OrdinalIgnoreCase));
-                if (isAncestorConflict || isDescendantConflict)
+                var isCaseConflict = targetFilesIgnoreCase != null &&
+                                     targetFilesIgnoreCase.TryGetValue(oldNorm, out var matchingTarget) &&
+                                     !string.Equals(oldNorm, matchingTarget, StringComparison.Ordinal);
+
+                if (isAncestorConflict || isDescendantConflict || isCaseConflict)
                 {
                     DeleteFileFromWorkspace(oldEntry.Path);
                     removedPaths.Add(oldNorm);
@@ -1776,12 +1833,32 @@ public sealed class GitRepositoryWithIndexAndWorkspace : IGitWorkspaceRepository
 
             if (Directory.Exists(fullPath) && !File.Exists(fullPath))
             {
-                try
+                if (force)
                 {
-                    Directory.Delete(fullPath, recursive: true);
+                    try
+                    {
+                        Directory.Delete(fullPath, recursive: true);
+                    }
+                    catch
+                    {
+                    }
                 }
-                catch
+                else
                 {
+                    if (!Directory.EnumerateFileSystemEntries(fullPath).Any())
+                    {
+                        try
+                        {
+                            Directory.Delete(fullPath, recursive: false);
+                        }
+                        catch
+                        {
+                        }
+                    }
+                    else
+                    {
+                        throw new InvalidOperationException($"Cannot create file '{normalizedPath}' because directory '{fullPath}' contains untracked entries.");
+                    }
                 }
             }
 

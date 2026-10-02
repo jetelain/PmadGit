@@ -260,7 +260,22 @@ internal static class CheckoutCommand
             var dirtyPaths = status.Entries
                 .Where(e => !e.IsClean && distinctPaths.Any(p => string.Equals(p, e.Path.Replace('\\', '/'), StringComparison.OrdinalIgnoreCase)))
                 .Select(e => e.Path)
-                .ToList();
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+            var currentIndex = await GitIndex.ReadAsync(ctx.Repository.IndexManager.IndexPath, ctx.Repository.HashLengthBytes, ct).ConfigureAwait(false);
+
+            foreach (var path in distinctPaths)
+            {
+                var normalized = path.Replace('\\', '/').Trim('/');
+                if (currentIndex.FindEntry(normalized) == null)
+                {
+                    var fullPath = Path.Combine(ctx.Repository.RootPath, path.Replace('/', Path.DirectorySeparatorChar));
+                    if (File.Exists(fullPath) || Directory.Exists(fullPath) || HasAncestorFile(ctx.Repository.RootPath, path))
+                    {
+                        dirtyPaths.Add(path);
+                    }
+                }
+            }
 
             if (dirtyPaths.Count > 0)
             {
@@ -269,7 +284,7 @@ internal static class CheckoutCommand
                     new DiscardChangesContext
                     {
                         Operation = opName,
-                        AffectedFiles = dirtyPaths,
+                        AffectedFiles = dirtyPaths.ToList(),
                     },
                     ctx.Approval.ApproveDiscardLocalChangesAsync,
                     ct).ConfigureAwait(false);
@@ -632,5 +647,20 @@ internal static class CheckoutCommand
         {
             return ctx.WriteError(ex.Message);
         }
+    }
+
+    private static bool HasAncestorFile(string rootPath, string relativePath)
+    {
+        var parts = relativePath.Replace('\\', '/').Split('/', StringSplitOptions.RemoveEmptyEntries);
+        var current = rootPath;
+        for (var i = 0; i < parts.Length - 1; i++)
+        {
+            current = Path.Combine(current, parts[i]);
+            if (File.Exists(current))
+            {
+                return true;
+            }
+        }
+        return false;
     }
 }

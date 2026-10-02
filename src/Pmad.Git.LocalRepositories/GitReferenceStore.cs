@@ -437,7 +437,7 @@ internal sealed class GitReferenceStore : IGitReferenceStore
         Interlocked.Exchange(ref _cache, CreateCache());
     }
 
-    private async Task CheckDirectoryFileConflictAsync(string normalized, CancellationToken cancellationToken)
+    internal async Task CheckDirectoryFileConflictAsync(string normalized, CancellationToken cancellationToken)
     {
         var allRefs = await GetReferencesAsync(cancellationToken).ConfigureAwait(false);
 

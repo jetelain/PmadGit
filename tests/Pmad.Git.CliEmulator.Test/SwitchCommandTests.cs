@@ -784,6 +784,101 @@ public class SwitchCommandTests
         Assert.Contains("cancelled", response.StdErr, StringComparison.OrdinalIgnoreCase);
     }
 
+    [Fact]
+    public async Task Checkout_Source_UntrackedCollision_RequestsDiscardApproval()
+    {
+        using var testRepo = GitTestRepository.Create();
+        testRepo.CreateBranch("feature");
+        testRepo.Switch("feature");
+        testRepo.Commit("Add feature file", ("introduced.txt", "feature content"));
+        testRepo.Switch("master");
+
+        var untrackedPath = Path.Combine(testRepo.WorkingDirectory, "introduced.txt");
+        await File.WriteAllTextAsync(untrackedPath, "untracked local content");
+
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+        var emulator = new GitCliEmulator(repo);
+        var approval = new TestUserApproval { DiscardLocalChangesResult = ApprovalResult.Denied };
+
+        var deniedResponse = await emulator.InvokeAsync(["checkout", "feature", "--", "introduced.txt"], approval);
+        Assert.Equal(130, deniedResponse.ExitCode);
+        Assert.Single(approval.DiscardLocalChangesCalls);
+        Assert.Contains("introduced.txt", approval.DiscardLocalChangesCalls[0].AffectedFiles);
+        Assert.Equal("untracked local content", await File.ReadAllTextAsync(untrackedPath));
+
+        approval.DiscardLocalChangesResult = ApprovalResult.Approved;
+        var approvedResponse = await emulator.InvokeAsync(["checkout", "feature", "--", "introduced.txt"], approval);
+        Assert.Equal(0, approvedResponse.ExitCode);
+        Assert.Equal("feature content", await File.ReadAllTextAsync(untrackedPath));
+    }
+
+    [Fact]
+    public async Task Switch_BranchRefNamespaceConflict_FailsBeforeMutatingWorkspace()
+    {
+        using var testRepo = GitTestRepository.Create();
+        testRepo.CreateBranch("topic/child");
+        testRepo.Commit("Add master file", ("master.txt", "master content"));
+
+        testRepo.CreateBranch("feature");
+        testRepo.Switch("feature");
+        testRepo.Commit("Add feature file", ("feature.txt", "feature content"));
+        testRepo.Switch("master");
+
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+        var emulator = new GitCliEmulator(repo);
+        var approval = new TestUserApproval();
+
+        var response = await emulator.InvokeAsync(["switch", "-c", "topic", "feature"], approval);
+        Assert.NotEqual(0, response.ExitCode);
+        Assert.Contains("Cannot create reference", response.StdErr);
+
+        Assert.True(File.Exists(Path.Combine(testRepo.WorkingDirectory, "master.txt")));
+        Assert.False(File.Exists(Path.Combine(testRepo.WorkingDirectory, "feature.txt")));
+        Assert.Equal("master", await repo.GetCurrentBranchNameAsync());
+    }
+
+    [Fact]
+    public async Task Switch_ExtraPositionalArgument_RejectedWhenNotCreate()
+    {
+        using var testRepo = GitTestRepository.Create();
+        testRepo.CreateBranch("feature");
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+        var emulator = new GitCliEmulator(repo);
+        var approval = new TestUserApproval();
+
+        var resp1 = await emulator.InvokeAsync(["switch", "feature", "unexpected"], approval);
+        Assert.NotEqual(0, resp1.ExitCode);
+        Assert.Contains("only one reference expected", resp1.StdErr);
+
+        var resp2 = await emulator.InvokeAsync(["switch", "--detach", "HEAD", "unexpected"], approval);
+        Assert.NotEqual(0, resp2.ExitCode);
+        Assert.Contains("only one reference expected", resp2.StdErr);
+    }
+
+    [Fact]
+    public async Task Switch_TargetFileCollidesWithIgnoredDirectory_DoesNotDeleteIgnoredDirectory()
+    {
+        using var testRepo = GitTestRepository.Create();
+        testRepo.CreateBranch("feature");
+        testRepo.Switch("feature");
+        testRepo.Commit("Add file named build", ("build", "build file content"));
+        testRepo.Switch("master");
+
+        var buildDir = Path.Combine(testRepo.WorkingDirectory, "build");
+        Directory.CreateDirectory(buildDir);
+        var logFile = Path.Combine(buildDir, "output.log");
+        await File.WriteAllTextAsync(logFile, "ignored log content");
+
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+        var emulator = new GitCliEmulator(repo);
+        var approval = new TestUserApproval();
+
+        var response = await emulator.InvokeAsync(["switch", "feature"], approval);
+        Assert.NotEqual(0, response.ExitCode);
+        Assert.True(File.Exists(logFile), "Ignored file inside directory must not be deleted.");
+        Assert.Equal("ignored log content", await File.ReadAllTextAsync(logFile));
+    }
+
     private static void RunGit(string workingDirectory, string args)
     {
         TestHelper.RunGit(workingDirectory, args);

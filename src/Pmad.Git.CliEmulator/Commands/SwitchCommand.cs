@@ -92,6 +92,11 @@ internal static class SwitchCommand
                 }
             }
 
+            if (!isCreate && !string.IsNullOrWhiteSpace(pr.GetValue(startPointArg)))
+            {
+                return ctx.WriteError("fatal: only one reference expected, 2 given.");
+            }
+
             string? branchOrCommit;
             string? startPoint;
 
@@ -103,7 +108,7 @@ internal static class SwitchCommand
             else
             {
                 branchOrCommit = pr.GetValue(branchArg);
-                startPoint = pr.GetValue(startPointArg);
+                startPoint = null;
             }
 
             if (string.IsNullOrWhiteSpace(branchOrCommit))
