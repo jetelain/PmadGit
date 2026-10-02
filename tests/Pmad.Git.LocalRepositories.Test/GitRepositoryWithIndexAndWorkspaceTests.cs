@@ -668,6 +668,16 @@ public sealed class GitRepositoryWithIndexAndWorkspaceTests
 
         await Assert.ThrowsAsync<InvalidOperationException>(() => repo.CheckoutBranchAsync("master", createBranch: true));
     }
+
+    [Fact]
+    public async Task CheckoutBranchAsync_CreateBranchWithForce_WhenBranchAlreadyExists_ThrowsInvalidOperationException()
+    {
+        using var testRepo = GitTestRepository.Create();
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            repo.CheckoutBranchAsync("master", createBranch: true, force: true, overwriteBranch: false));
+    }
 }
 
 

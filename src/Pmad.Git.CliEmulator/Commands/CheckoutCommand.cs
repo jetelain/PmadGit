@@ -202,10 +202,14 @@ internal static class CheckoutCommand
 
         try
         {
+            var isCaseInsensitiveFs = OperatingSystem.IsWindows() || OperatingSystem.IsMacOS();
+            var pathComparer = isCaseInsensitiveFs ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal;
+            var pathComparison = isCaseInsensitiveFs ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
+
             HashSet<string> knownFiles;
             if (source != null)
             {
-                var files = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                var files = new HashSet<string>(pathComparer);
                 try
                 {
                     await foreach (var item in ctx.Repository.EnumerateCommitTreeAsync(source, null, SearchOption.AllDirectories, ct).ConfigureAwait(false))
@@ -227,7 +231,7 @@ internal static class CheckoutCommand
                 var index = await GitIndex.ReadAsync(ctx.Repository.IndexManager.IndexPath, ctx.Repository.HashLengthBytes, ct).ConfigureAwait(false);
                 knownFiles = index.Entries
                     .Select(e => e.Path.Replace('\\', '/'))
-                    .ToHashSet(StringComparer.OrdinalIgnoreCase);
+                    .ToHashSet(pathComparer);
             }
 
             var expandedPaths = new List<string>();
@@ -249,7 +253,7 @@ internal static class CheckoutCommand
                 else
                 {
                     var prefixMatches = knownFiles
-                        .Where(f => f.StartsWith(normalized + "/", StringComparison.OrdinalIgnoreCase))
+                        .Where(f => f.StartsWith(normalized + "/", pathComparison))
                         .ToList();
 
                     if (prefixMatches.Count > 0)
@@ -263,13 +267,13 @@ internal static class CheckoutCommand
                 }
             }
 
-            var distinctPaths = expandedPaths.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+            var distinctPaths = expandedPaths.Distinct(pathComparer).ToList();
 
             var status = await ctx.Repository.GetStatusAsync(includeUntracked: false, cancellationToken: ct).ConfigureAwait(false);
             var dirtyPaths = status.Entries
-                .Where(e => !e.IsClean && distinctPaths.Any(p => string.Equals(p, e.Path.Replace('\\', '/'), StringComparison.OrdinalIgnoreCase)))
+                .Where(e => !e.IsClean && distinctPaths.Any(p => string.Equals(p, e.Path.Replace('\\', '/'), pathComparison)))
                 .Select(e => e.Path)
-                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+                .ToHashSet(pathComparer);
 
             var currentIndex = await GitIndex.ReadAsync(ctx.Repository.IndexManager.IndexPath, ctx.Repository.HashLengthBytes, ct).ConfigureAwait(false);
 

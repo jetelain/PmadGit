@@ -1279,7 +1279,7 @@ public sealed class GitRepositoryWithIndexAndWorkspace : IGitWorkspaceRepository
             var currentBranch = await ReferenceStore.GetCurrentBranchNameAsync(cancellationToken).ConfigureAwait(false);
             if (string.Equals(currentBranch, normalized, StringComparison.Ordinal))
             {
-                if (createBranch && !force && !overwriteBranch)
+                if (createBranch && !overwriteBranch)
                 {
                     throw new InvalidOperationException($"A branch named '{normalized}' already exists.");
                 }
@@ -1290,7 +1290,7 @@ public sealed class GitRepositoryWithIndexAndWorkspace : IGitWorkspaceRepository
             }
 
             var existingBranch = await ReferenceStore.TryResolveReferenceAsync(branchRef, cancellationToken).ConfigureAwait(false);
-            if (createBranch && existingBranch.HasValue && !force && !overwriteBranch)
+            if (createBranch && existingBranch.HasValue && !overwriteBranch)
             {
                 throw new InvalidOperationException($"A branch named '{normalized}' already exists.");
             }
@@ -1383,7 +1383,7 @@ public sealed class GitRepositoryWithIndexAndWorkspace : IGitWorkspaceRepository
                 }
                 else
                 {
-                    await ReferenceStore.CreateReferenceAsync(branchRef, targetCommit.Id, overwrite: force || overwriteBranch, cancellationToken).ConfigureAwait(false);
+                    await ReferenceStore.CreateReferenceAsync(branchRef, targetCommit.Id, overwrite: overwriteBranch, cancellationToken).ConfigureAwait(false);
                 }
             }
 

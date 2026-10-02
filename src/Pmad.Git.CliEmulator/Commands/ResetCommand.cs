@@ -53,11 +53,20 @@ internal static class ResetCommand
 
                 if (hard)
                 {
-                    var status = await ctx.Repository.GetStatusAsync(includeUntracked: false, cancellationToken: ct);
+                    var status = await ctx.Repository.GetStatusAsync(includeUntracked: false, cancellationToken: ct).ConfigureAwait(false);
                     var changedFiles = status.Entries
                         .Where(e => !e.IsClean)
                         .Select(e => e.Path)
                         .ToList();
+
+                    var collisions = await ApprovalHelper.GetUntrackedCollisionsAsync(ctx.Repository, targetCommit, ct).ConfigureAwait(false);
+                    foreach (var c in collisions)
+                    {
+                        if (!changedFiles.Contains(c, StringComparer.OrdinalIgnoreCase))
+                        {
+                            changedFiles.Add(c);
+                        }
+                    }
 
                     if (changedFiles.Count > 0)
                     {
@@ -68,7 +77,7 @@ internal static class ResetCommand
                                 AffectedFiles = changedFiles,
                             },
                             ctx.Approval.ApproveDiscardLocalChangesAsync, 
-                            ct);
+                            ct).ConfigureAwait(false);
                     }
                 }
 

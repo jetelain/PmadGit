@@ -257,7 +257,7 @@ public interface IGitWorkspaceRepository : IGitRepository, IDisposable
     /// <param name="branchName">The branch name to checkout (e.g. "main" or "feature").</param>
     /// <param name="createBranch">When true, creates a new branch before switching to it.</param>
     /// <param name="startPoint">Optional commit hash or reference to start from when <paramref name="createBranch"/> is true (defaults to HEAD).</param>
-    /// <param name="force">When true, allows overwriting an existing branch (when creating) and discarding uncommitted working tree changes.</param>
+    /// <param name="force">When true, discards uncommitted working tree changes.</param>
     /// <param name="overwriteBranch">When true, allows overwriting an existing branch (when creating) without forcing workspace changes.</param>
     /// <param name="cancellationToken">Token used to cancel the async operation.</param>
     Task CheckoutBranchAsync(

@@ -146,4 +146,60 @@ public class ResetCommandTests
         Assert.Single(approval.UnpushedCommitLossCalls);
         Assert.Equal("reset --soft", approval.UnpushedCommitLossCalls[0].Operation);
     }
+
+    [Fact]
+    public async Task Reset_Hard_UntrackedDirectoryCollidingWithTargetBlob_RequestsDiscardApproval()
+    {
+        using var testRepo = GitTestRepository.Create();
+        var commitWithBuild = testRepo.Commit("Commit with build file", ("build", "binary payload"));
+
+        testRepo.RunGit("reset --hard HEAD~1");
+
+        var buildDir = Path.Combine(testRepo.WorkingDirectory, "build");
+        Directory.CreateDirectory(buildDir);
+        var logFile = Path.Combine(buildDir, "output.log");
+        File.WriteAllText(logFile, "build output log");
+
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+        var emulator = new GitCliEmulator(repo);
+        var approval = new TestUserApproval
+        {
+            DiscardLocalChangesResult = ApprovalResult.Approved
+        };
+
+        var response = await emulator.InvokeAsync(["reset", "--hard", commitWithBuild.ToString()], approval);
+
+        Assert.Equal(0, response.ExitCode);
+        Assert.Single(approval.DiscardLocalChangesCalls);
+        Assert.Contains("build/output.log", approval.DiscardLocalChangesCalls[0].AffectedFiles);
+        Assert.True(File.Exists(Path.Combine(testRepo.WorkingDirectory, "build")));
+        Assert.Equal("binary payload", File.ReadAllText(Path.Combine(testRepo.WorkingDirectory, "build")));
+    }
+
+    [Fact]
+    public async Task Reset_Hard_UntrackedDirectoryCollidingWithTargetBlob_WhenDenied_PreservesUntrackedDirectory()
+    {
+        using var testRepo = GitTestRepository.Create();
+        var commitWithBuild = testRepo.Commit("Commit with build file", ("build", "binary payload"));
+
+        testRepo.RunGit("reset --hard HEAD~1");
+
+        var buildDir = Path.Combine(testRepo.WorkingDirectory, "build");
+        Directory.CreateDirectory(buildDir);
+        var logFile = Path.Combine(buildDir, "output.log");
+        File.WriteAllText(logFile, "build output log");
+
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+        var emulator = new GitCliEmulator(repo);
+        var approval = new TestUserApproval
+        {
+            DiscardLocalChangesResult = ApprovalResult.Denied
+        };
+
+        var response = await emulator.InvokeAsync(["reset", "--hard", commitWithBuild.ToString()], approval);
+
+        Assert.Equal(130, response.ExitCode);
+        Assert.True(File.Exists(logFile));
+        Assert.Equal("build output log", File.ReadAllText(logFile));
+    }
 }

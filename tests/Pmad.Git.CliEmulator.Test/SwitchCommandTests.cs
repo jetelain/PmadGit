@@ -991,6 +991,73 @@ public class SwitchCommandTests
         Assert.True(File.Exists(logFile), "Ignored log file must not be deleted when approval is denied.");
     }
 
+    [Fact]
+    public async Task Switch_ForceAndCreateBranch_WhenBranchExists_ReturnsError()
+    {
+        using var testRepo = GitTestRepository.Create();
+        testRepo.CreateBranch("feature");
+        testRepo.Switch("feature");
+        testRepo.Commit("Feature commit", ("feature.txt", "feature content"));
+        testRepo.Switch("master");
+
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+        var emulator = new GitCliEmulator(repo);
+        var approval = new TestUserApproval();
+
+        var response = await emulator.InvokeAsync(["switch", "-f", "-c", "feature"], approval);
+
+        Assert.NotEqual(0, response.ExitCode);
+        Assert.Contains("error:", response.StdErr);
+        Assert.Contains("already exists", response.StdErr);
+    }
+
+    [Fact]
+    public async Task Checkout_ForceAndCreateBranch_WhenBranchExists_ReturnsError()
+    {
+        using var testRepo = GitTestRepository.Create();
+        testRepo.CreateBranch("feature");
+        testRepo.Switch("feature");
+        testRepo.Commit("Feature commit", ("feature.txt", "feature content"));
+        testRepo.Switch("master");
+
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+        var emulator = new GitCliEmulator(repo);
+        var approval = new TestUserApproval();
+
+        var response = await emulator.InvokeAsync(["checkout", "-f", "-b", "feature"], approval);
+
+        Assert.NotEqual(0, response.ExitCode);
+        Assert.Contains("error:", response.StdErr);
+        Assert.Contains("already exists", response.StdErr);
+    }
+
+    [Fact]
+    public async Task Checkout_DoubleDash_CaseSensitiveFilesystem_RestoresBothFiles()
+    {
+        if (OperatingSystem.IsWindows() || OperatingSystem.IsMacOS())
+        {
+            return;
+        }
+
+        using var testRepo = GitTestRepository.Create();
+        testRepo.Commit("Add case-differing files", ("foo", "lower"), ("FOO", "upper"));
+
+        var fooPath = Path.Combine(testRepo.WorkingDirectory, "foo");
+        var fooUpperPath = Path.Combine(testRepo.WorkingDirectory, "FOO");
+        await File.WriteAllTextAsync(fooPath, "dirty lower");
+        await File.WriteAllTextAsync(fooUpperPath, "dirty upper");
+
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+        var emulator = new GitCliEmulator(repo);
+        var approval = new TestUserApproval { DiscardLocalChangesResult = ApprovalResult.Approved };
+
+        var response = await emulator.InvokeAsync(["checkout", "HEAD", "--", "."], approval);
+
+        Assert.Equal(0, response.ExitCode);
+        Assert.Equal("lower", await File.ReadAllTextAsync(fooPath));
+        Assert.Equal("upper", await File.ReadAllTextAsync(fooUpperPath));
+    }
+
     private static void RunGit(string workingDirectory, string args)
     {
         TestHelper.RunGit(workingDirectory, args);
