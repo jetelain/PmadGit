@@ -43,9 +43,19 @@ internal static class CheckoutCommand
             var hasDoubleDash = pr.Tokens.Any(t => t.Value == "--");
 
             // Case 1: File restoration mode
-            if (!isCreate && string.IsNullOrEmpty(orphanBranch) && !isDetach && (hasDoubleDash || ShouldTreatAsFileRestore(rawArgs, ctx.Repository, out _, out _)))
+            if (!isCreate && string.IsNullOrEmpty(orphanBranch) && !isDetach)
             {
-                return await HandleFileRestoreAsync(ctx, rawArgs, hasDoubleDash, pr, ct).ConfigureAwait(false);
+                if (hasDoubleDash)
+                {
+                    var (source, paths) = ParseDoubleDashFileRestore(pr);
+                    return await HandleFileRestoreAsync(ctx, source, paths, ct).ConfigureAwait(false);
+                }
+
+                var (isRestore, sourceFromArgs, pathsFromArgs) = await ShouldTreatAsFileRestoreAsync(rawArgs, ctx.Repository, ct).ConfigureAwait(false);
+                if (isRestore)
+                {
+                    return await HandleFileRestoreAsync(ctx, sourceFromArgs, pathsFromArgs, ct).ConfigureAwait(false);
+                }
             }
 
             // Case 2: Orphan branch
@@ -70,76 +80,23 @@ internal static class CheckoutCommand
         return cmd;
     }
 
-    private static bool ShouldTreatAsFileRestore(string[] args, IGitWorkspaceRepository repo, out string? source, out List<string> paths)
-    {
-        source = null;
-        paths = [];
-
-        if (args.Length == 0)
-        {
-            return false;
-        }
-
-        if (args.Length > 1)
-        {
-            // Multiple arguments without branch options -> treat as file restore:
-            // either [<tree-ish>] <path1> <path2>... or <path1> <path2>...
-            // Check if first arg could be a commit/branch and second is a file in worktree/repo
-            var first = args[0];
-            var secondFullPath = Path.Combine(repo.RootPath, args[1].Replace('/', Path.DirectorySeparatorChar));
-            if ((File.Exists(secondFullPath) || Directory.Exists(secondFullPath)) && repo.ReferenceStore.TryResolveReferenceAsync($"refs/heads/{first}").GetAwaiter().GetResult() != null)
-            {
-                source = first;
-                paths.AddRange(args.Skip(1));
-                return true;
-            }
-
-            paths.AddRange(args);
-            return true;
-        }
-
-        // Single argument: check if it matches an existing file in the worktree or index
-        var singleArg = args[0];
-        // If it's a known branch, it's not a file restore unless disambiguated with --
-        var branchRef = repo.ReferenceStore.TryResolveReferenceAsync($"refs/heads/{singleArg}").GetAwaiter().GetResult();
-        if (branchRef.HasValue)
-        {
-            return false;
-        }
-
-        var fullPath = Path.Combine(repo.RootPath, singleArg.Replace('/', Path.DirectorySeparatorChar));
-        if (File.Exists(fullPath) || Directory.Exists(fullPath))
-        {
-            paths.Add(singleArg);
-            return true;
-        }
-
-        return false;
-    }
-
-    private static async Task<int> HandleFileRestoreAsync(
-        CommandContext ctx,
-        string[] args,
-        bool hasDoubleDash,
-        ParseResult pr,
-        CancellationToken ct)
+    private static (string? source, List<string> paths) ParseDoubleDashFileRestore(ParseResult pr)
     {
         string? source = null;
         var paths = new List<string>();
 
-        if (hasDoubleDash)
+        var doubleDashIndex = -1;
+        for (var i = 0; i < pr.Tokens.Count; i++)
         {
-            var doubleDashIndex = -1;
-            for (var i = 0; i < pr.Tokens.Count; i++)
+            if (pr.Tokens[i].Value == "--")
             {
-                if (pr.Tokens[i].Value == "--")
-                {
-                    doubleDashIndex = i;
-                    break;
-                }
+                doubleDashIndex = i;
+                break;
             }
+        }
 
-            // Tokens before '--' that are not option tokens
+        if (doubleDashIndex >= 0)
+        {
             var nonOptionBeforeDash = pr.Tokens
                 .Take(doubleDashIndex)
                 .Where(t => t.Type == TokenType.Argument)
@@ -158,11 +115,80 @@ internal static class CheckoutCommand
 
             paths.AddRange(tokensAfterDash);
         }
-        else
+
+        return (source, paths);
+    }
+
+    private static async Task<(bool isRestore, string? source, List<string> paths)> ShouldTreatAsFileRestoreAsync(
+        string[] args,
+        IGitWorkspaceRepository repo,
+        CancellationToken ct)
+    {
+        if (args.Length == 0)
         {
-            ShouldTreatAsFileRestore(args, ctx.Repository, out source, out paths);
+            return (false, null, []);
         }
 
+        if (args.Length > 1)
+        {
+            var first = args[0];
+            GitCommit? sourceCommit = null;
+            try
+            {
+                sourceCommit = await repo.GetCommitAsync(first, ct).ConfigureAwait(false);
+            }
+            catch
+            {
+            }
+
+            if (sourceCommit != null)
+            {
+                return (true, first, args.Skip(1).ToList());
+            }
+
+            return (true, null, args.ToList());
+        }
+
+        // Single argument: check if it matches a known branch first
+        var singleArg = args[0];
+        var normalizedBranch = singleArg.Trim().Replace('\\', '/');
+        if (normalizedBranch.StartsWith("refs/heads/", StringComparison.Ordinal))
+        {
+            normalizedBranch = normalizedBranch["refs/heads/".Length..];
+        }
+        else if (normalizedBranch.StartsWith("heads/", StringComparison.Ordinal))
+        {
+            normalizedBranch = normalizedBranch["heads/".Length..];
+        }
+
+        var branchRef = await repo.ReferenceStore.TryResolveReferenceAsync($"refs/heads/{normalizedBranch}", ct).ConfigureAwait(false);
+        if (branchRef.HasValue)
+        {
+            return (false, null, []);
+        }
+
+        var fullPath = Path.Combine(repo.RootPath, singleArg.Replace('/', Path.DirectorySeparatorChar));
+        if (File.Exists(fullPath) || Directory.Exists(fullPath))
+        {
+            return (true, null, [singleArg]);
+        }
+
+        var normalizedPath = singleArg.Replace('\\', '/').Trim('/');
+        var index = await GitIndex.ReadAsync(repo.IndexManager.IndexPath, repo.HashLengthBytes, ct).ConfigureAwait(false);
+        if (index.FindEntry(normalizedPath) != null || index.Entries.Any(e => string.Equals(e.Path, normalizedPath, StringComparison.OrdinalIgnoreCase)))
+        {
+            return (true, null, [singleArg]);
+        }
+
+        return (false, null, []);
+    }
+
+    private static async Task<int> HandleFileRestoreAsync(
+        CommandContext ctx,
+        string? source,
+        List<string> paths,
+        CancellationToken ct)
+    {
         if (paths.Count == 0)
         {
             return ctx.WriteError("No paths specified.");
@@ -300,7 +326,22 @@ internal static class CheckoutCommand
                 }
             }
 
-            var branchRef = await ctx.Repository.ReferenceStore.TryResolveReferenceAsync($"refs/heads/{branchOrCommit}", ct).ConfigureAwait(false);
+            var targetBranch = branchOrCommit;
+            if (!isDetach)
+            {
+                var normalized = branchOrCommit.Trim().Replace('\\', '/');
+                if (normalized.StartsWith("refs/heads/", StringComparison.Ordinal))
+                {
+                    normalized = normalized["refs/heads/".Length..];
+                }
+                else if (normalized.StartsWith("heads/", StringComparison.Ordinal))
+                {
+                    normalized = normalized["heads/".Length..];
+                }
+                targetBranch = normalized;
+            }
+
+            var branchRef = await ctx.Repository.ReferenceStore.TryResolveReferenceAsync($"refs/heads/{targetBranch}", ct).ConfigureAwait(false);
             var isLocalBranch = branchRef.HasValue;
 
             // In checkout, --detach was optional for commits:
@@ -363,10 +404,10 @@ internal static class CheckoutCommand
 
             // Normal branch checkout
             var currentBranch = await ctx.Repository.GetCurrentBranchNameAsync(ct).ConfigureAwait(false);
-            var isCurrentBranch = !isCreate && !isForce && string.Equals(currentBranch, branchOrCommit, StringComparison.Ordinal);
+            var isCurrentBranch = !isCreate && !isForce && string.Equals(currentBranch, targetBranch, StringComparison.Ordinal);
             if (isCurrentBranch)
             {
-                await ctx.StdOut.WriteLineAsync($"Already on '{branchOrCommit}'").ConfigureAwait(false);
+                await ctx.StdOut.WriteLineAsync($"Already on '{targetBranch}'").ConfigureAwait(false);
                 return 0;
             }
 
@@ -404,7 +445,7 @@ internal static class CheckoutCommand
                             new UnpushedCommitLossContext
                             {
                                 Operation = "checkout -B",
-                                BranchName = branchOrCommit,
+                                BranchName = targetBranch,
                                 CommitsToLose = lost,
                             },
                             ctx.Approval.ApproveUnpushedCommitLossAsync,
@@ -436,7 +477,7 @@ internal static class CheckoutCommand
             }
 
             await ctx.Repository.CheckoutBranchAsync(
-                branchOrCommit,
+                targetBranch,
                 createBranch: isCreate,
                 startPoint: startPoint,
                 force: isForceCreate || isForce,
@@ -446,16 +487,16 @@ internal static class CheckoutCommand
             {
                 if (isForceCreate && branchRef.HasValue)
                 {
-                    await ctx.StdOut.WriteLineAsync($"Reset branch '{branchOrCommit}'").ConfigureAwait(false);
+                    await ctx.StdOut.WriteLineAsync($"Reset branch '{targetBranch}'").ConfigureAwait(false);
                 }
                 else
                 {
-                    await ctx.StdOut.WriteLineAsync($"Switched to a new branch '{branchOrCommit}'").ConfigureAwait(false);
+                    await ctx.StdOut.WriteLineAsync($"Switched to a new branch '{targetBranch}'").ConfigureAwait(false);
                 }
             }
             else
             {
-                await ctx.StdOut.WriteLineAsync($"Switched to branch '{branchOrCommit}'").ConfigureAwait(false);
+                await ctx.StdOut.WriteLineAsync($"Switched to branch '{targetBranch}'").ConfigureAwait(false);
             }
             return 0;
         }

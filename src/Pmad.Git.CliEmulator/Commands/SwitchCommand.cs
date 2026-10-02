@@ -167,10 +167,25 @@ internal static class SwitchCommand
                     return 0;
                 }
 
+                var targetBranch = branchOrCommit;
+                if (!isDetach)
+                {
+                    var normalized = branchOrCommit.Trim().Replace('\\', '/');
+                    if (normalized.StartsWith("refs/heads/", StringComparison.Ordinal))
+                    {
+                        normalized = normalized["refs/heads/".Length..];
+                    }
+                    else if (normalized.StartsWith("heads/", StringComparison.Ordinal))
+                    {
+                        normalized = normalized["heads/".Length..];
+                    }
+                    targetBranch = normalized;
+                }
+
                 // If not creating and not detaching:
                 // --detach (or -d) is now always required when switching to a detached head.
                 // A local branch is expected.
-                var branchRef = await ctx.Repository.ReferenceStore.TryResolveReferenceAsync($"refs/heads/{branchOrCommit}", ct).ConfigureAwait(false);
+                var branchRef = await ctx.Repository.ReferenceStore.TryResolveReferenceAsync($"refs/heads/{targetBranch}", ct).ConfigureAwait(false);
                 if (!isCreate && !branchRef.HasValue)
                 {
                     try
@@ -186,10 +201,10 @@ internal static class SwitchCommand
 
                 // Branch checkout
                 var currentBranch = await ctx.Repository.GetCurrentBranchNameAsync(ct).ConfigureAwait(false);
-                var isCurrentBranch = !isCreate && !isDiscardChanges && string.Equals(currentBranch, branchOrCommit, StringComparison.Ordinal);
+                var isCurrentBranch = !isCreate && !isDiscardChanges && string.Equals(currentBranch, targetBranch, StringComparison.Ordinal);
                 if (isCurrentBranch)
                 {
-                    await ctx.StdOut.WriteLineAsync($"Already on '{branchOrCommit}'").ConfigureAwait(false);
+                    await ctx.StdOut.WriteLineAsync($"Already on '{targetBranch}'").ConfigureAwait(false);
                     return 0;
                 }
 
@@ -259,7 +274,7 @@ internal static class SwitchCommand
                 }
 
                 await ctx.Repository.CheckoutBranchAsync(
-                    branchOrCommit,
+                    targetBranch,
                     createBranch: isCreate,
                     startPoint: startPoint,
                     force: isForceCreate || isDiscardChanges,
@@ -269,16 +284,16 @@ internal static class SwitchCommand
                 {
                     if (isForceCreate && branchRef.HasValue)
                     {
-                        await ctx.StdOut.WriteLineAsync($"Reset branch '{branchOrCommit}'").ConfigureAwait(false);
+                        await ctx.StdOut.WriteLineAsync($"Reset branch '{targetBranch}'").ConfigureAwait(false);
                     }
                     else
                     {
-                        await ctx.StdOut.WriteLineAsync($"Switched to a new branch '{branchOrCommit}'").ConfigureAwait(false);
+                        await ctx.StdOut.WriteLineAsync($"Switched to a new branch '{targetBranch}'").ConfigureAwait(false);
                     }
                 }
                 else
                 {
-                    await ctx.StdOut.WriteLineAsync($"Switched to branch '{branchOrCommit}'").ConfigureAwait(false);
+                    await ctx.StdOut.WriteLineAsync($"Switched to branch '{targetBranch}'").ConfigureAwait(false);
                 }
                 return 0;
             }
@@ -289,10 +304,5 @@ internal static class SwitchCommand
         });
 
         return cmd;
-    }
-
-    public static Command BuildCheckout(CommandContext ctx)
-    {
-        return CheckoutCommand.Build(ctx);
     }
 }

@@ -680,7 +680,7 @@ public sealed class GitRepositoryWithIndexAndWorkspace : IGitWorkspaceRepository
 
             if (mode == GitResetMode.Hard)
             {
-                await SyncWorkspaceToCommitAsync(targetCommit, cancellationToken).ConfigureAwait(false);
+                await SyncWorkspaceToCommitAsync(targetCommit, force: true, cancellationToken).ConfigureAwait(false);
             }
             else // Mixed
             {
@@ -1395,15 +1395,15 @@ public sealed class GitRepositoryWithIndexAndWorkspace : IGitWorkspaceRepository
                 }
             }
 
+            if (!isSameCommit || force)
+            {
+                await SyncWorkspaceToCommitAsync(targetCommit, force, cancellationToken).ConfigureAwait(false);
+            }
+
             var hp = Path.Combine(GitDirectory, "HEAD");
             var tp = Path.Combine(GitDirectory, $"HEAD.{Guid.NewGuid():N}.tmp");
             await File.WriteAllTextAsync(tp, $"ref: {branchRef}\n", cancellationToken).ConfigureAwait(false);
             File.Move(tp, hp, overwrite: true);
-
-            if (!isSameCommit || force)
-            {
-                await SyncWorkspaceToCommitAsync(targetCommit, cancellationToken).ConfigureAwait(false);
-            }
 
             InvalidateCaches();
         }
@@ -1473,15 +1473,15 @@ public sealed class GitRepositoryWithIndexAndWorkspace : IGitWorkspaceRepository
                 }
             }
 
+            if (!isSameCommit || force)
+            {
+                await SyncWorkspaceToCommitAsync(targetCommit, force, cancellationToken).ConfigureAwait(false);
+            }
+
             var hp = Path.Combine(GitDirectory, "HEAD");
             var tp = Path.Combine(GitDirectory, $"HEAD.{Guid.NewGuid():N}.tmp");
             await File.WriteAllTextAsync(tp, targetCommit.Id.ToString() + "\n", cancellationToken).ConfigureAwait(false);
             File.Move(tp, hp, overwrite: true);
-
-            if (!isSameCommit || force)
-            {
-                await SyncWorkspaceToCommitAsync(targetCommit, cancellationToken).ConfigureAwait(false);
-            }
 
             InvalidateCaches();
         }
@@ -1526,11 +1526,7 @@ public sealed class GitRepositoryWithIndexAndWorkspace : IGitWorkspaceRepository
                 var index = await GitIndex.ReadAsync(_indexManager.IndexPath, HashLengthBytes, cancellationToken).ConfigureAwait(false);
                 foreach (var entry in index.Entries)
                 {
-                    var fullPath = Path.Combine(RootPath, entry.Path.Replace('/', Path.DirectorySeparatorChar));
-                    if (File.Exists(fullPath))
-                    {
-                        File.Delete(fullPath);
-                    }
+                    DeleteFileFromWorkspace(entry.Path);
                 }
                 index.Entries.Clear();
                 await index.WriteAsync(_indexManager.IndexPath, HashLengthBytes, cancellationToken).ConfigureAwait(false);
@@ -1538,7 +1534,7 @@ public sealed class GitRepositoryWithIndexAndWorkspace : IGitWorkspaceRepository
             else if (!string.IsNullOrEmpty(startPoint))
             {
                 var targetCommit = await _repo.GetCommitAsync(startPoint, cancellationToken).ConfigureAwait(false);
-                await SyncWorkspaceToCommitAsync(targetCommit, cancellationToken).ConfigureAwait(false);
+                await SyncWorkspaceToCommitAsync(targetCommit, force: false, cancellationToken).ConfigureAwait(false);
             }
 
             var hp = Path.Combine(GitDirectory, "HEAD");
@@ -1692,7 +1688,10 @@ public sealed class GitRepositoryWithIndexAndWorkspace : IGitWorkspaceRepository
         }
     }
 
-    private async Task SyncWorkspaceToCommitAsync(GitCommit targetCommit, CancellationToken cancellationToken)
+    private Task SyncWorkspaceToCommitAsync(GitCommit targetCommit, CancellationToken cancellationToken)
+        => SyncWorkspaceToCommitAsync(targetCommit, force: false, cancellationToken);
+
+    private async Task SyncWorkspaceToCommitAsync(GitCommit targetCommit, bool force, CancellationToken cancellationToken)
     {
         var oldIndex = await GitIndex.ReadAsync(_indexManager.IndexPath, HashLengthBytes, cancellationToken).ConfigureAwait(false);
         var targetFiles = new HashSet<string>(StringComparer.Ordinal);
@@ -1705,45 +1704,56 @@ public sealed class GitRepositoryWithIndexAndWorkspace : IGitWorkspaceRepository
                 var normalizedPath = _indexManager.NormalizeAndValidateRelativePath(item.Path);
                 targetFiles.Add(normalizedPath);
                 var fullPath = Path.Combine(RootPath, normalizedPath.Replace('/', Path.DirectorySeparatorChar));
-                var dir = Path.GetDirectoryName(fullPath);
-                if (!string.IsNullOrEmpty(dir))
-                {
-                    Directory.CreateDirectory(dir);
-                }
-                if (File.Exists(fullPath))
-                {
-                    File.SetAttributes(fullPath, FileAttributes.Normal);
-                }
 
-                var fileStreamOptions = new FileStreamOptions
-                {
-                    Mode = FileMode.Create,
-                    Access = FileAccess.Write,
-                    Share = FileShare.None,
-                    Options = FileOptions.Asynchronous
-                };
-                await using (var objStream = await ObjectStore.ReadObjectStreamAsync(item.Entry.Hash, cancellationToken).ConfigureAwait(false))
-                await using (var fileStream = new FileStream(fullPath, fileStreamOptions))
-                {
-                    await objStream.Content.CopyToAsync(fileStream, cancellationToken).ConfigureAwait(false);
-                }
+                var oldEntry = oldIndex.FindEntry(normalizedPath);
+                var isUnchanged = !force &&
+                                  oldEntry != null &&
+                                  oldEntry.Hash.Equals(item.Entry.Hash) &&
+                                  oldEntry.FileMode == item.Entry.Mode &&
+                                  File.Exists(fullPath);
 
-                if (!OperatingSystem.IsWindows())
+                if (!isUnchanged)
                 {
-                    try
+                    var dir = Path.GetDirectoryName(fullPath);
+                    if (!string.IsNullOrEmpty(dir))
                     {
-                        var currentUnixMode = File.GetUnixFileMode(fullPath);
-                        if (item.Entry.Mode == 33261)
-                        {
-                            File.SetUnixFileMode(fullPath, currentUnixMode | UnixFileMode.UserExecute | UnixFileMode.GroupExecute | UnixFileMode.OtherExecute);
-                        }
-                        else if (item.Entry.Mode == 33188)
-                        {
-                            File.SetUnixFileMode(fullPath, currentUnixMode & ~(UnixFileMode.UserExecute | UnixFileMode.GroupExecute | UnixFileMode.OtherExecute));
-                        }
+                        Directory.CreateDirectory(dir);
                     }
-                    catch
+                    if (File.Exists(fullPath))
                     {
+                        File.SetAttributes(fullPath, FileAttributes.Normal);
+                    }
+
+                    var fileStreamOptions = new FileStreamOptions
+                    {
+                        Mode = FileMode.Create,
+                        Access = FileAccess.Write,
+                        Share = FileShare.None,
+                        Options = FileOptions.Asynchronous
+                    };
+                    await using (var objStream = await ObjectStore.ReadObjectStreamAsync(item.Entry.Hash, cancellationToken).ConfigureAwait(false))
+                    await using (var fileStream = new FileStream(fullPath, fileStreamOptions))
+                    {
+                        await objStream.Content.CopyToAsync(fileStream, cancellationToken).ConfigureAwait(false);
+                    }
+
+                    if (!OperatingSystem.IsWindows())
+                    {
+                        try
+                        {
+                            var currentUnixMode = File.GetUnixFileMode(fullPath);
+                            if (item.Entry.Mode == 33261)
+                            {
+                                File.SetUnixFileMode(fullPath, currentUnixMode | UnixFileMode.UserExecute | UnixFileMode.GroupExecute | UnixFileMode.OtherExecute);
+                            }
+                            else if (item.Entry.Mode == 33188)
+                            {
+                                File.SetUnixFileMode(fullPath, currentUnixMode & ~(UnixFileMode.UserExecute | UnixFileMode.GroupExecute | UnixFileMode.OtherExecute));
+                            }
+                        }
+                        catch
+                        {
+                        }
                     }
                 }
 
@@ -1759,11 +1769,7 @@ public sealed class GitRepositoryWithIndexAndWorkspace : IGitWorkspaceRepository
             var normalizedPath = _indexManager.NormalizeAndValidateRelativePath(oldEntry.Path);
             if (!targetFiles.Contains(normalizedPath))
             {
-                var fullPath = Path.Combine(RootPath, normalizedPath.Replace('/', Path.DirectorySeparatorChar));
-                if (File.Exists(fullPath))
-                {
-                    File.Delete(fullPath);
-                }
+                DeleteFileFromWorkspace(oldEntry.Path);
             }
         }
 

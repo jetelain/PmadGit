@@ -436,4 +436,89 @@ public class SwitchCommandTests
         Assert.Contains("Switched to branch 'feature'", response.StdOut);
         Assert.False(File.Exists(mergeHeadPath));
     }
+
+    [Fact]
+    public async Task Checkout_DeletedTrackedFile_RestoresWithoutDoubleDash()
+    {
+        using var testRepo = GitTestRepository.Create();
+        var readmePath = Path.Combine(testRepo.WorkingDirectory, "README.md");
+        File.Delete(readmePath);
+        Assert.False(File.Exists(readmePath));
+
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+        var emulator = new GitCliEmulator(repo);
+        var approval = new TestUserApproval { DiscardLocalChangesResult = ApprovalResult.Approved };
+
+        var response = await emulator.InvokeAsync(["checkout", "README.md"], approval);
+
+        Assert.Equal(0, response.ExitCode);
+        Assert.True(File.Exists(readmePath));
+        Assert.Equal("seed", await File.ReadAllTextAsync(readmePath));
+    }
+
+    [Fact]
+    public async Task Checkout_WithCommitSource_RestoresFileWithoutDoubleDash()
+    {
+        using var testRepo = GitTestRepository.Create();
+        var readmePath = Path.Combine(testRepo.WorkingDirectory, "README.md");
+        await File.WriteAllTextAsync(readmePath, "changed locally");
+
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+        var emulator = new GitCliEmulator(repo);
+        var approval = new TestUserApproval { DiscardLocalChangesResult = ApprovalResult.Approved };
+
+        var response = await emulator.InvokeAsync(["checkout", "HEAD", "README.md"], approval);
+
+        Assert.Equal(0, response.ExitCode);
+        Assert.Equal("seed", await File.ReadAllTextAsync(readmePath));
+    }
+
+    [Fact]
+    public async Task Switch_And_Checkout_WithRefsHeadsPrefix_NormalizesAndSucceeds()
+    {
+        using var testRepo = GitTestRepository.Create();
+        testRepo.CreateBranch("feature");
+
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+        var emulator = new GitCliEmulator(repo);
+        var approval = new TestUserApproval();
+
+        var responseSwitch = await emulator.InvokeAsync(["switch", "refs/heads/feature"], approval);
+        Assert.Equal(0, responseSwitch.ExitCode);
+        Assert.Contains("Switched to branch 'feature'", responseSwitch.StdOut);
+        Assert.Equal("feature", await repo.GetCurrentBranchNameAsync());
+
+        var responseCheckout = await emulator.InvokeAsync(["checkout", "refs/heads/master"], approval);
+        Assert.Equal(0, responseCheckout.ExitCode);
+        Assert.Contains("Switched to branch 'master'", responseCheckout.StdOut);
+        Assert.Equal("master", await repo.GetCurrentBranchNameAsync());
+    }
+
+    [Fact]
+    public async Task Switch_RemovesEmptyParentDirectoriesOfDeletedFiles()
+    {
+        using var testRepo = GitTestRepository.Create();
+        testRepo.Commit("Add sub file", ("sub/nested/file.txt", "content"));
+        testRepo.CreateBranch("feature");
+
+        testRepo.Switch("feature");
+        RunGit(testRepo.WorkingDirectory, "rm sub/nested/file.txt");
+        testRepo.Commit("Remove sub file");
+
+        testRepo.Switch("master");
+        Assert.True(Directory.Exists(Path.Combine(testRepo.WorkingDirectory, "sub", "nested")));
+
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+        var emulator = new GitCliEmulator(repo);
+        var approval = new TestUserApproval();
+
+        var response = await emulator.InvokeAsync(["switch", "feature"], approval);
+        Assert.Equal(0, response.ExitCode);
+        Assert.False(Directory.Exists(Path.Combine(testRepo.WorkingDirectory, "sub")));
+    }
+
+    private static void RunGit(string workingDirectory, string args)
+    {
+        TestHelper.RunGit(workingDirectory, args);
+    }
 }
