@@ -193,9 +193,72 @@ internal static class CheckoutCommand
 
         try
         {
+            HashSet<string> knownFiles;
+            if (source != null)
+            {
+                var files = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                try
+                {
+                    await foreach (var item in ctx.Repository.EnumerateCommitTreeAsync(source, null, SearchOption.AllDirectories, ct).ConfigureAwait(false))
+                    {
+                        if (item.Entry.Kind == GitTreeEntryKind.Blob)
+                        {
+                            files.Add(item.Path.Replace('\\', '/'));
+                        }
+                    }
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    return ctx.WriteError($"fatal: reference is not a tree: {source}");
+                }
+                knownFiles = files;
+            }
+            else
+            {
+                var index = await GitIndex.ReadAsync(ctx.Repository.IndexManager.IndexPath, ctx.Repository.HashLengthBytes, ct).ConfigureAwait(false);
+                knownFiles = index.Entries
+                    .Select(e => e.Path.Replace('\\', '/'))
+                    .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            }
+
+            var expandedPaths = new List<string>();
+            foreach (var requestedPath in paths)
+            {
+                var normalized = requestedPath.Replace('\\', '/').Trim('/');
+                if (normalized == "." || normalized.Length == 0)
+                {
+                    if (knownFiles.Count == 0)
+                    {
+                        return ctx.WriteError($"error: pathspec '{requestedPath}' did not match any file(s) known to git");
+                    }
+                    expandedPaths.AddRange(knownFiles);
+                }
+                else if (knownFiles.Contains(normalized))
+                {
+                    expandedPaths.Add(normalized);
+                }
+                else
+                {
+                    var prefixMatches = knownFiles
+                        .Where(f => f.StartsWith(normalized + "/", StringComparison.OrdinalIgnoreCase))
+                        .ToList();
+
+                    if (prefixMatches.Count > 0)
+                    {
+                        expandedPaths.AddRange(prefixMatches);
+                    }
+                    else
+                    {
+                        return ctx.WriteError($"error: pathspec '{requestedPath}' did not match any file(s) known to git");
+                    }
+                }
+            }
+
+            var distinctPaths = expandedPaths.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+
             var status = await ctx.Repository.GetStatusAsync(includeUntracked: false, cancellationToken: ct).ConfigureAwait(false);
             var dirtyPaths = status.Entries
-                .Where(e => !e.IsClean && paths.Any(p => string.Equals(p.Replace('\\', '/'), e.Path.Replace('\\', '/'), StringComparison.OrdinalIgnoreCase)))
+                .Where(e => !e.IsClean && distinctPaths.Any(p => string.Equals(p, e.Path.Replace('\\', '/'), StringComparison.OrdinalIgnoreCase)))
                 .Select(e => e.Path)
                 .ToList();
 
@@ -214,10 +277,10 @@ internal static class CheckoutCommand
 
             if (source != null)
             {
-                await ctx.Repository.RestoreIndexAsync(paths, source, ct).ConfigureAwait(false);
+                await ctx.Repository.RestoreIndexAsync(distinctPaths, source, ct).ConfigureAwait(false);
             }
 
-            foreach (var path in paths)
+            foreach (var path in distinctPaths)
             {
                 await ctx.Repository.RestoreFileAsync(path, source, ct).ConfigureAwait(false);
             }

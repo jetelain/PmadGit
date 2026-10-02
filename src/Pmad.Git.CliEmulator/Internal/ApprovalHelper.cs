@@ -80,23 +80,20 @@ internal static class ApprovalHelper
         GitHash target,
         CancellationToken ct)
     {
-        var remoteRefs = await repo.GetReferencesByPrefixAsync("refs/remotes/", ct).ConfigureAwait(false);
-        var remoteHashes = new HashSet<GitHash>(remoteRefs.Values);
-
         var result = new List<GitCommitSummary>();
         await foreach (var commit in repo.EnumerateCommitsAsync(fromTip.ToString(), ct).ConfigureAwait(false))
         {
-            if (commit.Id.Equals(target))
+            if (await repo.IsCommitReachableAsync(from: target, to: commit.Id, ct).ConfigureAwait(false))
             {
-                break;
+                continue;
             }
-            if (!remoteHashes.Contains(commit.Id))
+            if (!await repo.IsCommitPushedAsync(commit.Id, null, ct).ConfigureAwait(false))
             {
                 result.Add(ToSummary(commit));
-            }
-            if (result.Count >= 50)
-            {
-                break;
+                if (result.Count >= 50)
+                {
+                    break;
+                }
             }
         }
         return result;

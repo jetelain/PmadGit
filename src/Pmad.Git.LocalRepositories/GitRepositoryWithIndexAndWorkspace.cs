@@ -1359,20 +1359,7 @@ public sealed class GitRepositoryWithIndexAndWorkspace : IGitWorkspaceRepository
                     }
 
                     var currentLeaves = await _repo.LoadLeafEntriesAsync((await _repo.GetCommitAsync(headHash.Value.Value, cancellationToken).ConfigureAwait(false)).Tree, cancellationToken).ConfigureAwait(false);
-                    var targetLeaves = await _repo.LoadLeafEntriesAsync(targetCommit.Tree, cancellationToken).ConfigureAwait(false);
-
-                    foreach (var (path, _) in targetLeaves)
-                    {
-                        var normalizedPath = _indexManager.NormalizeAndValidateRelativePath(path);
-                        if (!currentLeaves.ContainsKey(normalizedPath))
-                        {
-                            var fullPath = Path.Combine(RootPath, normalizedPath.Replace('/', Path.DirectorySeparatorChar));
-                            if (File.Exists(fullPath) || Directory.Exists(fullPath))
-                            {
-                                throw new InvalidOperationException($"The untracked working tree file '{normalizedPath}' would be overwritten by checkout.");
-                            }
-                        }
-                    }
+                    await CheckUntrackedCollisionsAsync(currentLeaves, targetCommit, cancellationToken).ConfigureAwait(false);
                 }
             }
             else if (!force)
@@ -1382,6 +1369,11 @@ public sealed class GitRepositoryWithIndexAndWorkspace : IGitWorkspaceRepository
                 {
                     throw new InvalidOperationException("Cannot switch branch with unmerged (conflicted) entries in the index.");
                 }
+            }
+
+            if (!isSameCommit || force)
+            {
+                await SyncWorkspaceToCommitAsync(targetCommit, force, cancellationToken).ConfigureAwait(false);
             }
 
             if (createBranch)
@@ -1394,11 +1386,6 @@ public sealed class GitRepositoryWithIndexAndWorkspace : IGitWorkspaceRepository
                 {
                     await ReferenceStore.CreateReferenceAsync(branchRef, targetCommit.Id, overwrite: force || overwriteBranch, cancellationToken).ConfigureAwait(false);
                 }
-            }
-
-            if (!isSameCommit || force)
-            {
-                await SyncWorkspaceToCommitAsync(targetCommit, force, cancellationToken).ConfigureAwait(false);
             }
 
             var hp = Path.Combine(GitDirectory, "HEAD");
@@ -1449,20 +1436,7 @@ public sealed class GitRepositoryWithIndexAndWorkspace : IGitWorkspaceRepository
                     var currentLeaves = headHash.HasValue
                         ? await _repo.LoadLeafEntriesAsync((await _repo.GetCommitAsync(headHash.Value.Value, cancellationToken).ConfigureAwait(false)).Tree, cancellationToken).ConfigureAwait(false)
                         : new Dictionary<string, TreeLeaf>(StringComparer.Ordinal);
-                    var targetLeaves = await _repo.LoadLeafEntriesAsync(targetCommit.Tree, cancellationToken).ConfigureAwait(false);
-
-                    foreach (var (path, _) in targetLeaves)
-                    {
-                        var normalizedPath = _indexManager.NormalizeAndValidateRelativePath(path);
-                        if (!currentLeaves.ContainsKey(normalizedPath))
-                        {
-                            var fullPath = Path.Combine(RootPath, normalizedPath.Replace('/', Path.DirectorySeparatorChar));
-                            if (File.Exists(fullPath) || Directory.Exists(fullPath))
-                            {
-                                throw new InvalidOperationException($"The untracked working tree file '{normalizedPath}' would be overwritten by checkout.");
-                            }
-                        }
-                    }
+                    await CheckUntrackedCollisionsAsync(currentLeaves, targetCommit, cancellationToken).ConfigureAwait(false);
                 }
             }
             else if (!force)
@@ -1555,20 +1529,7 @@ public sealed class GitRepositoryWithIndexAndWorkspace : IGitWorkspaceRepository
                     var currentLeaves = headHash.HasValue
                         ? await _repo.LoadLeafEntriesAsync((await _repo.GetCommitAsync(headHash.Value.Value, cancellationToken).ConfigureAwait(false)).Tree, cancellationToken).ConfigureAwait(false)
                         : new Dictionary<string, TreeLeaf>(StringComparer.Ordinal);
-                    var targetLeaves = await _repo.LoadLeafEntriesAsync(targetCommit.Tree, cancellationToken).ConfigureAwait(false);
-
-                    foreach (var (path, _) in targetLeaves)
-                    {
-                        var normalizedPath = _indexManager.NormalizeAndValidateRelativePath(path);
-                        if (!currentLeaves.ContainsKey(normalizedPath))
-                        {
-                            var fullPath = Path.Combine(RootPath, normalizedPath.Replace('/', Path.DirectorySeparatorChar));
-                            if (File.Exists(fullPath) || Directory.Exists(fullPath))
-                            {
-                                throw new InvalidOperationException($"The untracked working tree file '{normalizedPath}' would be overwritten by checkout.");
-                            }
-                        }
-                    }
+                    await CheckUntrackedCollisionsAsync(currentLeaves, targetCommit, cancellationToken).ConfigureAwait(false);
                 }
 
                 await SyncWorkspaceToCommitAsync(targetCommit, force: force, cancellationToken).ConfigureAwait(false);
@@ -1728,10 +1689,58 @@ public sealed class GitRepositoryWithIndexAndWorkspace : IGitWorkspaceRepository
     private Task SyncWorkspaceToCommitAsync(GitCommit targetCommit, CancellationToken cancellationToken)
         => SyncWorkspaceToCommitAsync(targetCommit, force: false, cancellationToken);
 
+    private async Task CheckUntrackedCollisionsAsync(
+        Dictionary<string, TreeLeaf> currentLeaves,
+        GitCommit targetCommit,
+        CancellationToken cancellationToken)
+    {
+        var targetLeaves = await _repo.LoadLeafEntriesAsync(targetCommit.Tree, cancellationToken).ConfigureAwait(false);
+        var status = await GetStatusAsync(includeUntracked: true, includeClean: false, cancellationToken).ConfigureAwait(false);
+        var untrackedFiles = status.UntrackedEntries
+            .Select(e => _indexManager.NormalizeAndValidateRelativePath(e.Path))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        if (untrackedFiles.Count == 0)
+        {
+            return;
+        }
+
+        foreach (var (path, _) in targetLeaves)
+        {
+            var normalizedPath = _indexManager.NormalizeAndValidateRelativePath(path);
+
+            // 1. Direct collision: an untracked file has the exact same path as a target leaf
+            if (untrackedFiles.Contains(normalizedPath))
+            {
+                throw new InvalidOperationException($"The untracked working tree file '{normalizedPath}' would be overwritten by checkout.");
+            }
+
+            // 2. Directory-to-file collision: target leaf is 'foo', and on disk 'foo' is a directory containing untracked file(s)
+            var conflictingInsideDir = untrackedFiles.FirstOrDefault(u => u.StartsWith(normalizedPath + "/", StringComparison.OrdinalIgnoreCase));
+            if (conflictingInsideDir != null)
+            {
+                throw new InvalidOperationException($"The untracked working tree file '{conflictingInsideDir}' would be overwritten by checkout.");
+            }
+
+            // 3. File-to-directory collision: target leaf is 'foo/bar', and on disk an ancestor 'foo' is an untracked file
+            var parts = normalizedPath.Split('/');
+            var prefix = "";
+            for (var i = 0; i < parts.Length - 1; i++)
+            {
+                prefix = i == 0 ? parts[0] : prefix + "/" + parts[i];
+                if (untrackedFiles.Contains(prefix))
+                {
+                    throw new InvalidOperationException($"The untracked working tree file '{prefix}' would be overwritten by checkout.");
+                }
+            }
+        }
+    }
+
     private async Task SyncWorkspaceToCommitAsync(GitCommit targetCommit, bool force, CancellationToken cancellationToken)
     {
         var oldIndex = await GitIndex.ReadAsync(_indexManager.IndexPath, HashLengthBytes, cancellationToken).ConfigureAwait(false);
-        var targetFiles = new HashSet<string>(StringComparer.Ordinal);
+        var targetFiles = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var targetItems = new List<(string normalizedPath, GitTreeItem item)>();
         var newIndex = new GitIndex();
 
         await foreach (var item in EnumerateCommitTreeAsync(targetCommit.Id.Value, null, SearchOption.AllDirectories, cancellationToken).ConfigureAwait(false))
@@ -1740,71 +1749,105 @@ public sealed class GitRepositoryWithIndexAndWorkspace : IGitWorkspaceRepository
             {
                 var normalizedPath = _indexManager.NormalizeAndValidateRelativePath(item.Path);
                 targetFiles.Add(normalizedPath);
-                var fullPath = Path.Combine(RootPath, normalizedPath.Replace('/', Path.DirectorySeparatorChar));
-
-                var oldEntry = oldIndex.FindEntry(normalizedPath);
-                var isUnchanged = !force &&
-                                  oldEntry != null &&
-                                  oldEntry.Hash.Equals(item.Entry.Hash) &&
-                                  oldEntry.FileMode == item.Entry.Mode &&
-                                  File.Exists(fullPath);
-
-                if (!isUnchanged)
-                {
-                    var dir = Path.GetDirectoryName(fullPath);
-                    if (!string.IsNullOrEmpty(dir))
-                    {
-                        Directory.CreateDirectory(dir);
-                    }
-                    if (File.Exists(fullPath))
-                    {
-                        File.SetAttributes(fullPath, FileAttributes.Normal);
-                    }
-
-                    var fileStreamOptions = new FileStreamOptions
-                    {
-                        Mode = FileMode.Create,
-                        Access = FileAccess.Write,
-                        Share = FileShare.None,
-                        Options = FileOptions.Asynchronous
-                    };
-                    await using (var objStream = await ObjectStore.ReadObjectStreamAsync(item.Entry.Hash, cancellationToken).ConfigureAwait(false))
-                    await using (var fileStream = new FileStream(fullPath, fileStreamOptions))
-                    {
-                        await objStream.Content.CopyToAsync(fileStream, cancellationToken).ConfigureAwait(false);
-                    }
-
-                    if (!OperatingSystem.IsWindows())
-                    {
-                        try
-                        {
-                            var currentUnixMode = File.GetUnixFileMode(fullPath);
-                            if (item.Entry.Mode == 33261)
-                            {
-                                File.SetUnixFileMode(fullPath, currentUnixMode | UnixFileMode.UserExecute | UnixFileMode.GroupExecute | UnixFileMode.OtherExecute);
-                            }
-                            else if (item.Entry.Mode == 33188)
-                            {
-                                File.SetUnixFileMode(fullPath, currentUnixMode & ~(UnixFileMode.UserExecute | UnixFileMode.GroupExecute | UnixFileMode.OtherExecute));
-                            }
-                        }
-                        catch
-                        {
-                        }
-                    }
-                }
-
-                var fileInfo = new FileInfo(fullPath);
-                var entry = GitIndexEntry.FromFileInfo(normalizedPath, fileInfo, item.Entry.Hash);
-                entry.FileMode = item.Entry.Mode;
-                newIndex.AddOrUpdate(entry);
+                targetItems.Add((normalizedPath, item));
             }
         }
 
+        // Remove conflicting old tracked paths (including ancestor/descendant conflicts) before creating target paths
+        var removedPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var oldEntry in oldIndex.Entries)
+        {
+            var oldNorm = _indexManager.NormalizeAndValidateRelativePath(oldEntry.Path);
+            if (!targetFiles.Contains(oldNorm))
+            {
+                var isAncestorConflict = targetFiles.Any(t => t.StartsWith(oldNorm + "/", StringComparison.OrdinalIgnoreCase));
+                var isDescendantConflict = targetFiles.Any(t => oldNorm.StartsWith(t + "/", StringComparison.OrdinalIgnoreCase));
+                if (isAncestorConflict || isDescendantConflict)
+                {
+                    DeleteFileFromWorkspace(oldEntry.Path);
+                    removedPaths.Add(oldNorm);
+                }
+            }
+        }
+
+        foreach (var (normalizedPath, item) in targetItems)
+        {
+            var fullPath = Path.Combine(RootPath, normalizedPath.Replace('/', Path.DirectorySeparatorChar));
+
+            if (Directory.Exists(fullPath) && !File.Exists(fullPath))
+            {
+                try
+                {
+                    Directory.Delete(fullPath, recursive: true);
+                }
+                catch
+                {
+                }
+            }
+
+            var oldEntry = oldIndex.FindEntry(normalizedPath);
+            var isUnchanged = !force &&
+                              oldEntry != null &&
+                              oldEntry.Hash.Equals(item.Entry.Hash) &&
+                              oldEntry.FileMode == item.Entry.Mode &&
+                              File.Exists(fullPath);
+
+            if (!isUnchanged)
+            {
+                var dir = Path.GetDirectoryName(fullPath);
+                if (!string.IsNullOrEmpty(dir))
+                {
+                    Directory.CreateDirectory(dir);
+                }
+                if (File.Exists(fullPath))
+                {
+                    File.SetAttributes(fullPath, FileAttributes.Normal);
+                }
+
+                var fileStreamOptions = new FileStreamOptions
+                {
+                    Mode = FileMode.Create,
+                    Access = FileAccess.Write,
+                    Share = FileShare.None,
+                    Options = FileOptions.Asynchronous
+                };
+                await using (var objStream = await ObjectStore.ReadObjectStreamAsync(item.Entry.Hash, cancellationToken).ConfigureAwait(false))
+                await using (var fileStream = new FileStream(fullPath, fileStreamOptions))
+                {
+                    await objStream.Content.CopyToAsync(fileStream, cancellationToken).ConfigureAwait(false);
+                }
+
+                if (!OperatingSystem.IsWindows())
+                {
+                    try
+                    {
+                        var currentUnixMode = File.GetUnixFileMode(fullPath);
+                        if (item.Entry.Mode == 33261)
+                        {
+                            File.SetUnixFileMode(fullPath, currentUnixMode | UnixFileMode.UserExecute | UnixFileMode.GroupExecute | UnixFileMode.OtherExecute);
+                        }
+                        else if (item.Entry.Mode == 33188)
+                        {
+                            File.SetUnixFileMode(fullPath, currentUnixMode & ~(UnixFileMode.UserExecute | UnixFileMode.GroupExecute | UnixFileMode.OtherExecute));
+                        }
+                    }
+                    catch
+                    {
+                    }
+                }
+            }
+
+            var fileInfo = new FileInfo(fullPath);
+            var entry = GitIndexEntry.FromFileInfo(normalizedPath, fileInfo, item.Entry.Hash);
+            entry.FileMode = item.Entry.Mode;
+            newIndex.AddOrUpdate(entry);
+        }
+
+        // Remove remaining obsolete entries that were not deleted upfront
         foreach (var oldEntry in oldIndex.Entries)
         {
             var normalizedPath = _indexManager.NormalizeAndValidateRelativePath(oldEntry.Path);
-            if (!targetFiles.Contains(normalizedPath))
+            if (!targetFiles.Contains(normalizedPath) && !removedPaths.Contains(normalizedPath))
             {
                 DeleteFileFromWorkspace(oldEntry.Path);
             }

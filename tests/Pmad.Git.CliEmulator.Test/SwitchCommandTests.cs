@@ -541,8 +541,9 @@ public class SwitchCommandTests
     public async Task Checkout_Force_CollidingUntrackedFile_RequiresApprovalWithUntrackedFile()
     {
         using var testRepo = GitTestRepository.Create();
-        testRepo.Commit("Add feature file", ("introduced.txt", "feature content"));
         testRepo.CreateBranch("feature");
+        testRepo.Switch("feature");
+        testRepo.Commit("Add feature file", ("introduced.txt", "feature content"));
         testRepo.Switch("master");
 
         var collidingPath = Path.Combine(testRepo.WorkingDirectory, "introduced.txt");
@@ -563,8 +564,9 @@ public class SwitchCommandTests
     public async Task Switch_Force_CollidingUntrackedFile_RequiresApprovalWithUntrackedFile()
     {
         using var testRepo = GitTestRepository.Create();
-        testRepo.Commit("Add feature file", ("introduced.txt", "feature content"));
         testRepo.CreateBranch("feature");
+        testRepo.Switch("feature");
+        testRepo.Commit("Add feature file", ("introduced.txt", "feature content"));
         testRepo.Switch("master");
 
         var collidingPath = Path.Combine(testRepo.WorkingDirectory, "introduced.txt");
@@ -623,9 +625,14 @@ public class SwitchCommandTests
     public async Task Checkout_Orphan_WithStartPoint_ChecksDirtyFilesAndUntrackedCollisions()
     {
         using var testRepo = GitTestRepository.Create();
-        testRepo.Commit("Commit 1", ("file1.txt", "v1"));
+        testRepo.Commit("Commit 1", ("file1.txt", "v1"), ("untracked_collision.txt", "v1"));
         var commit1 = testRepo.Head;
+
+        RunGit(testRepo.WorkingDirectory, "rm untracked_collision.txt");
         testRepo.Commit("Commit 2", ("file1.txt", "v2"));
+
+        var collisionPath = Path.Combine(testRepo.WorkingDirectory, "untracked_collision.txt");
+        await File.WriteAllTextAsync(collisionPath, "untracked content");
 
         var file1Path = Path.Combine(testRepo.WorkingDirectory, "file1.txt");
         await File.WriteAllTextAsync(file1Path, "v2 modified");
@@ -644,6 +651,105 @@ public class SwitchCommandTests
         Assert.Equal(0, responseForce.ExitCode);
         Assert.Single(approval.DiscardLocalChangesCalls);
         Assert.Contains("file1.txt", approval.DiscardLocalChangesCalls[0].AffectedFiles);
+        Assert.Contains("untracked_collision.txt", approval.DiscardLocalChangesCalls[0].AffectedFiles);
+    }
+
+    [Fact]
+    public async Task Checkout_DoubleDash_Dot_RestoresAllTrackedFiles()
+    {
+        using var testRepo = GitTestRepository.Create();
+        var readmePath = Path.Combine(testRepo.WorkingDirectory, "README.md");
+        await File.WriteAllTextAsync(readmePath, "overwritten content");
+
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+        var emulator = new GitCliEmulator(repo);
+        var approval = new TestUserApproval { DiscardLocalChangesResult = ApprovalResult.Approved };
+
+        var response = await emulator.InvokeAsync(["checkout", "--", "."], approval);
+
+        Assert.Equal(0, response.ExitCode);
+        Assert.Equal("seed", await File.ReadAllTextAsync(readmePath));
+        Assert.Single(approval.DiscardLocalChangesCalls);
+        Assert.Contains("README.md", approval.DiscardLocalChangesCalls[0].AffectedFiles);
+    }
+
+    [Fact]
+    public async Task Checkout_DoubleDash_Directory_RestoresFilesInDirectory()
+    {
+        using var testRepo = GitTestRepository.Create();
+        testRepo.Commit("Add nested", ("sub/nested.txt", "original sub"));
+
+        var nestedPath = Path.Combine(testRepo.WorkingDirectory, "sub", "nested.txt");
+        await File.WriteAllTextAsync(nestedPath, "overwritten sub");
+
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+        var emulator = new GitCliEmulator(repo);
+        var approval = new TestUserApproval { DiscardLocalChangesResult = ApprovalResult.Approved };
+
+        var response = await emulator.InvokeAsync(["checkout", "--", "sub"], approval);
+
+        Assert.Equal(0, response.ExitCode);
+        Assert.Equal("original sub", await File.ReadAllTextAsync(nestedPath));
+        Assert.Single(approval.DiscardLocalChangesCalls);
+        Assert.Contains("sub/nested.txt", approval.DiscardLocalChangesCalls[0].AffectedFiles);
+    }
+
+    [Fact]
+    public async Task Checkout_DoubleDash_UntrackedFile_PreservesFileAndReturnsError()
+    {
+        using var testRepo = GitTestRepository.Create();
+        var untrackedPath = Path.Combine(testRepo.WorkingDirectory, "untracked.txt");
+        await File.WriteAllTextAsync(untrackedPath, "untracked content");
+
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+        var emulator = new GitCliEmulator(repo);
+        var approval = new TestUserApproval();
+
+        var responseNoSource = await emulator.InvokeAsync(["checkout", "--", "untracked.txt"], approval);
+        Assert.Equal(1, responseNoSource.ExitCode);
+        Assert.Contains("error: pathspec 'untracked.txt' did not match any file(s) known to git", responseNoSource.StdErr);
+        Assert.True(File.Exists(untrackedPath));
+        Assert.Equal("untracked content", await File.ReadAllTextAsync(untrackedPath));
+
+        var responseWithSource = await emulator.InvokeAsync(["checkout", "HEAD", "--", "untracked.txt"], approval);
+        Assert.Equal(1, responseWithSource.ExitCode);
+        Assert.Contains("error: pathspec 'untracked.txt' did not match any file(s) known to git", responseWithSource.StdErr);
+        Assert.True(File.Exists(untrackedPath));
+        Assert.Equal("untracked content", await File.ReadAllTextAsync(untrackedPath));
+        Assert.Empty(approval.DiscardLocalChangesCalls);
+    }
+
+    [Fact]
+    public async Task Switch_FileToDirectory_And_DirectoryToFile_TransitionsSuccessfully()
+    {
+        using var testRepo = GitTestRepository.Create();
+        testRepo.Commit("Add file foo", ("foo", "file foo content"));
+        testRepo.CreateBranch("file-branch");
+
+        testRepo.CreateBranch("dir-branch");
+        testRepo.Switch("dir-branch");
+        RunGit(testRepo.WorkingDirectory, "rm foo");
+        testRepo.Commit("Replace with foo/bar", ("foo/bar", "dir foo bar content"));
+
+        testRepo.Switch("file-branch");
+
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+        var emulator = new GitCliEmulator(repo);
+        var approval = new TestUserApproval();
+
+        // file -> dir
+        var responseToDir = await emulator.InvokeAsync(["switch", "dir-branch"], approval);
+        Assert.Equal(0, responseToDir.ExitCode);
+        Assert.False(File.Exists(Path.Combine(testRepo.WorkingDirectory, "foo")));
+        Assert.True(File.Exists(Path.Combine(testRepo.WorkingDirectory, "foo", "bar")));
+        Assert.Equal("dir foo bar content", await File.ReadAllTextAsync(Path.Combine(testRepo.WorkingDirectory, "foo", "bar")));
+
+        // dir -> file
+        var responseToFile = await emulator.InvokeAsync(["switch", "file-branch"], approval);
+        Assert.Equal(0, responseToFile.ExitCode);
+        Assert.True(File.Exists(Path.Combine(testRepo.WorkingDirectory, "foo")));
+        Assert.False(File.Exists(Path.Combine(testRepo.WorkingDirectory, "foo", "bar")));
+        Assert.Equal("file foo content", await File.ReadAllTextAsync(Path.Combine(testRepo.WorkingDirectory, "foo")));
     }
 
     [Fact]
