@@ -112,4 +112,54 @@ internal static class ApprovalHelper
         }
         return url;
     }
+
+    /// <summary>
+    /// Finds untracked files in the working directory that collide with paths in <paramref name="targetCommit"/>.
+    /// </summary>
+    public static async Task<IReadOnlyList<string>> GetUntrackedCollisionsAsync(
+        IGitWorkspaceRepository repo,
+        GitCommit targetCommit,
+        CancellationToken ct)
+    {
+        var status = await repo.GetStatusAsync(includeUntracked: true, cancellationToken: ct).ConfigureAwait(false);
+        var untrackedEntries = status.UntrackedEntries
+            .Select(e => e.Path.Replace('\\', '/'))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        if (untrackedEntries.Count == 0)
+        {
+            return Array.Empty<string>();
+        }
+
+        var collisions = new List<string>();
+        await foreach (var item in repo.EnumerateCommitTreeAsync(targetCommit.Id.ToString(), null, SearchOption.AllDirectories, ct).ConfigureAwait(false))
+        {
+            if (item.Entry.Kind == GitTreeEntryKind.Blob)
+            {
+                var normalizedPath = item.Path.Replace('\\', '/');
+                if (untrackedEntries.Contains(normalizedPath))
+                {
+                    if (!collisions.Contains(normalizedPath, StringComparer.OrdinalIgnoreCase))
+                    {
+                        collisions.Add(normalizedPath);
+                    }
+                }
+                else
+                {
+                    foreach (var untracked in untrackedEntries)
+                    {
+                        if (normalizedPath.StartsWith(untracked + "/", StringComparison.OrdinalIgnoreCase)
+                            || untracked.StartsWith(normalizedPath + "/", StringComparison.OrdinalIgnoreCase))
+                        {
+                            if (!collisions.Contains(untracked, StringComparer.OrdinalIgnoreCase))
+                            {
+                                collisions.Add(untracked);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        return collisions;
+    }
 }

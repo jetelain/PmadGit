@@ -517,6 +517,167 @@ public class SwitchCommandTests
         Assert.False(Directory.Exists(Path.Combine(testRepo.WorkingDirectory, "sub")));
     }
 
+    [Fact]
+    public async Task Checkout_UntrackedFile_ReportsPathspecErrorAndPreservesFile()
+    {
+        using var testRepo = GitTestRepository.Create();
+        var untrackedPath = Path.Combine(testRepo.WorkingDirectory, "untracked.txt");
+        await File.WriteAllTextAsync(untrackedPath, "untracked content");
+
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+        var emulator = new GitCliEmulator(repo);
+        var approval = new TestUserApproval();
+
+        var response = await emulator.InvokeAsync(["checkout", "untracked.txt"], approval);
+
+        Assert.Equal(1, response.ExitCode);
+        Assert.Contains("error: pathspec 'untracked.txt' did not match any file(s) known to git", response.StdErr);
+        Assert.True(File.Exists(untrackedPath));
+        Assert.Equal("untracked content", await File.ReadAllTextAsync(untrackedPath));
+        Assert.Empty(approval.DiscardLocalChangesCalls);
+    }
+
+    [Fact]
+    public async Task Checkout_Force_CollidingUntrackedFile_RequiresApprovalWithUntrackedFile()
+    {
+        using var testRepo = GitTestRepository.Create();
+        testRepo.Commit("Add feature file", ("introduced.txt", "feature content"));
+        testRepo.CreateBranch("feature");
+        testRepo.Switch("master");
+
+        var collidingPath = Path.Combine(testRepo.WorkingDirectory, "introduced.txt");
+        await File.WriteAllTextAsync(collidingPath, "local untracked content");
+
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+        var emulator = new GitCliEmulator(repo);
+        var approval = new TestUserApproval { DiscardLocalChangesResult = ApprovalResult.Approved };
+
+        var response = await emulator.InvokeAsync(["checkout", "-f", "feature"], approval);
+
+        Assert.Equal(0, response.ExitCode);
+        Assert.Single(approval.DiscardLocalChangesCalls);
+        Assert.Contains("introduced.txt", approval.DiscardLocalChangesCalls[0].AffectedFiles);
+    }
+
+    [Fact]
+    public async Task Switch_Force_CollidingUntrackedFile_RequiresApprovalWithUntrackedFile()
+    {
+        using var testRepo = GitTestRepository.Create();
+        testRepo.Commit("Add feature file", ("introduced.txt", "feature content"));
+        testRepo.CreateBranch("feature");
+        testRepo.Switch("master");
+
+        var collidingPath = Path.Combine(testRepo.WorkingDirectory, "introduced.txt");
+        await File.WriteAllTextAsync(collidingPath, "local untracked content");
+
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+        var emulator = new GitCliEmulator(repo);
+        var approval = new TestUserApproval { DiscardLocalChangesResult = ApprovalResult.Approved };
+
+        var response = await emulator.InvokeAsync(["switch", "--discard-changes", "feature"], approval);
+
+        Assert.Equal(0, response.ExitCode);
+        Assert.Single(approval.DiscardLocalChangesCalls);
+        Assert.Contains("introduced.txt", approval.DiscardLocalChangesCalls[0].AffectedFiles);
+    }
+
+    [Fact]
+    public async Task Checkout_ForceB_PreservesLocalChangesAtCurrentHead()
+    {
+        using var testRepo = GitTestRepository.Create();
+        var readmePath = Path.Combine(testRepo.WorkingDirectory, "README.md");
+        await File.WriteAllTextAsync(readmePath, "dirty local changes");
+
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+        var emulator = new GitCliEmulator(repo);
+        var approval = new TestUserApproval();
+
+        var response = await emulator.InvokeAsync(["checkout", "-B", "reset-branch"], approval);
+
+        Assert.Equal(0, response.ExitCode);
+        Assert.Contains("Switched to a new branch 'reset-branch'", response.StdOut);
+        Assert.Equal("dirty local changes", await File.ReadAllTextAsync(readmePath));
+        Assert.Empty(approval.DiscardLocalChangesCalls);
+    }
+
+    [Fact]
+    public async Task Switch_ForceC_PreservesLocalChangesAtCurrentHead()
+    {
+        using var testRepo = GitTestRepository.Create();
+        var readmePath = Path.Combine(testRepo.WorkingDirectory, "README.md");
+        await File.WriteAllTextAsync(readmePath, "dirty local changes");
+
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+        var emulator = new GitCliEmulator(repo);
+        var approval = new TestUserApproval();
+
+        var response = await emulator.InvokeAsync(["switch", "-C", "reset-branch"], approval);
+
+        Assert.Equal(0, response.ExitCode);
+        Assert.Contains("Switched to a new branch 'reset-branch'", response.StdOut);
+        Assert.Equal("dirty local changes", await File.ReadAllTextAsync(readmePath));
+        Assert.Empty(approval.DiscardLocalChangesCalls);
+    }
+
+    [Fact]
+    public async Task Checkout_Orphan_WithStartPoint_ChecksDirtyFilesAndUntrackedCollisions()
+    {
+        using var testRepo = GitTestRepository.Create();
+        testRepo.Commit("Commit 1", ("file1.txt", "v1"));
+        var commit1 = testRepo.Head;
+        testRepo.Commit("Commit 2", ("file1.txt", "v2"));
+
+        var file1Path = Path.Combine(testRepo.WorkingDirectory, "file1.txt");
+        await File.WriteAllTextAsync(file1Path, "v2 modified");
+
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+        var emulator = new GitCliEmulator(repo);
+        var approval = new TestUserApproval { DiscardLocalChangesResult = ApprovalResult.Approved };
+
+        // Without -f: should fail with safety check error
+        var responseNoForce = await emulator.InvokeAsync(["checkout", "--orphan", "orphan1", commit1.ToString()], approval);
+        Assert.Equal(1, responseNoForce.ExitCode);
+        Assert.Contains("uncommitted changes", responseNoForce.StdErr);
+
+        // With -f: should require approval and succeed
+        var responseForce = await emulator.InvokeAsync(["checkout", "-f", "--orphan", "orphan2", commit1.ToString()], approval);
+        Assert.Equal(0, responseForce.ExitCode);
+        Assert.Single(approval.DiscardLocalChangesCalls);
+        Assert.Contains("file1.txt", approval.DiscardLocalChangesCalls[0].AffectedFiles);
+    }
+
+    [Fact]
+    public async Task Checkout_CancellationDuringCommitProbe_PropagatesCancellation()
+    {
+        using var testRepo = GitTestRepository.Create();
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+        var emulator = new GitCliEmulator(repo);
+        var approval = new TestUserApproval();
+
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+
+        var response = await emulator.InvokeAsync(["checkout", "--detach", "nonexistent"], approval, cancellationToken: cts.Token);
+        Assert.Equal(130, response.ExitCode);
+        Assert.Contains("cancelled", response.StdErr, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task Switch_CancellationDuringCommitProbe_PropagatesCancellation()
+    {
+        using var testRepo = GitTestRepository.Create();
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+        var emulator = new GitCliEmulator(repo);
+        var approval = new TestUserApproval();
+
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+
+        var response = await emulator.InvokeAsync(["switch", "nonexistent"], approval, cancellationToken: cts.Token);
+        Assert.Equal(130, response.ExitCode);
+        Assert.Contains("cancelled", response.StdErr, StringComparison.OrdinalIgnoreCase);
+    }
+
     private static void RunGit(string workingDirectory, string args)
     {
         TestHelper.RunGit(workingDirectory, args);

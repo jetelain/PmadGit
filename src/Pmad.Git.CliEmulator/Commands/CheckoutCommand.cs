@@ -137,7 +137,7 @@ internal static class CheckoutCommand
             {
                 sourceCommit = await repo.GetCommitAsync(first, ct).ConfigureAwait(false);
             }
-            catch
+            catch (Exception ex) when (ex is not OperationCanceledException)
             {
             }
 
@@ -167,15 +167,12 @@ internal static class CheckoutCommand
             return (false, null, []);
         }
 
-        var fullPath = Path.Combine(repo.RootPath, singleArg.Replace('/', Path.DirectorySeparatorChar));
-        if (File.Exists(fullPath) || Directory.Exists(fullPath))
-        {
-            return (true, null, [singleArg]);
-        }
-
         var normalizedPath = singleArg.Replace('\\', '/').Trim('/');
         var index = await GitIndex.ReadAsync(repo.IndexManager.IndexPath, repo.HashLengthBytes, ct).ConfigureAwait(false);
-        if (index.FindEntry(normalizedPath) != null || index.Entries.Any(e => string.Equals(e.Path, normalizedPath, StringComparison.OrdinalIgnoreCase)))
+        if (normalizedPath == "." || normalizedPath.Length == 0 ||
+            index.FindEntry(normalizedPath) != null ||
+            index.Entries.Any(e => string.Equals(e.Path, normalizedPath, StringComparison.OrdinalIgnoreCase) ||
+                                   e.Path.StartsWith(normalizedPath + "/", StringComparison.OrdinalIgnoreCase)))
         {
             return (true, null, [singleArg]);
         }
@@ -250,6 +247,30 @@ internal static class CheckoutCommand
                     .Select(e => e.Path)
                     .ToList();
 
+                if (!string.IsNullOrEmpty(startPoint))
+                {
+                    GitCommit? targetCommit = null;
+                    try
+                    {
+                        targetCommit = await ctx.Repository.GetCommitAsync(startPoint, ct).ConfigureAwait(false);
+                    }
+                    catch (Exception ex) when (ex is not OperationCanceledException)
+                    {
+                    }
+
+                    if (targetCommit != null)
+                    {
+                        var collisions = await ApprovalHelper.GetUntrackedCollisionsAsync(ctx.Repository, targetCommit, ct).ConfigureAwait(false);
+                        foreach (var c in collisions)
+                        {
+                            if (!changedFiles.Contains(c, StringComparer.OrdinalIgnoreCase))
+                            {
+                                changedFiles.Add(c);
+                            }
+                        }
+                    }
+                }
+
                 if (changedFiles.Count > 0)
                 {
                     await ApprovalHelper.RequireAsync(
@@ -263,7 +284,7 @@ internal static class CheckoutCommand
                 }
             }
 
-            await ctx.Repository.CheckoutOrphanBranchAsync(orphanBranch, empty: false, startPoint: startPoint, cancellationToken: ct).ConfigureAwait(false);
+            await ctx.Repository.CheckoutOrphanBranchAsync(orphanBranch, empty: false, startPoint: startPoint, force: isForce, cancellationToken: ct).ConfigureAwait(false);
             await ctx.StdOut.WriteLineAsync($"Switched to a new branch '{orphanBranch}'").ConfigureAwait(false);
             return 0;
         }
@@ -304,28 +325,6 @@ internal static class CheckoutCommand
 
         try
         {
-            // Gate 1: Discard local uncommitted changes
-            if (isForce)
-            {
-                var status = await ctx.Repository.GetStatusAsync(includeUntracked: false, cancellationToken: ct).ConfigureAwait(false);
-                var changedFiles = status.Entries
-                    .Where(e => !e.IsClean)
-                    .Select(e => e.Path)
-                    .ToList();
-
-                if (changedFiles.Count > 0)
-                {
-                    await ApprovalHelper.RequireAsync(
-                        new DiscardChangesContext
-                        {
-                            Operation = "checkout -f",
-                            AffectedFiles = changedFiles,
-                        },
-                        ctx.Approval.ApproveDiscardLocalChangesAsync,
-                        ct).ConfigureAwait(false);
-                }
-            }
-
             var targetBranch = branchOrCommit;
             if (!isDetach)
             {
@@ -358,7 +357,7 @@ internal static class CheckoutCommand
                         targetCommit = await ctx.Repository.GetCommitAsync(branchOrCommit, ct).ConfigureAwait(false);
                         shouldDetach = true;
                     }
-                    catch
+                    catch (Exception ex) when (ex is not OperationCanceledException)
                     {
                         if (shouldDetach)
                         {
@@ -370,6 +369,37 @@ internal static class CheckoutCommand
 
             if (shouldDetach && targetCommit != null)
             {
+                // Gate 1: Discard local uncommitted changes + untracked collisions
+                if (isForce)
+                {
+                    var status = await ctx.Repository.GetStatusAsync(includeUntracked: false, cancellationToken: ct).ConfigureAwait(false);
+                    var changedFiles = status.Entries
+                        .Where(e => !e.IsClean)
+                        .Select(e => e.Path)
+                        .ToList();
+
+                    var collisions = await ApprovalHelper.GetUntrackedCollisionsAsync(ctx.Repository, targetCommit, ct).ConfigureAwait(false);
+                    foreach (var c in collisions)
+                    {
+                        if (!changedFiles.Contains(c, StringComparer.OrdinalIgnoreCase))
+                        {
+                            changedFiles.Add(c);
+                        }
+                    }
+
+                    if (changedFiles.Count > 0)
+                    {
+                        await ApprovalHelper.RequireAsync(
+                            new DiscardChangesContext
+                            {
+                                Operation = "checkout -f",
+                                AffectedFiles = changedFiles,
+                            },
+                            ctx.Approval.ApproveDiscardLocalChangesAsync,
+                            ct).ConfigureAwait(false);
+                    }
+                }
+
                 // Gate 2a: Unpushed commit loss if currently on a detached HEAD
                 if (await ctx.Repository.IsHeadDetachedAsync(ct).ConfigureAwait(false))
                 {
@@ -433,6 +463,40 @@ internal static class CheckoutCommand
                 targetCommitForLoss = await ctx.Repository.GetCommitAsync(branchRef!.Value.ToString(), ct).ConfigureAwait(false);
             }
 
+            // Gate 1: Discard local uncommitted changes + untracked collisions
+            if (isForce)
+            {
+                var status = await ctx.Repository.GetStatusAsync(includeUntracked: false, cancellationToken: ct).ConfigureAwait(false);
+                var changedFiles = status.Entries
+                    .Where(e => !e.IsClean)
+                    .Select(e => e.Path)
+                    .ToList();
+
+                if (targetCommitForLoss != null)
+                {
+                    var collisions = await ApprovalHelper.GetUntrackedCollisionsAsync(ctx.Repository, targetCommitForLoss, ct).ConfigureAwait(false);
+                    foreach (var c in collisions)
+                    {
+                        if (!changedFiles.Contains(c, StringComparer.OrdinalIgnoreCase))
+                        {
+                            changedFiles.Add(c);
+                        }
+                    }
+                }
+
+                if (changedFiles.Count > 0)
+                {
+                    await ApprovalHelper.RequireAsync(
+                        new DiscardChangesContext
+                        {
+                            Operation = "checkout -f",
+                            AffectedFiles = changedFiles,
+                        },
+                        ctx.Approval.ApproveDiscardLocalChangesAsync,
+                        ct).ConfigureAwait(false);
+                }
+            }
+
             // Gate 2b: Unpushed commit loss if force-resetting an existing branch (-B)
             if (isForceCreate && branchRef.HasValue && targetCommitForLoss != null)
             {
@@ -480,7 +544,8 @@ internal static class CheckoutCommand
                 targetBranch,
                 createBranch: isCreate,
                 startPoint: startPoint,
-                force: isForceCreate || isForce,
+                force: isForce,
+                overwriteBranch: isForceCreate,
                 cancellationToken: ct).ConfigureAwait(false);
 
             if (isCreate)

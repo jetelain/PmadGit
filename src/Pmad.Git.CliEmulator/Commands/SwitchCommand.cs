@@ -113,32 +113,49 @@ internal static class SwitchCommand
 
             try
             {
-                // Gate 1: Discard local uncommitted changes
-                if (isDiscardChanges)
-                {
-                    var status = await ctx.Repository.GetStatusAsync(includeUntracked: false, cancellationToken: ct).ConfigureAwait(false);
-                    var changedFiles = status.Entries
-                        .Where(e => !e.IsClean)
-                        .Select(e => e.Path)
-                        .ToList();
-
-                    if (changedFiles.Count > 0)
-                    {
-                        var opName = pr.GetValue(discardChangesOpt) ? "switch --discard-changes" : "switch -f";
-                        await ApprovalHelper.RequireAsync(
-                            new DiscardChangesContext
-                            {
-                                Operation = opName,
-                                AffectedFiles = changedFiles,
-                            },
-                            ctx.Approval.ApproveDiscardLocalChangesAsync,
-                            ct).ConfigureAwait(false);
-                    }
-                }
-
                 if (isDetach)
                 {
-                    var targetCommit = await ctx.Repository.GetCommitAsync(branchOrCommit, ct).ConfigureAwait(false);
+                    GitCommit targetCommit;
+                    try
+                    {
+                        targetCommit = await ctx.Repository.GetCommitAsync(branchOrCommit, ct).ConfigureAwait(false);
+                    }
+                    catch (Exception ex) when (ex is not OperationCanceledException)
+                    {
+                        return ctx.WriteError($"fatal: invalid reference: {branchOrCommit}");
+                    }
+
+                    // Gate 1: Discard local uncommitted changes + untracked collisions
+                    if (isDiscardChanges)
+                    {
+                        var status = await ctx.Repository.GetStatusAsync(includeUntracked: false, cancellationToken: ct).ConfigureAwait(false);
+                        var changedFiles = status.Entries
+                            .Where(e => !e.IsClean)
+                            .Select(e => e.Path)
+                            .ToList();
+
+                        var collisions = await ApprovalHelper.GetUntrackedCollisionsAsync(ctx.Repository, targetCommit, ct).ConfigureAwait(false);
+                        foreach (var c in collisions)
+                        {
+                            if (!changedFiles.Contains(c, StringComparer.OrdinalIgnoreCase))
+                            {
+                                changedFiles.Add(c);
+                            }
+                        }
+
+                        if (changedFiles.Count > 0)
+                        {
+                            var opName = pr.GetValue(discardChangesOpt) ? "switch --discard-changes" : "switch -f";
+                            await ApprovalHelper.RequireAsync(
+                                new DiscardChangesContext
+                                {
+                                    Operation = opName,
+                                    AffectedFiles = changedFiles,
+                                },
+                                ctx.Approval.ApproveDiscardLocalChangesAsync,
+                                ct).ConfigureAwait(false);
+                        }
+                    }
 
                     // Gate 2a: Unpushed commit loss if currently on a detached HEAD
                     if (await ctx.Repository.IsHeadDetachedAsync(ct).ConfigureAwait(false))
@@ -193,7 +210,7 @@ internal static class SwitchCommand
                         await ctx.Repository.GetCommitAsync(branchOrCommit, ct).ConfigureAwait(false);
                         return ctx.WriteError($"fatal: a branch is expected, got commit '{branchOrCommit}'\nIf you want to detach HEAD at the commit, try switch --detach {branchOrCommit}");
                     }
-                    catch
+                    catch (Exception ex) when (ex is not OperationCanceledException)
                     {
                         return ctx.WriteError($"fatal: invalid reference: {branchOrCommit}");
                     }
@@ -228,6 +245,41 @@ internal static class SwitchCommand
                 else
                 {
                     targetCommitForLoss = await ctx.Repository.GetCommitAsync(branchRef!.Value.ToString(), ct).ConfigureAwait(false);
+                }
+
+                // Gate 1: Discard local uncommitted changes + untracked collisions
+                if (isDiscardChanges)
+                {
+                    var status = await ctx.Repository.GetStatusAsync(includeUntracked: false, cancellationToken: ct).ConfigureAwait(false);
+                    var changedFiles = status.Entries
+                        .Where(e => !e.IsClean)
+                        .Select(e => e.Path)
+                        .ToList();
+
+                    if (targetCommitForLoss != null)
+                    {
+                        var collisions = await ApprovalHelper.GetUntrackedCollisionsAsync(ctx.Repository, targetCommitForLoss, ct).ConfigureAwait(false);
+                        foreach (var c in collisions)
+                        {
+                            if (!changedFiles.Contains(c, StringComparer.OrdinalIgnoreCase))
+                            {
+                                changedFiles.Add(c);
+                            }
+                        }
+                    }
+
+                    if (changedFiles.Count > 0)
+                    {
+                        var opName = pr.GetValue(discardChangesOpt) ? "switch --discard-changes" : "switch -f";
+                        await ApprovalHelper.RequireAsync(
+                            new DiscardChangesContext
+                            {
+                                Operation = opName,
+                                AffectedFiles = changedFiles,
+                            },
+                            ctx.Approval.ApproveDiscardLocalChangesAsync,
+                            ct).ConfigureAwait(false);
+                    }
                 }
 
                 // Gate 2b: Unpushed commit loss if force-resetting an existing branch (-C)
@@ -277,7 +329,8 @@ internal static class SwitchCommand
                     targetBranch,
                     createBranch: isCreate,
                     startPoint: startPoint,
-                    force: isForceCreate || isDiscardChanges,
+                    force: isDiscardChanges,
+                    overwriteBranch: isForceCreate,
                     cancellationToken: ct).ConfigureAwait(false);
 
                 if (isCreate)
