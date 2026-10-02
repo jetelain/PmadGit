@@ -864,6 +864,8 @@ public class SwitchCommandTests
         testRepo.Commit("Add file named build", ("build", "build file content"));
         testRepo.Switch("master");
 
+        testRepo.Commit("Add .gitignore", (".gitignore", "build/\n"));
+
         var buildDir = Path.Combine(testRepo.WorkingDirectory, "build");
         Directory.CreateDirectory(buildDir);
         var logFile = Path.Combine(buildDir, "output.log");
@@ -877,6 +879,116 @@ public class SwitchCommandTests
         Assert.NotEqual(0, response.ExitCode);
         Assert.True(File.Exists(logFile), "Ignored file inside directory must not be deleted.");
         Assert.Equal("ignored log content", await File.ReadAllTextAsync(logFile));
+    }
+
+    [Fact]
+    public async Task Checkout_ExtraPositionalArguments_Rejected()
+    {
+        using var testRepo = GitTestRepository.Create();
+        testRepo.CreateBranch("feature");
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+        var emulator = new GitCliEmulator(repo);
+        var approval = new TestUserApproval();
+
+        var resp1 = await emulator.InvokeAsync(["checkout", "-B", "reset-branch", "HEAD", "unexpected"], approval);
+        Assert.NotEqual(0, resp1.ExitCode);
+        Assert.Contains("only one reference expected", resp1.StdErr);
+
+        var resp2 = await emulator.InvokeAsync(["checkout", "-b", "new-branch", "HEAD", "unexpected"], approval);
+        Assert.NotEqual(0, resp2.ExitCode);
+        Assert.Contains("only one reference expected", resp2.StdErr);
+
+        var resp3 = await emulator.InvokeAsync(["checkout", "--orphan", "orphan-branch", "HEAD", "unexpected"], approval);
+        Assert.NotEqual(0, resp3.ExitCode);
+        Assert.Contains("only one reference expected", resp3.StdErr);
+
+        var resp4 = await emulator.InvokeAsync(["checkout", "--detach", "HEAD", "unexpected"], approval);
+        Assert.NotEqual(0, resp4.ExitCode);
+        Assert.Contains("only one reference expected", resp4.StdErr);
+    }
+
+    [Fact]
+    public async Task Switch_FromUnbornHead_CanSwitchToExistingBranchOrStartPoint()
+    {
+        using var testRepo = GitTestRepository.Create();
+        testRepo.Commit("Initial commit", ("readme.txt", "readme content"));
+
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+        var emulator = new GitCliEmulator(repo);
+        var approval = new TestUserApproval();
+
+        // Create orphan branch - HEAD becomes unborn
+        var orphanResp = await emulator.InvokeAsync(["switch", "--orphan", "unborn-branch"], approval);
+        Assert.Equal(0, orphanResp.ExitCode);
+        Assert.Null(await repo.ReferenceStore.TryResolveReferenceAsync("HEAD"));
+
+        // Switching back to master must succeed despite unborn HEAD
+        var switchMasterResp = await emulator.InvokeAsync(["switch", "master"], approval);
+        Assert.Equal(0, switchMasterResp.ExitCode);
+        Assert.Equal("master", await repo.GetCurrentBranchNameAsync());
+        Assert.NotNull(await repo.ReferenceStore.TryResolveReferenceAsync("HEAD"));
+
+        // Switch to orphan again
+        await emulator.InvokeAsync(["switch", "--orphan", "unborn-branch2"], approval);
+        Assert.Null(await repo.ReferenceStore.TryResolveReferenceAsync("HEAD"));
+
+        // Creating branch with explicit start point from unborn HEAD must succeed
+        var createFromStartResp = await emulator.InvokeAsync(["switch", "-c", "branch-from-master", "master"], approval);
+        Assert.Equal(0, createFromStartResp.ExitCode);
+        Assert.Equal("branch-from-master", await repo.GetCurrentBranchNameAsync());
+        Assert.True(File.Exists(Path.Combine(testRepo.WorkingDirectory, "readme.txt")));
+    }
+
+    [Fact]
+    public async Task Checkout_Force_PreservesMergeState_WhenValidationFails()
+    {
+        using var testRepo = GitTestRepository.Create();
+        testRepo.CreateBranch("topic/child");
+        testRepo.Commit("Commit on topic child", ("file.txt", "topic child content"));
+
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+        var emulator = new GitCliEmulator(repo);
+        var approval = new TestUserApproval();
+
+        // Create in-progress merge state
+        var mergeHeadPath = Path.Combine(repo.GitDirectory, "MERGE_HEAD");
+        var mergeMsgPath = Path.Combine(repo.GitDirectory, "MERGE_MSG");
+        await File.WriteAllTextAsync(mergeHeadPath, "1111222233334444555566667777888899990000\n");
+        await File.WriteAllTextAsync(mergeMsgPath, "Merge conflict msg\n");
+
+        // Try to force checkout topic (which conflicts with topic/child in ref namespace)
+        var response = await emulator.InvokeAsync(["checkout", "-B", "topic", "topic/child"], approval);
+        Assert.NotEqual(0, response.ExitCode);
+
+        // MERGE_HEAD must NOT have been deleted
+        Assert.True(File.Exists(mergeHeadPath), "MERGE_HEAD must be preserved when checkout validation fails.");
+        Assert.True(File.Exists(mergeMsgPath), "MERGE_MSG must be preserved when checkout validation fails.");
+    }
+
+    [Fact]
+    public async Task Checkout_Force_CollidingIgnoredFile_RequiresApproval()
+    {
+        using var testRepo = GitTestRepository.Create();
+        testRepo.CreateBranch("feature");
+        testRepo.Switch("feature");
+        testRepo.Commit("Add file named build", ("build", "build content"));
+        testRepo.Switch("master");
+        testRepo.Commit("Add .gitignore", (".gitignore", "build/\n"));
+
+        var buildDir = Path.Combine(testRepo.WorkingDirectory, "build");
+        Directory.CreateDirectory(buildDir);
+        var logFile = Path.Combine(buildDir, "output.log");
+        await File.WriteAllTextAsync(logFile, "important ignored logs");
+
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+        var emulator = new GitCliEmulator(repo);
+        var approval = new TestUserApproval { DiscardLocalChangesResult = ApprovalResult.Denied };
+
+        var response = await emulator.InvokeAsync(["checkout", "-f", "feature"], approval);
+        Assert.Equal(130, response.ExitCode);
+        Assert.Single(approval.DiscardLocalChangesCalls);
+        Assert.Contains(approval.DiscardLocalChangesCalls[0].AffectedFiles, f => f.Replace('\\', '/').Contains("build/output.log"));
+        Assert.True(File.Exists(logFile), "Ignored log file must not be deleted when approval is denied.");
     }
 
     private static void RunGit(string workingDirectory, string args)

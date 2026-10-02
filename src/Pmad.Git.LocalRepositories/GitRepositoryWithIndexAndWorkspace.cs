@@ -1271,16 +1271,9 @@ public sealed class GitRepositoryWithIndexAndWorkspace : IGitWorkspaceRepository
 
         using (await _indexManager.AcquireIndexMutationLockAsync(branchRef, cancellationToken).ConfigureAwait(false))
         {
-            if (await IsMergeInProgressAsync(cancellationToken).ConfigureAwait(false))
+            if (!force && await IsMergeInProgressAsync(cancellationToken).ConfigureAwait(false))
             {
-                if (force)
-                {
-                    RemoveMergeStateFiles();
-                }
-                else
-                {
-                    throw new InvalidOperationException("Cannot switch branch while a merge is in progress.");
-                }
+                throw new InvalidOperationException("Cannot switch branch while a merge is in progress.");
             }
 
             var currentBranch = await ReferenceStore.GetCurrentBranchNameAsync(cancellationToken).ConfigureAwait(false);
@@ -1313,32 +1306,26 @@ public sealed class GitRepositoryWithIndexAndWorkspace : IGitWorkspaceRepository
             }
 
             var headHash = await ReferenceStore.TryResolveReferenceAsync("HEAD", cancellationToken).ConfigureAwait(false);
-            if (!headHash.HasValue)
-            {
-                if (createBranch)
-                {
-                    if (startPoint != null)
-                    {
-                        throw new InvalidOperationException($"Cannot specify start point '{startPoint}' on an empty repository.");
-                    }
-                    var headPath = Path.Combine(GitDirectory, "HEAD");
-                    var tempPath = Path.Combine(GitDirectory, $"HEAD.{Guid.NewGuid():N}.tmp");
-                    await File.WriteAllTextAsync(tempPath, $"ref: {branchRef}\n", cancellationToken).ConfigureAwait(false);
-                    File.Move(tempPath, headPath, overwrite: true);
-                    InvalidateCaches();
-                    return;
-                }
-                else
-                {
-                    throw new InvalidOperationException($"Branch '{normalized}' not found.");
-                }
-            }
 
             GitCommit targetCommit;
             if (createBranch)
             {
                 if (startPoint == null)
                 {
+                    if (!headHash.HasValue)
+                    {
+                        if (force)
+                        {
+                            RemoveMergeStateFiles();
+                        }
+                        var headPath = Path.Combine(GitDirectory, "HEAD");
+                        var tempPath = Path.Combine(GitDirectory, $"HEAD.{Guid.NewGuid():N}.tmp");
+                        await File.WriteAllTextAsync(tempPath, $"ref: {branchRef}\n", cancellationToken).ConfigureAwait(false);
+                        File.Move(tempPath, headPath, overwrite: true);
+                        InvalidateCaches();
+                        return;
+                    }
+
                     targetCommit = await _repo.GetCommitAsync(headHash.Value.Value, cancellationToken).ConfigureAwait(false);
                 }
                 else
@@ -1351,7 +1338,7 @@ public sealed class GitRepositoryWithIndexAndWorkspace : IGitWorkspaceRepository
                 targetCommit = await _repo.GetCommitAsync(existingBranch!.Value.Value, cancellationToken).ConfigureAwait(false);
             }
 
-            var isSameCommit = headHash.Value.Equals(targetCommit.Id);
+            var isSameCommit = headHash.HasValue && headHash.Value.Equals(targetCommit.Id);
 
             if (!isSameCommit)
             {
@@ -1363,7 +1350,9 @@ public sealed class GitRepositoryWithIndexAndWorkspace : IGitWorkspaceRepository
                         throw new InvalidOperationException("Cannot switch branch because the working tree or index has uncommitted changes.");
                     }
 
-                    var currentLeaves = await _repo.LoadLeafEntriesAsync((await _repo.GetCommitAsync(headHash.Value.Value, cancellationToken).ConfigureAwait(false)).Tree, cancellationToken).ConfigureAwait(false);
+                    var currentLeaves = headHash.HasValue
+                        ? await _repo.LoadLeafEntriesAsync((await _repo.GetCommitAsync(headHash.Value.Value, cancellationToken).ConfigureAwait(false)).Tree, cancellationToken).ConfigureAwait(false)
+                        : new Dictionary<string, TreeLeaf>(StringComparer.Ordinal);
                     await CheckUntrackedCollisionsAsync(currentLeaves, targetCommit, cancellationToken).ConfigureAwait(false);
                 }
             }
@@ -1374,6 +1363,11 @@ public sealed class GitRepositoryWithIndexAndWorkspace : IGitWorkspaceRepository
                 {
                     throw new InvalidOperationException("Cannot switch branch with unmerged (conflicted) entries in the index.");
                 }
+            }
+
+            if (force)
+            {
+                RemoveMergeStateFiles();
             }
 
             if (!isSameCommit || force)
@@ -1412,16 +1406,9 @@ public sealed class GitRepositoryWithIndexAndWorkspace : IGitWorkspaceRepository
 
         using (await _indexManager.AcquireIndexMutationLockAsync(null, cancellationToken).ConfigureAwait(false))
         {
-            if (await IsMergeInProgressAsync(cancellationToken).ConfigureAwait(false))
+            if (!force && await IsMergeInProgressAsync(cancellationToken).ConfigureAwait(false))
             {
-                if (force)
-                {
-                    RemoveMergeStateFiles();
-                }
-                else
-                {
-                    throw new InvalidOperationException("Cannot switch while a merge is in progress.");
-                }
+                throw new InvalidOperationException("Cannot switch while a merge is in progress.");
             }
 
             var targetCommit = await _repo.GetCommitAsync(commitIsh, cancellationToken).ConfigureAwait(false);
@@ -1451,6 +1438,11 @@ public sealed class GitRepositoryWithIndexAndWorkspace : IGitWorkspaceRepository
                 {
                     throw new InvalidOperationException("Cannot switch with unmerged (conflicted) entries in the index.");
                 }
+            }
+
+            if (force)
+            {
+                RemoveMergeStateFiles();
             }
 
             if (!isSameCommit || force)
@@ -1491,16 +1483,9 @@ public sealed class GitRepositoryWithIndexAndWorkspace : IGitWorkspaceRepository
 
         using (await _indexManager.AcquireIndexMutationLockAsync(branchRef, cancellationToken).ConfigureAwait(false))
         {
-            if (await IsMergeInProgressAsync(cancellationToken).ConfigureAwait(false))
+            if (!force && await IsMergeInProgressAsync(cancellationToken).ConfigureAwait(false))
             {
-                if (force)
-                {
-                    RemoveMergeStateFiles();
-                }
-                else
-                {
-                    throw new InvalidOperationException("Cannot switch branch while a merge is in progress.");
-                }
+                throw new InvalidOperationException("Cannot switch branch while a merge is in progress.");
             }
 
             var existingBranch = await ReferenceStore.TryResolveReferenceAsync(branchRef, cancellationToken).ConfigureAwait(false);
@@ -1511,19 +1496,10 @@ public sealed class GitRepositoryWithIndexAndWorkspace : IGitWorkspaceRepository
 
             await CheckReferenceDirectoryFileConflictAsync(branchRef, cancellationToken).ConfigureAwait(false);
 
-            if (empty)
+            GitCommit? targetCommit = null;
+            if (!empty && !string.IsNullOrEmpty(startPoint))
             {
-                var index = await GitIndex.ReadAsync(_indexManager.IndexPath, HashLengthBytes, cancellationToken).ConfigureAwait(false);
-                foreach (var entry in index.Entries)
-                {
-                    DeleteFileFromWorkspace(entry.Path);
-                }
-                index.Entries.Clear();
-                await index.WriteAsync(_indexManager.IndexPath, HashLengthBytes, cancellationToken).ConfigureAwait(false);
-            }
-            else if (!string.IsNullOrEmpty(startPoint))
-            {
-                var targetCommit = await _repo.GetCommitAsync(startPoint, cancellationToken).ConfigureAwait(false);
+                targetCommit = await _repo.GetCommitAsync(startPoint, cancellationToken).ConfigureAwait(false);
                 if (!force)
                 {
                     var status = await GetStatusAsync(includeUntracked: false, includeClean: false, cancellationToken).ConfigureAwait(false);
@@ -1538,7 +1514,25 @@ public sealed class GitRepositoryWithIndexAndWorkspace : IGitWorkspaceRepository
                         : new Dictionary<string, TreeLeaf>(StringComparer.Ordinal);
                     await CheckUntrackedCollisionsAsync(currentLeaves, targetCommit, cancellationToken).ConfigureAwait(false);
                 }
+            }
 
+            if (force)
+            {
+                RemoveMergeStateFiles();
+            }
+
+            if (empty)
+            {
+                var index = await GitIndex.ReadAsync(_indexManager.IndexPath, HashLengthBytes, cancellationToken).ConfigureAwait(false);
+                foreach (var entry in index.Entries)
+                {
+                    DeleteFileFromWorkspace(entry.Path);
+                }
+                index.Entries.Clear();
+                await index.WriteAsync(_indexManager.IndexPath, HashLengthBytes, cancellationToken).ConfigureAwait(false);
+            }
+            else if (targetCommit != null)
+            {
                 await SyncWorkspaceToCommitAsync(targetCommit, force: force, cancellationToken).ConfigureAwait(false);
             }
 

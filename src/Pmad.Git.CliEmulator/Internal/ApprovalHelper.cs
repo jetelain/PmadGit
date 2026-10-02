@@ -118,37 +118,84 @@ internal static class ApprovalHelper
         GitCommit targetCommit,
         CancellationToken ct)
     {
-        var status = await repo.GetStatusAsync(includeUntracked: true, cancellationToken: ct).ConfigureAwait(false);
-        var untrackedEntries = status.UntrackedEntries
+        var collisions = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        var index = await GitIndex.ReadAsync(repo.IndexManager.IndexPath, repo.HashLengthBytes, ct).ConfigureAwait(false);
+        var trackedPaths = index.Entries
             .Select(e => e.Path.Replace('\\', '/'))
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
 
-        if (untrackedEntries.Count == 0)
-        {
-            return Array.Empty<string>();
-        }
-
-        var collisions = new List<string>();
         await foreach (var item in repo.EnumerateCommitTreeAsync(targetCommit.Id.ToString(), null, SearchOption.AllDirectories, ct).ConfigureAwait(false))
         {
             if (item.Entry.Kind == GitTreeEntryKind.Blob)
             {
                 var normalizedPath = item.Path.Replace('\\', '/');
-                if (untrackedEntries.Contains(normalizedPath))
+                var fullPath = Path.Combine(repo.RootPath, normalizedPath.Replace('/', Path.DirectorySeparatorChar));
+
+                // 1. Direct collision: target is a blob and disk has a file that is not tracked
+                if (File.Exists(fullPath) && !trackedPaths.Contains(normalizedPath))
                 {
-                    if (!collisions.Contains(normalizedPath, StringComparer.OrdinalIgnoreCase))
+                    collisions.Add(normalizedPath);
+                }
+
+                // 2. Directory-to-file collision: target is 'build' and disk has directory 'build'
+                if (Directory.Exists(fullPath) && !File.Exists(fullPath))
+                {
+                    try
+                    {
+                        var filesInDir = Directory.EnumerateFiles(fullPath, "*", SearchOption.AllDirectories);
+                        foreach (var diskFile in filesInDir)
+                        {
+                            var relPath = Path.GetRelativePath(repo.RootPath, diskFile).Replace('\\', '/');
+                            if (!trackedPaths.Contains(relPath))
+                            {
+                                collisions.Add(relPath);
+                            }
+                        }
+                    }
+                    catch
+                    {
+                    }
+                }
+
+                // 3. File-to-directory collision: target is 'foo/bar' and an ancestor 'foo' on disk is a file that is not tracked
+                var parts = normalizedPath.Split('/');
+                var prefix = "";
+                for (var i = 0; i < parts.Length - 1; i++)
+                {
+                    prefix = i == 0 ? parts[0] : prefix + "/" + parts[i];
+                    var ancestorFullPath = Path.Combine(repo.RootPath, prefix.Replace('/', Path.DirectorySeparatorChar));
+                    if (File.Exists(ancestorFullPath) && !trackedPaths.Contains(prefix))
+                    {
+                        collisions.Add(prefix);
+                    }
+                }
+            }
+        }
+
+        // Also check status.UntrackedEntries as fallback
+        var status = await repo.GetStatusAsync(includeUntracked: true, cancellationToken: ct).ConfigureAwait(false);
+        var untrackedEntries = status.UntrackedEntries
+            .Select(e => e.Path.Replace('\\', '/'))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        if (untrackedEntries.Count > 0)
+        {
+            await foreach (var item in repo.EnumerateCommitTreeAsync(targetCommit.Id.ToString(), null, SearchOption.AllDirectories, ct).ConfigureAwait(false))
+            {
+                if (item.Entry.Kind == GitTreeEntryKind.Blob)
+                {
+                    var normalizedPath = item.Path.Replace('\\', '/');
+                    if (untrackedEntries.Contains(normalizedPath))
                     {
                         collisions.Add(normalizedPath);
                     }
-                }
-                else
-                {
-                    foreach (var untracked in untrackedEntries)
+                    else
                     {
-                        if (normalizedPath.StartsWith(untracked + "/", StringComparison.OrdinalIgnoreCase)
-                            || untracked.StartsWith(normalizedPath + "/", StringComparison.OrdinalIgnoreCase))
+                        foreach (var untracked in untrackedEntries)
                         {
-                            if (!collisions.Contains(untracked, StringComparer.OrdinalIgnoreCase))
+                            if (normalizedPath.StartsWith(untracked + "/", StringComparison.OrdinalIgnoreCase)
+                                || untracked.StartsWith(normalizedPath + "/", StringComparison.OrdinalIgnoreCase))
                             {
                                 collisions.Add(untracked);
                             }
@@ -157,6 +204,7 @@ internal static class ApprovalHelper
                 }
             }
         }
-        return collisions;
+
+        return collisions.ToList();
     }
 }

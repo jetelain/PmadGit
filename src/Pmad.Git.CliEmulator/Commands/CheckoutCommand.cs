@@ -61,11 +61,20 @@ internal static class CheckoutCommand
             // Case 2: Orphan branch
             if (!string.IsNullOrEmpty(orphanBranch))
             {
+                if (rawArgs.Length > 1)
+                {
+                    return ctx.WriteError($"fatal: only one reference expected, {rawArgs.Length} given.");
+                }
                 var startPoint = rawArgs.Length > 0 ? rawArgs[0] : null;
                 return await HandleOrphanAsync(ctx, orphanBranch, startPoint, isForce, ct).ConfigureAwait(false);
             }
 
             // Case 3: Branch / commit checkout
+            if (rawArgs.Length > 1)
+            {
+                return ctx.WriteError($"fatal: only one reference expected, {rawArgs.Length} given.");
+            }
+
             return await HandleBranchOrCommitCheckoutAsync(
                 ctx,
                 createBranchName,
