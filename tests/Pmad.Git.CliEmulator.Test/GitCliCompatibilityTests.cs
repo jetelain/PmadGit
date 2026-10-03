@@ -498,4 +498,472 @@ public class GitCliCompatibilityTests
         var statusAfter = await emulator.InvokeAsync(["status"], approval);
         Assert.Contains("HEAD detached", statusAfter.StdOut);
     }
+
+    [Fact]
+    public async Task Add_NonExistentFile_FailsWithExitCode_LikeStandardGit()
+    {
+        using var testRepo = GitTestRepository.Create();
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+        var emulator = new GitCliEmulator(repo);
+        var approval = new TestUserApproval();
+
+        // Standard git: 'git add nonexistent.txt' exits with code 128 (fatal: pathspec did not match any files)
+        var response = await emulator.InvokeAsync(["add", "nonexistent.txt"], approval);
+
+        Assert.NotEqual(0, response.ExitCode);
+        Assert.Contains("nonexistent.txt", response.StdErr + response.StdOut, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task Add_UpdateFlag_StagesModifiedAndDeletedOnly_LikeStandardGit()
+    {
+        using var testRepo = GitTestRepository.Create();
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+        var emulator = new GitCliEmulator(repo);
+        var approval = new TestUserApproval();
+
+        var file1 = Path.Combine(testRepo.WorkingDirectory, "file1.txt");
+        await File.WriteAllTextAsync(file1, "original");
+        await emulator.InvokeAsync(["add", "file1.txt"], approval);
+        await emulator.InvokeAsync(["commit", "-m", "Add file1"], approval);
+
+        // Modify tracked file1
+        await File.WriteAllTextAsync(file1, "modified");
+
+        // Create new untracked file2
+        var file2 = Path.Combine(testRepo.WorkingDirectory, "untracked.txt");
+        await File.WriteAllTextAsync(file2, "untracked");
+
+        // Standard git: 'git add -u' stages modified/deleted tracked files, ignoring untracked files
+        var response = await emulator.InvokeAsync(["add", "-u"], approval);
+        Assert.Equal(0, response.ExitCode);
+
+        var status = await emulator.InvokeAsync(["status", "--porcelain"], approval);
+        Assert.Contains("M  file1.txt", status.StdOut);
+        Assert.Contains("?? untracked.txt", status.StdOut);
+        Assert.DoesNotContain("A  untracked.txt", status.StdOut);
+    }
+
+    [Fact]
+    public async Task Commit_AllFlag_DoesNotCommitUntrackedFiles_LikeStandardGit()
+    {
+        using var testRepo = GitTestRepository.Create();
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+        var emulator = new GitCliEmulator(repo);
+        var approval = new TestUserApproval();
+
+        var file1 = Path.Combine(testRepo.WorkingDirectory, "tracked.txt");
+        await File.WriteAllTextAsync(file1, "v1");
+        await emulator.InvokeAsync(["add", "tracked.txt"], approval);
+        await emulator.InvokeAsync(["commit", "-m", "Commit v1"], approval);
+
+        // Modify tracked file
+        await File.WriteAllTextAsync(file1, "v2");
+
+        // Create untracked file
+        var file2 = Path.Combine(testRepo.WorkingDirectory, "untracked.txt");
+        await File.WriteAllTextAsync(file2, "untracked content");
+
+        // Standard git: 'git commit -a -m "..."' stages and commits tracked modifications, leaving untracked files untouched
+        var response = await emulator.InvokeAsync(["commit", "-a", "-m", "Commit with -a"], approval);
+        Assert.Equal(0, response.ExitCode);
+
+        // untracked.txt must still be untracked in status
+        var status = await emulator.InvokeAsync(["status", "--porcelain"], approval);
+        Assert.Contains("?? untracked.txt", status.StdOut);
+
+        // untracked.txt must NOT be in the newly committed tree
+        var pathTypeInHead = await repo.GetPathTypeAsync("untracked.txt", "HEAD");
+        Assert.Null(pathTypeInHead);
+    }
+
+    [Fact]
+    public async Task Mv_FileToExistingDirectory_MovesFileInsideDirectory_LikeStandardGit()
+    {
+        using var testRepo = GitTestRepository.Create();
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+        var emulator = new GitCliEmulator(repo);
+        var approval = new TestUserApproval();
+
+        var srcFile = Path.Combine(testRepo.WorkingDirectory, "item.txt");
+        await File.WriteAllTextAsync(srcFile, "item content");
+        await emulator.InvokeAsync(["add", "item.txt"], approval);
+        await emulator.InvokeAsync(["commit", "-m", "Add item.txt"], approval);
+
+        var targetDir = Path.Combine(testRepo.WorkingDirectory, "target_dir");
+        Directory.CreateDirectory(targetDir);
+
+        // Standard git: 'git mv item.txt target_dir' places the file at target_dir/item.txt
+        var response = await emulator.InvokeAsync(["mv", "item.txt", "target_dir"], approval);
+        Assert.Equal(0, response.ExitCode);
+
+        var status = await emulator.InvokeAsync(["status", "--porcelain"], approval);
+        Assert.Contains("target_dir/item.txt", status.StdOut);
+        Assert.True(File.Exists(Path.Combine(targetDir, "item.txt")));
+    }
+
+    [Fact]
+    public async Task Mv_MultipleFilesToExistingDirectory_MovesAllInsideDirectory_LikeStandardGit()
+    {
+        using var testRepo = GitTestRepository.Create();
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+        var emulator = new GitCliEmulator(repo);
+        var approval = new TestUserApproval();
+
+        await File.WriteAllTextAsync(Path.Combine(testRepo.WorkingDirectory, "a.txt"), "A");
+        await File.WriteAllTextAsync(Path.Combine(testRepo.WorkingDirectory, "b.txt"), "B");
+        await emulator.InvokeAsync(["add", "a.txt", "b.txt"], approval);
+        await emulator.InvokeAsync(["commit", "-m", "Add a and b"], approval);
+
+        var targetDir = Path.Combine(testRepo.WorkingDirectory, "dest");
+        Directory.CreateDirectory(targetDir);
+
+        // Standard git: 'git mv a.txt b.txt dest' moves both files into dest/
+        var response = await emulator.InvokeAsync(["mv", "a.txt", "b.txt", "dest"], approval);
+        Assert.Equal(0, response.ExitCode);
+
+        var status = await emulator.InvokeAsync(["status", "--porcelain"], approval);
+        Assert.Contains("dest/a.txt", status.StdOut);
+        Assert.Contains("dest/b.txt", status.StdOut);
+    }
+
+    [Fact]
+    public async Task Restore_FileInWorkingTree_DiscardsUnstagedModifications_LikeStandardGit()
+    {
+        using var testRepo = GitTestRepository.Create();
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+        var emulator = new GitCliEmulator(repo);
+        var approval = new TestUserApproval();
+
+        var filePath = Path.Combine(testRepo.WorkingDirectory, "restore_test.txt");
+        await File.WriteAllTextAsync(filePath, "committed content\n");
+        await emulator.InvokeAsync(["add", "restore_test.txt"], approval);
+        await emulator.InvokeAsync(["commit", "-m", "Add restore_test.txt"], approval);
+
+        // Modify in working tree
+        await File.WriteAllTextAsync(filePath, "dirty modification\n");
+
+        // Standard git: 'git restore restore_test.txt' discards unstaged changes
+        var response = await emulator.InvokeAsync(["restore", "restore_test.txt"], approval);
+        Assert.Equal(0, response.ExitCode);
+
+        var content = await File.ReadAllTextAsync(filePath);
+        Assert.Equal("committed content\n", content);
+    }
+
+    [Fact]
+    public async Task Restore_Staged_UnstagesFileFromIndex_LikeStandardGit()
+    {
+        using var testRepo = GitTestRepository.Create();
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+        var emulator = new GitCliEmulator(repo);
+        var approval = new TestUserApproval();
+
+        var filePath = Path.Combine(testRepo.WorkingDirectory, "staged_file.txt");
+        await File.WriteAllTextAsync(filePath, "staged content\n");
+        await emulator.InvokeAsync(["add", "staged_file.txt"], approval);
+
+        // Verify staged
+        var statusBefore = await emulator.InvokeAsync(["status", "--porcelain"], approval);
+        Assert.Contains("A  staged_file.txt", statusBefore.StdOut);
+
+        // Standard git: 'git restore --staged staged_file.txt' unstages file
+        var response = await emulator.InvokeAsync(["restore", "--staged", "staged_file.txt"], approval);
+        Assert.Equal(0, response.ExitCode);
+
+        var statusAfter = await emulator.InvokeAsync(["status", "--porcelain"], approval);
+        Assert.Contains("?? staged_file.txt", statusAfter.StdOut);
+        Assert.DoesNotContain("A  staged_file.txt", statusAfter.StdOut);
+        Assert.True(File.Exists(filePath));
+    }
+
+    [Fact]
+    public async Task Restore_Source_RestoresFileFromCommit_LikeStandardGit()
+    {
+        using var testRepo = GitTestRepository.Create();
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+        var emulator = new GitCliEmulator(repo);
+        var approval = new TestUserApproval();
+
+        var filePath = Path.Combine(testRepo.WorkingDirectory, "hist.txt");
+        await File.WriteAllTextAsync(filePath, "v1");
+        await emulator.InvokeAsync(["add", "hist.txt"], approval);
+        await emulator.InvokeAsync(["commit", "-m", "v1"], approval);
+
+        await File.WriteAllTextAsync(filePath, "v2");
+        await emulator.InvokeAsync(["add", "hist.txt"], approval);
+        await emulator.InvokeAsync(["commit", "-m", "v2"], approval);
+
+        // Standard git: 'git restore --source=HEAD~1 hist.txt' restores hist.txt to v1 content
+        var response = await emulator.InvokeAsync(["restore", "--source=HEAD~1", "hist.txt"], approval);
+        Assert.Equal(0, response.ExitCode);
+
+        var content = await File.ReadAllTextAsync(filePath);
+        Assert.Equal("v1", content);
+    }
+
+    [Fact]
+    public async Task Checkout_DoubleDash_DiscardsUnstagedModifications_LikeStandardGit()
+    {
+        using var testRepo = GitTestRepository.Create();
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+        var emulator = new GitCliEmulator(repo);
+        var approval = new TestUserApproval();
+
+        var filePath = Path.Combine(testRepo.WorkingDirectory, "checkout_file.txt");
+        await File.WriteAllTextAsync(filePath, "clean content\n");
+        await emulator.InvokeAsync(["add", "checkout_file.txt"], approval);
+        await emulator.InvokeAsync(["commit", "-m", "Add checkout_file.txt"], approval);
+
+        await File.WriteAllTextAsync(filePath, "modified content\n");
+
+        // Standard git: 'git checkout -- checkout_file.txt' restores clean content
+        var response = await emulator.InvokeAsync(["checkout", "--", "checkout_file.txt"], approval);
+        Assert.Equal(0, response.ExitCode);
+
+        var content = await File.ReadAllTextAsync(filePath);
+        Assert.Equal("clean content\n", content);
+    }
+
+    [Fact]
+    public async Task Checkout_Dash_SwitchesToPreviousBranch_LikeStandardGit()
+    {
+        using var testRepo = GitTestRepository.Create();
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+        var emulator = new GitCliEmulator(repo);
+        var approval = new TestUserApproval();
+
+        await emulator.InvokeAsync(["checkout", "-b", "feature-x"], approval);
+        Assert.Equal("feature-x", await repo.GetCurrentBranchNameAsync());
+
+        await emulator.InvokeAsync(["checkout", "master"], approval);
+        Assert.Equal("master", await repo.GetCurrentBranchNameAsync());
+
+        // Standard git: 'git checkout -' switches back to feature-x
+        var response = await emulator.InvokeAsync(["checkout", "-"], approval);
+        Assert.Equal(0, response.ExitCode);
+        Assert.Equal("feature-x", await repo.GetCurrentBranchNameAsync());
+    }
+
+    [Fact]
+    public async Task Checkout_CreateBranchWithStartPoint_CreatesFromSpecifiedCommit_LikeStandardGit()
+    {
+        using var testRepo = GitTestRepository.Create();
+        testRepo.Commit("Commit 2", ("f2.txt", "2"));
+        var parentHash = testRepo.Head;
+        testRepo.Commit("Commit 3", ("f3.txt", "3"));
+
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+        var emulator = new GitCliEmulator(repo);
+        var approval = new TestUserApproval();
+
+        // Standard git: 'git checkout -b <branch> <start-point>' creates branch at start-point
+        var response = await emulator.InvokeAsync(["checkout", "-b", "branched-from-parent", "HEAD~1"], approval);
+        Assert.Equal(0, response.ExitCode);
+        Assert.Equal("branched-from-parent", await repo.GetCurrentBranchNameAsync());
+
+        var currentCommit = await repo.GetCommitAsync("HEAD");
+        Assert.Equal(parentHash, currentCommit.Id);
+    }
+
+    [Fact]
+    public async Task Branch_RenameCurrentBranch_UpdatesHead_LikeStandardGit()
+    {
+        using var testRepo = GitTestRepository.Create();
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+        var emulator = new GitCliEmulator(repo);
+        var approval = new TestUserApproval();
+
+        await emulator.InvokeAsync(["switch", "-c", "my-topic"], approval);
+        Assert.Equal("my-topic", await repo.GetCurrentBranchNameAsync());
+
+        // Standard git: 'git branch -m my-renamed-topic' renames current branch
+        var response = await emulator.InvokeAsync(["branch", "-m", "my-renamed-topic"], approval);
+        Assert.Equal(0, response.ExitCode);
+        Assert.Equal("my-renamed-topic", await repo.GetCurrentBranchNameAsync());
+
+        var showCurrent = await emulator.InvokeAsync(["branch", "--show-current"], approval);
+        Assert.Equal("my-renamed-topic", showCurrent.StdOut.Trim());
+    }
+
+    [Fact]
+    public async Task Branch_DeleteUnmergedBranchWithoutForce_Fails_LikeStandardGit()
+    {
+        using var testRepo = GitTestRepository.Create();
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+        var emulator = new GitCliEmulator(repo);
+        var approval = new TestUserApproval();
+
+        await emulator.InvokeAsync(["switch", "-c", "unmerged-branch"], approval);
+        await File.WriteAllTextAsync(Path.Combine(testRepo.WorkingDirectory, "unmerged.txt"), "unmerged");
+        await emulator.InvokeAsync(["add", "unmerged.txt"], approval);
+        await emulator.InvokeAsync(["commit", "-m", "Unmerged commit"], approval);
+
+        await emulator.InvokeAsync(["switch", "master"], approval);
+
+        // Standard git: 'git branch -d unmerged-branch' fails because it is not merged
+        var response = await emulator.InvokeAsync(["branch", "-d", "unmerged-branch"], approval);
+        Assert.NotEqual(0, response.ExitCode);
+        Assert.Contains("not fully merged", response.StdErr + response.StdOut, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task Switch_ConflictingWorkingTreeFile_AbortsAndPreservesChanges_LikeStandardGit()
+    {
+        using var testRepo = GitTestRepository.Create();
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+        var emulator = new GitCliEmulator(repo);
+        var approval = new TestUserApproval();
+
+        var sharedFile = Path.Combine(testRepo.WorkingDirectory, "shared.txt");
+        await File.WriteAllTextAsync(sharedFile, "master content\n");
+        await emulator.InvokeAsync(["add", "shared.txt"], approval);
+        await emulator.InvokeAsync(["commit", "-m", "Master shared"], approval);
+
+        // Create feature branch with different content in shared.txt
+        await emulator.InvokeAsync(["switch", "-c", "feature-diff"], approval);
+        await File.WriteAllTextAsync(sharedFile, "feature content\n");
+        await emulator.InvokeAsync(["add", "shared.txt"], approval);
+        await emulator.InvokeAsync(["commit", "-m", "Feature shared"], approval);
+
+        // Switch back to master
+        await emulator.InvokeAsync(["switch", "master"], approval);
+
+        // Modify shared.txt locally in worktree without committing
+        await File.WriteAllTextAsync(sharedFile, "local dirty content\n");
+
+        // Standard git: 'git switch feature-diff' MUST abort because local changes would be overwritten
+        var response = await emulator.InvokeAsync(["switch", "feature-diff"], approval);
+
+        Assert.NotEqual(0, response.ExitCode);
+
+        // Local dirty content must be preserved!
+        var contentAfter = await File.ReadAllTextAsync(sharedFile);
+        Assert.Equal("local dirty content\n", contentAfter);
+    }
+
+    [Fact]
+    public async Task Status_ShortFlag_ProducesShortPorcelainFormat_LikeStandardGit()
+    {
+        using var testRepo = GitTestRepository.Create();
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+        var emulator = new GitCliEmulator(repo);
+        var approval = new TestUserApproval();
+
+        var newFile = Path.Combine(testRepo.WorkingDirectory, "newfile.txt");
+        await File.WriteAllTextAsync(newFile, "content");
+        await emulator.InvokeAsync(["add", "newfile.txt"], approval);
+
+        // Standard git: 'git status -s' gives short status format
+        var response = await emulator.InvokeAsync(["status", "-s"], approval);
+        Assert.Equal(0, response.ExitCode);
+        Assert.Contains("A  newfile.txt", response.StdOut);
+    }
+
+    [Fact]
+    public async Task Diff_CachedFlag_ShowsStagedDifferences_LikeStandardGit()
+    {
+        using var testRepo = GitTestRepository.Create();
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+        var emulator = new GitCliEmulator(repo);
+        var approval = new TestUserApproval();
+
+        var readme = Path.Combine(testRepo.WorkingDirectory, "README.md");
+        await File.AppendAllTextAsync(readme, "\nstaged change");
+        await emulator.InvokeAsync(["add", "README.md"], approval);
+
+        // Standard git: 'git diff --cached' shows staged changes against HEAD
+        var response = await emulator.InvokeAsync(["diff", "--cached"], approval);
+        Assert.Equal(0, response.ExitCode);
+        Assert.Contains("+staged change", response.StdOut);
+    }
+
+    [Fact]
+    public async Task Log_HyphenNumberShorthand_LimitsCommits_LikeStandardGit()
+    {
+        using var testRepo = GitTestRepository.Create();
+        testRepo.Commit("Commit 2", ("f2.txt", "2"));
+        testRepo.Commit("Commit 3", ("f3.txt", "3"));
+
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+        var emulator = new GitCliEmulator(repo);
+        var approval = new TestUserApproval();
+
+        // Standard git: 'git log -1' is standard shorthand for 'git log -n 1'
+        var response = await emulator.InvokeAsync(["log", "--oneline", "-1"], approval);
+        Assert.Equal(0, response.ExitCode);
+        Assert.Contains("Commit 3", response.StdOut);
+        Assert.DoesNotContain("Commit 2", response.StdOut);
+    }
+
+    [Fact]
+    public async Task Checkout_ForceB_ResetsExistingBranch_LikeStandardGit()
+    {
+        using var testRepo = GitTestRepository.Create();
+        testRepo.Commit("Commit 2", ("f2.txt", "2"));
+        var commit2Hash = testRepo.Head;
+        testRepo.Commit("Commit 3", ("f3.txt", "3"));
+
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+        var emulator = new GitCliEmulator(repo);
+        var approval = new TestUserApproval();
+
+        // Standard git: 'git checkout -B master HEAD~1' force-resets master to HEAD~1
+        var response = await emulator.InvokeAsync(["checkout", "-B", "master", "HEAD~1"], approval);
+        Assert.Equal(0, response.ExitCode);
+
+        var currentHead = await repo.GetCommitAsync("HEAD");
+        Assert.Equal(commit2Hash, currentHead.Id);
+    }
+
+    [Fact]
+    public async Task Switch_ForceC_ResetsExistingBranch_LikeStandardGit()
+    {
+        using var testRepo = GitTestRepository.Create();
+        testRepo.Commit("Commit 2", ("f2.txt", "2"));
+        var commit2Hash = testRepo.Head;
+        testRepo.Commit("Commit 3", ("f3.txt", "3"));
+
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+        var emulator = new GitCliEmulator(repo);
+        var approval = new TestUserApproval();
+
+        // Standard git: 'git switch -C master HEAD~1' force-resets master to HEAD~1
+        var response = await emulator.InvokeAsync(["switch", "-C", "master", "HEAD~1"], approval);
+        Assert.Equal(0, response.ExitCode);
+
+        var currentHead = await repo.GetCommitAsync("HEAD");
+        Assert.Equal(commit2Hash, currentHead.Id);
+    }
+
+    [Fact]
+    public async Task Reset_Hard_LeavesUntrackedFilesIntact_LikeStandardGit()
+    {
+        using var testRepo = GitTestRepository.Create();
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+        var emulator = new GitCliEmulator(repo);
+        var approval = new TestUserApproval();
+
+        var untracked = Path.Combine(testRepo.WorkingDirectory, "untracked_reset.txt");
+        await File.WriteAllTextAsync(untracked, "preserve me\n");
+
+        // Standard git: 'git reset --hard' resets tracked files, but leaves untracked files in the working directory
+        var response = await emulator.InvokeAsync(["reset", "--hard", "HEAD"], approval);
+        Assert.Equal(0, response.ExitCode);
+        Assert.True(File.Exists(untracked), "Untracked files should not be deleted by git reset --hard");
+    }
+
+    [Fact]
+    public async Task Tag_DeleteNonExistentTag_Fails_LikeStandardGit()
+    {
+        using var testRepo = GitTestRepository.Create();
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+        var emulator = new GitCliEmulator(repo);
+        var approval = new TestUserApproval();
+
+        // Standard git: 'git tag -d non_existent_tag' fails with exit code 1 (error: tag '...' not found)
+        var response = await emulator.InvokeAsync(["tag", "-d", "non_existent_tag"], approval);
+        Assert.NotEqual(0, response.ExitCode);
+        Assert.Contains("not found", response.StdErr + response.StdOut, StringComparison.OrdinalIgnoreCase);
+    }
 }

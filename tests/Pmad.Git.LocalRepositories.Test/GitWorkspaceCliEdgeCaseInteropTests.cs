@@ -424,4 +424,129 @@ public sealed class GitWorkspaceCliEdgeCaseInteropTests
         var ignoreCase = configFile.GetBoolean("core.ignorecase");
         Assert.True(ignoreCase);
     }
+
+    [Fact]
+    public async Task TreeSorting_DirectoryAndFileWithOverlappingPrefix_MatchesNativeGitFsck()
+    {
+        using var testRepo = GitTestRepository.Create();
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+
+        // Git requires entries in tree objects to be sorted byte-wise, with tree objects sorted as if having a trailing '/'
+        // ASCII codes: '-' (45) < '.' (46) < '/' (47)
+        // Therefore: 'alpha-0.txt' < 'alpha.txt' < 'alpha/'
+        var alphaDir = Path.Combine(testRepo.WorkingDirectory, "alpha");
+        Directory.CreateDirectory(alphaDir);
+        await File.WriteAllTextAsync(Path.Combine(alphaDir, "nested.txt"), "nested\n");
+        await File.WriteAllTextAsync(Path.Combine(testRepo.WorkingDirectory, "alpha.txt"), "alpha file\n");
+        await File.WriteAllTextAsync(Path.Combine(testRepo.WorkingDirectory, "alpha-0.txt"), "alpha-0 file\n");
+
+        await repo.StageAsync(["alpha/nested.txt", "alpha.txt", "alpha-0.txt"]);
+        await repo.CommitAsync("Add files with overlapping prefix", new GitCommitMetadata("Add overlapping", TestSignature));
+
+        // Native git fsck --full --strict checks tree sorting integrity
+        var fsck = testRepo.RunGit("fsck --full --strict");
+        Assert.DoesNotContain("error in tree", fsck, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("entries not properly sorted", fsck, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task GitIgnore_TrailingSlash_OnlyMatchesDirectories_ConsistentWithGitCli()
+    {
+        using var testRepo = GitTestRepository.Create();
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+
+        // In standard git, a trailing slash in .gitignore (e.g. 'build/') matches directories only, never regular files
+        await File.WriteAllTextAsync(Path.Combine(testRepo.WorkingDirectory, ".gitignore"), "build/\n");
+        await repo.StageAsync(".gitignore");
+        await repo.CommitAsync("Add gitignore", new GitCommitMetadata("Add gitignore", TestSignature));
+
+        // Create directory build/ with a file
+        var buildDir = Path.Combine(testRepo.WorkingDirectory, "build");
+        Directory.CreateDirectory(buildDir);
+        await File.WriteAllTextAsync(Path.Combine(buildDir, "out.bin"), "binary");
+
+        // Native git status should ignore build/
+        var nativeStatus = testRepo.RunGit("status --porcelain -u");
+        Assert.DoesNotContain("out.bin", nativeStatus);
+
+        // Managed repo status should also ignore build/
+        var managedStatus = await repo.GetStatusAsync();
+        Assert.DoesNotContain(managedStatus.Entries, e => e.Path.StartsWith("build/"));
+    }
+
+    [Fact]
+    public async Task GitIgnore_LeadingSlash_OnlyMatchesRepositoryRoot_ConsistentWithGitCli()
+    {
+        using var testRepo = GitTestRepository.Create();
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+
+        // In standard git, a leading slash in .gitignore (e.g. '/rootonly.txt') anchors the match to repo root
+        await File.WriteAllTextAsync(Path.Combine(testRepo.WorkingDirectory, ".gitignore"), "/rootonly.txt\n");
+        await repo.StageAsync(".gitignore");
+        await repo.CommitAsync("Add gitignore", new GitCommitMetadata("Add gitignore", TestSignature));
+
+        // Create rootonly.txt at root and in subdirectory
+        await File.WriteAllTextAsync(Path.Combine(testRepo.WorkingDirectory, "rootonly.txt"), "root");
+        var subDir = Path.Combine(testRepo.WorkingDirectory, "sub");
+        Directory.CreateDirectory(subDir);
+        await File.WriteAllTextAsync(Path.Combine(subDir, "rootonly.txt"), "sub");
+
+        // Native git status: sub/rootonly.txt is untracked (??), rootonly.txt is ignored
+        var nativeStatus = testRepo.RunGit("status --porcelain -u");
+        Assert.Contains("?? sub/rootonly.txt", nativeStatus);
+        Assert.DoesNotContain("?? rootonly.txt", nativeStatus);
+
+        // Managed repo status should be consistent
+        var managedStatus = await repo.GetStatusAsync();
+        Assert.Contains(managedStatus.Entries, e => e.Path == "sub/rootonly.txt" && e.WorkingTreeStatus == GitFileStatus.Untracked);
+        Assert.DoesNotContain(managedStatus.Entries, e => e.Path == "rootonly.txt");
+    }
+
+    [Fact]
+    public async Task GitIgnore_NegationPattern_ReIncludesFile_ConsistentWithGitCli()
+    {
+        using var testRepo = GitTestRepository.Create();
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+
+        // In standard git, '!' negates a previous ignore pattern
+        await File.WriteAllTextAsync(Path.Combine(testRepo.WorkingDirectory, ".gitignore"), "*.log\n!important.log\n");
+        await repo.StageAsync(".gitignore");
+        await repo.CommitAsync("Add gitignore", new GitCommitMetadata("Add gitignore", TestSignature));
+
+        await File.WriteAllTextAsync(Path.Combine(testRepo.WorkingDirectory, "dummy.log"), "ignore me");
+        await File.WriteAllTextAsync(Path.Combine(testRepo.WorkingDirectory, "important.log"), "keep me");
+
+        var nativeStatus = testRepo.RunGit("status --porcelain -u");
+        Assert.Contains("?? important.log", nativeStatus);
+        Assert.DoesNotContain("dummy.log", nativeStatus);
+
+        var managedStatus = await repo.GetStatusAsync();
+        Assert.Contains(managedStatus.Entries, e => e.Path == "important.log" && e.WorkingTreeStatus == GitFileStatus.Untracked);
+        Assert.DoesNotContain(managedStatus.Entries, e => e.Path == "dummy.log");
+    }
+
+    [Fact]
+    public async Task FileMode_ExecutableScriptMode100755_PreservedAcrossManagedCommit_VerifiedByGitCli()
+    {
+        using var testRepo = GitTestRepository.Create();
+        var scriptPath = Path.Combine(testRepo.WorkingDirectory, "script.sh");
+        await File.WriteAllTextAsync(scriptPath, "#!/bin/sh\necho hello\n");
+
+        testRepo.RunGit("add script.sh");
+        testRepo.RunGit("update-index --chmod=+x script.sh");
+        testRepo.RunGit("commit -m \"Add script.sh executable\"");
+
+        var lsFilesBefore = testRepo.RunGit("ls-files -s script.sh");
+        Assert.StartsWith("100755", lsFilesBefore);
+
+        // Modify via managed repo and commit
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+        await File.WriteAllTextAsync(scriptPath, "#!/bin/sh\necho updated\n");
+        await repo.StageAsync("script.sh");
+        await repo.CommitAsync("Update script.sh", new GitCommitMetadata("Update script.sh", TestSignature));
+
+        // Native git ls-files -s must still show mode 100755
+        var lsFilesAfter = testRepo.RunGit("ls-files -s script.sh");
+        Assert.StartsWith("100755", lsFilesAfter);
+    }
 }
