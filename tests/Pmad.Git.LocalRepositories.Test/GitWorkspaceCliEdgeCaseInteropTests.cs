@@ -50,9 +50,10 @@ public sealed class GitWorkspaceCliEdgeCaseInteropTests
         // Unstaging the directory path 'components' (like git restore --staged components)
         await repo.UnstageAsync("components");
 
-        var unstagedStatus = testRepo.RunGit("status --porcelain");
+        var unstagedStatus = testRepo.RunGit("status --porcelain -u");
         Assert.Contains("?? components/button.txt", unstagedStatus);
         Assert.Contains("?? components/modal.txt", unstagedStatus);
+        Assert.DoesNotContain("A  components/button.txt", unstagedStatus);
     }
 
     [Fact]

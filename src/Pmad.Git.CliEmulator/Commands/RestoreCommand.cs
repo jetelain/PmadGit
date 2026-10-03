@@ -1,6 +1,7 @@
 using System.CommandLine;
 using Pmad.Git.CliEmulator.Approval;
 using Pmad.Git.CliEmulator.Internal;
+using Pmad.Git.LocalRepositories;
 
 namespace Pmad.Git.CliEmulator.Commands;
 
@@ -12,11 +13,15 @@ internal static class RestoreCommand
         var stagedOpt = new Option<bool>("--staged") { Description = "Restore the index (unstage)" };
         var worktreeOpt = new Option<bool>("--worktree") { Description = "Restore the working tree (default)" };
         var sourceOpt = new Option<string?>("-s", "--source") { Description = "Restore from this tree-ish" };
+        var oursOpt = new Option<bool>("--ours") { Description = "Restore our version for unmerged files" };
+        var theirsOpt = new Option<bool>("--theirs") { Description = "Restore their version for unmerged files" };
         var pathsArg = new Argument<string[]>("paths") { Description = "Files to restore", Arity = ArgumentArity.OneOrMore };
 
         cmd.Options.Add(stagedOpt);
         cmd.Options.Add(worktreeOpt);
         cmd.Options.Add(sourceOpt);
+        cmd.Options.Add(oursOpt);
+        cmd.Options.Add(theirsOpt);
         cmd.Arguments.Add(pathsArg);
 
         cmd.SetAction(async (ParseResult pr, CancellationToken ct) =>
@@ -24,11 +29,36 @@ internal static class RestoreCommand
             var staged = pr.GetValue(stagedOpt);
             var worktree = pr.GetValue(worktreeOpt);
             var source = pr.GetValue(sourceOpt);
+            var isOurs = pr.GetValue(oursOpt);
+            var isTheirs = pr.GetValue(theirsOpt);
             var paths = pr.GetValue(pathsArg) ?? [];
 
             if (paths.Length == 0)
             {
                 return ctx.WriteError("No paths specified.");
+            }
+
+            if (isOurs || isTheirs)
+            {
+                var targetStage = isOurs ? 2 : 3;
+                var index = await GitIndex.ReadAsync(ctx.Repository.IndexManager.IndexPath, ctx.Repository.HashLengthBytes, ct).ConfigureAwait(false);
+                foreach (var path in paths)
+                {
+                    var entry = index.FindEntry(path, stage: targetStage);
+                    if (entry == null)
+                    {
+                        return ctx.WriteError($"path '{path}' does not have {(isOurs ? "our" : "their")} version");
+                    }
+                    var obj = await ctx.Repository.ObjectStore.ReadObjectAsync(entry.Hash, ct).ConfigureAwait(false);
+                    var fullPath = Path.Combine(ctx.Repository.RootPath, path);
+                    var dir = Path.GetDirectoryName(fullPath);
+                    if (!string.IsNullOrEmpty(dir))
+                    {
+                        Directory.CreateDirectory(dir);
+                    }
+                    await File.WriteAllBytesAsync(fullPath, obj.Content, ct).ConfigureAwait(false);
+                }
+                return 0;
             }
 
             var targetWorktree = worktree || !staged;

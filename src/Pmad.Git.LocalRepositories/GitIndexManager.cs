@@ -266,8 +266,62 @@ public sealed class GitIndexManager
     internal async Task StageCoreAsync(IReadOnlyList<string> pathsList, CancellationToken cancellationToken)
     {
         var index = await GitIndex.ReadAsync(IndexPath, _repository.HashLengthBytes, cancellationToken).ConfigureAwait(false);
+        var autocrlf = await _repository.GetConfigAsync("core.autocrlf", cancellationToken: cancellationToken).ConfigureAwait(false);
+        bool shouldNormalizeCrlf = string.Equals(autocrlf, "true", StringComparison.OrdinalIgnoreCase) ||
+                                   string.Equals(autocrlf, "input", StringComparison.OrdinalIgnoreCase);
 
+        var expandedPaths = new List<string>();
         foreach (var path in pathsList)
+        {
+            var fullPath = Path.Combine(WorkingDirectory, path);
+            var normalizedPath = path.Replace('\\', '/').Trim('/');
+            var dirPrefix = string.IsNullOrEmpty(normalizedPath) ? "" : normalizedPath + "/";
+
+            if (Directory.Exists(fullPath))
+            {
+                var ignoreMatcher = GitIgnoreMatcher.Load(WorkingDirectory);
+                var subFiles = new Dictionary<string, FileInfo>(StringComparer.Ordinal);
+                var dummyPrefixes = new HashSet<string>(StringComparer.Ordinal);
+                var dummyTracked = new HashSet<string>(StringComparer.Ordinal);
+                ScanWorkingDirectory(new DirectoryInfo(fullPath), normalizedPath, ignoreMatcher, dummyPrefixes, dummyTracked, subFiles);
+
+                foreach (var fileRel in subFiles.Keys.OrderBy(k => k, StringComparer.Ordinal))
+                {
+                    expandedPaths.Add(fileRel);
+                }
+
+                foreach (var entry in index.Entries)
+                {
+                    if (entry.Path.StartsWith(dirPrefix, StringComparison.Ordinal) && !File.Exists(Path.Combine(WorkingDirectory, entry.Path)))
+                    {
+                        expandedPaths.Add(entry.Path);
+                    }
+                }
+            }
+            else if (!File.Exists(fullPath))
+            {
+                var matchingEntries = index.Entries
+                    .Where(e => e.Path.StartsWith(dirPrefix, StringComparison.Ordinal))
+                    .Select(e => e.Path)
+                    .Distinct(StringComparer.Ordinal)
+                    .ToList();
+
+                if (matchingEntries.Count > 0)
+                {
+                    expandedPaths.AddRange(matchingEntries);
+                }
+                else
+                {
+                    expandedPaths.Add(path);
+                }
+            }
+            else
+            {
+                expandedPaths.Add(path);
+            }
+        }
+
+        foreach (var path in expandedPaths)
         {
             cancellationToken.ThrowIfCancellationRequested();
             var fullPath = Path.Combine(WorkingDirectory, path);
@@ -276,21 +330,37 @@ public sealed class GitIndexManager
             {
                 var fileInfo = new FileInfo(fullPath);
                 GitHash blobHash;
-                var options = new FileStreamOptions
-                {
-                    Mode = FileMode.Open,
-                    Access = FileAccess.Read,
-                    Share = FileShare.ReadWrite | FileShare.Delete,
-                    Options = FileOptions.Asynchronous | FileOptions.SequentialScan
-                };
 
-                await using (var stream = new FileStream(fullPath, options))
+                if (shouldNormalizeCrlf && fileInfo.Length <= 50 * 1024 * 1024)
                 {
+                    var fileBytes = await File.ReadAllBytesAsync(fullPath, cancellationToken).ConfigureAwait(false);
+                    if (!IsBinary(fileBytes))
+                    {
+                        fileBytes = NormalizeCrlfToLf(fileBytes);
+                    }
                     blobHash = await _repository.ObjectStore.WriteObjectAsync(
                         GitObjectType.Blob,
-                        stream,
-                        fileInfo.Length,
+                        fileBytes,
                         cancellationToken).ConfigureAwait(false);
+                }
+                else
+                {
+                    var options = new FileStreamOptions
+                    {
+                        Mode = FileMode.Open,
+                        Access = FileAccess.Read,
+                        Share = FileShare.ReadWrite | FileShare.Delete,
+                        Options = FileOptions.Asynchronous | FileOptions.SequentialScan
+                    };
+
+                    await using (var stream = new FileStream(fullPath, options))
+                    {
+                        blobHash = await _repository.ObjectStore.WriteObjectAsync(
+                            GitObjectType.Blob,
+                            stream,
+                            fileInfo.Length,
+                            cancellationToken).ConfigureAwait(false);
+                    }
                 }
 
                 var existingEntry = index.FindEntry(path, stage: 0) ??
@@ -377,7 +447,24 @@ public sealed class GitIndexManager
                 ? await GetTreeFilesAsync(source, cancellationToken).ConfigureAwait(false)
                 : await GetHeadFilesAsync(cancellationToken).ConfigureAwait(false);
 
+            var expandedPaths = new List<string>();
             foreach (var path in pathsList)
+            {
+                var dirPrefix = path.EndsWith('/') ? path : path + "/";
+                var matchingFromIndex = index.Entries.Where(e => e.Path.StartsWith(dirPrefix, StringComparison.Ordinal)).Select(e => e.Path);
+                var matchingFromSource = sourceFiles.Keys.Where(k => k.StartsWith(dirPrefix, StringComparison.Ordinal));
+                var allMatching = matchingFromIndex.Concat(matchingFromSource).Distinct(StringComparer.Ordinal).ToList();
+                if (allMatching.Count > 0)
+                {
+                    expandedPaths.AddRange(allMatching);
+                }
+                else
+                {
+                    expandedPaths.Add(path);
+                }
+            }
+
+            foreach (var path in expandedPaths)
             {
                 cancellationToken.ThrowIfCancellationRequested();
 
@@ -2101,6 +2188,25 @@ public sealed class GitIndexManager
     private async Task<GitHash> ComputeFileBlobHashAsync(string fullPath, CancellationToken cancellationToken)
     {
         var fileInfo = new FileInfo(fullPath);
+        var autocrlf = await _repository.GetConfigAsync("core.autocrlf", cancellationToken: cancellationToken).ConfigureAwait(false);
+        bool shouldNormalizeCrlf = string.Equals(autocrlf, "true", StringComparison.OrdinalIgnoreCase) ||
+                                   string.Equals(autocrlf, "input", StringComparison.OrdinalIgnoreCase);
+
+        if (shouldNormalizeCrlf && fileInfo.Length <= 50 * 1024 * 1024)
+        {
+            var fileBytes = await File.ReadAllBytesAsync(fullPath, cancellationToken).ConfigureAwait(false);
+            if (!IsBinary(fileBytes))
+            {
+                fileBytes = NormalizeCrlfToLf(fileBytes);
+            }
+            var algo = GitHashHelper.GetAlgorithmName(_repository.HashLengthBytes);
+            using var algoHash = IncrementalHash.CreateHash(algo);
+            var hdr = Encoding.ASCII.GetBytes($"blob {fileBytes.Length}\0");
+            algoHash.AppendData(hdr);
+            algoHash.AppendData(fileBytes);
+            return GitHash.FromBytes(algoHash.GetHashAndReset());
+        }
+
         var algorithmName = GitHashHelper.GetAlgorithmName(_repository.HashLengthBytes);
         using var hashAlgo = IncrementalHash.CreateHash(algorithmName);
 
@@ -2125,5 +2231,41 @@ public sealed class GitIndexManager
 
         var hashBytes = hashAlgo.GetHashAndReset();
         return GitHash.FromBytes(hashBytes);
+    }
+
+    private static bool IsBinary(ReadOnlySpan<byte> data)
+    {
+        var checkLength = Math.Min(data.Length, 8000);
+        return data.Slice(0, checkLength).IndexOf((byte)0) >= 0;
+    }
+
+    private static byte[] NormalizeCrlfToLf(byte[] bytes)
+    {
+        int crlfIndex = -1;
+        for (int i = 0; i < bytes.Length - 1; i++)
+        {
+            if (bytes[i] == (byte)'\r' && bytes[i + 1] == (byte)'\n')
+            {
+                crlfIndex = i;
+                break;
+            }
+        }
+        if (crlfIndex == -1)
+        {
+            return bytes;
+        }
+
+        var result = new byte[bytes.Length];
+        int destIndex = 0;
+        for (int i = 0; i < bytes.Length; i++)
+        {
+            if (i < bytes.Length - 1 && bytes[i] == (byte)'\r' && bytes[i + 1] == (byte)'\n')
+            {
+                continue;
+            }
+            result[destIndex++] = bytes[i];
+        }
+        Array.Resize(ref result, destIndex);
+        return result;
     }
 }

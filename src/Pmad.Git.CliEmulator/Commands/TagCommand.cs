@@ -8,16 +8,19 @@ internal static class TagCommand
     public static Command Build(CommandContext ctx)
     {
         var cmd = new Command("tag") { Description = "Create, list, or delete a tag" };
+        var listOpt = new Option<bool>("-l", "--list") { Description = "List tags" };
         var deleteOpt = new Option<bool>("-d") { Description = "Delete a tag" };
         var nameArg = new Argument<string?>("name") { Description = "Tag name", Arity = ArgumentArity.ZeroOrOne };
         var commitArg = new Argument<string?>("commit") { Description = "Commit to tag (default HEAD)", Arity = ArgumentArity.ZeroOrOne };
 
+        cmd.Options.Add(listOpt);
         cmd.Options.Add(deleteOpt);
         cmd.Arguments.Add(nameArg);
         cmd.Arguments.Add(commitArg);
 
         cmd.SetAction(async (ParseResult pr, CancellationToken ct) =>
         {
+            var list = pr.GetValue(listOpt);
             var delete = pr.GetValue(deleteOpt);
             var name = pr.GetValue(nameArg);
             var commitRef = pr.GetValue(commitArg);
@@ -35,7 +38,7 @@ internal static class TagCommand
                     return 0;
                 }
 
-                if (string.IsNullOrEmpty(name))
+                if (list || string.IsNullOrEmpty(name))
                 {
                     var tags = await ctx.Repository.GetReferencesByPrefixAsync("refs/tags/", ct);
                     foreach (var tag in tags.Keys.OrderBy(t => t, StringComparer.Ordinal))

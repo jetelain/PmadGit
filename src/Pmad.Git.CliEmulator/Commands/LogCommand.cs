@@ -1,6 +1,8 @@
 using System.CommandLine;
+using System.Runtime.CompilerServices;
 using Pmad.Git.CliEmulator.Internal;
 using Pmad.Git.CliEmulator.Internal.Formatters;
+using Pmad.Git.LocalRepositories;
 
 namespace Pmad.Git.CliEmulator.Commands;
 
@@ -33,7 +35,26 @@ internal static class LogCommand
 
             try
             {
-                var commits = ctx.Repository.EnumerateCommitsAsync(startRef, ct);
+                IAsyncEnumerable<GitCommit> commits;
+                if (startRef != null && startRef.Contains(".."))
+                {
+                    var parts = startRef.Split("..", 2);
+                    var excludeRef = string.IsNullOrEmpty(parts[0]) ? "HEAD" : parts[0];
+                    var includeRef = string.IsNullOrEmpty(parts[1]) ? "HEAD" : parts[1];
+
+                    var excludedHashes = new HashSet<GitHash>();
+                    await foreach (var c in ctx.Repository.EnumerateCommitsAsync(excludeRef, ct).ConfigureAwait(false))
+                    {
+                        excludedHashes.Add(c.Id);
+                    }
+
+                    commits = FilterCommitsAsync(ctx.Repository.EnumerateCommitsAsync(includeRef, ct), excludedHashes, ct);
+                }
+                else
+                {
+                    commits = ctx.Repository.EnumerateCommitsAsync(startRef, ct);
+                }
+
                 if (maxCount.HasValue && maxCount.Value >= 0)
                 {
                     commits = commits.Take(maxCount.Value, ct);
@@ -55,5 +76,19 @@ internal static class LogCommand
             }
         });
         return cmd;
+    }
+
+    private static async IAsyncEnumerable<GitCommit> FilterCommitsAsync(
+        IAsyncEnumerable<GitCommit> source,
+        HashSet<GitHash> excluded,
+        [EnumeratorCancellation] CancellationToken ct = default)
+    {
+        await foreach (var c in source.WithCancellation(ct).ConfigureAwait(false))
+        {
+            if (!excluded.Contains(c.Id))
+            {
+                yield return c;
+            }
+        }
     }
 }

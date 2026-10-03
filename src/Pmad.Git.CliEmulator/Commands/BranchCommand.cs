@@ -15,6 +15,7 @@ internal static class BranchCommand
         var deleteOpt = new Option<bool>("-d") { Description = "Delete branch (must be merged)" };
         var forceDeleteOpt = new Option<bool>("-D") { Description = "Force delete branch" };
         var moveOpt = new Option<bool>("-m") { Description = "Rename a branch" };
+        var showCurrentOpt = new Option<bool>("--show-current") { Description = "Print the name of the current branch" };
         var nameArg = new Argument<string?>("name") { Description = "Branch name", Arity = ArgumentArity.ZeroOrOne };
         var newNameArg = new Argument<string?>("newname") { Description = "New branch name (rename/create start point)", Arity = ArgumentArity.ZeroOrOne };
 
@@ -23,6 +24,7 @@ internal static class BranchCommand
         cmd.Options.Add(deleteOpt);
         cmd.Options.Add(forceDeleteOpt);
         cmd.Options.Add(moveOpt);
+        cmd.Options.Add(showCurrentOpt);
         cmd.Arguments.Add(nameArg);
         cmd.Arguments.Add(newNameArg);
 
@@ -33,11 +35,22 @@ internal static class BranchCommand
             var delete = pr.GetValue(deleteOpt);
             var forceDelete = pr.GetValue(forceDeleteOpt);
             var move = pr.GetValue(moveOpt);
+            var showCurrent = pr.GetValue(showCurrentOpt);
             var name = pr.GetValue(nameArg);
             var newName = pr.GetValue(newNameArg);
 
             try
             {
+                if (showCurrent)
+                {
+                    var currentBranch = await ctx.Repository.GetCurrentBranchNameAsync(ct);
+                    if (!string.IsNullOrEmpty(currentBranch))
+                    {
+                        await ctx.StdOut.WriteLineAsync(currentBranch);
+                    }
+                    return 0;
+                }
+
                 if (delete || forceDelete)
                 {
                     if (string.IsNullOrEmpty(name))
