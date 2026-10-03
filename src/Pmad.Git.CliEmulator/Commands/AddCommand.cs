@@ -10,18 +10,55 @@ internal static class AddCommand
     {
         var cmd = new Command("add") { Description = "Add file contents to the index" };
         var allOpt = new Option<bool>("-A", "--all") { Description = "Stage all changes (modified, deleted, new)" };
+        var updateOpt = new Option<bool>("-u", "--update") { Description = "Update the index just where it already has an entry matching <pathspec>" };
         var pathsArg = new Argument<string[]>("paths") { Description = "Files to stage", Arity = ArgumentArity.ZeroOrMore };
 
         cmd.Options.Add(allOpt);
+        cmd.Options.Add(updateOpt);
         cmd.Arguments.Add(pathsArg);
 
         cmd.SetAction(async (ParseResult pr, CancellationToken ct) =>
         {
             var all = pr.GetValue(allOpt);
+            var update = pr.GetValue(updateOpt);
             var paths = pr.GetValue(pathsArg) ?? [];
 
             try
             {
+                if (update)
+                {
+                    var status = await ctx.Repository.GetStatusAsync(includeUntracked: false, cancellationToken: ct);
+                    var trackedDirty = status.Entries
+                        .Where(e => e.WorkingTreeStatus == GitFileStatus.Modified || e.WorkingTreeStatus == GitFileStatus.Deleted || e.IsConflicted)
+                        .Select(e => e.Path)
+                        .ToList();
+
+                    if (paths.Length == 0 || paths.Contains("."))
+                    {
+                        if (trackedDirty.Count > 0)
+                        {
+                            await ctx.Repository.StageAsync(trackedDirty, ct);
+                        }
+                        return 0;
+                    }
+
+                    var pathsToStage = new List<string>();
+                    foreach (var p in paths)
+                    {
+                        var normalizedP = p.Replace('\\', '/').Trim('/');
+                        var matched = trackedDirty.Where(td => td.Equals(normalizedP, StringComparison.OrdinalIgnoreCase) ||
+                                                               td.StartsWith(normalizedP + "/", StringComparison.OrdinalIgnoreCase) ||
+                                                               MatchesPattern(p, td)).ToList();
+                        pathsToStage.AddRange(matched);
+                    }
+                    var distinctPaths = pathsToStage.Distinct(StringComparer.Ordinal).ToList();
+                    if (distinctPaths.Count > 0)
+                    {
+                        await ctx.Repository.StageAsync(distinctPaths, ct);
+                    }
+                    return 0;
+                }
+
                 if (all || paths.Contains("."))
                 {
                     await ctx.Repository.StageAllAsync(ct);
@@ -32,6 +69,7 @@ internal static class AddCommand
                     return ctx.WriteError("Nothing specified, nothing added. Use 'git add -A' to stage all.");
                 }
 
+                var index = await GitIndex.ReadAsync(ctx.Repository.IndexManager.IndexPath, ctx.Repository.HashLengthBytes, ct);
                 var hasWildcards = paths.Any(p => p.Contains('*') || p.Contains('?'));
                 if (hasWildcards)
                 {
@@ -51,10 +89,32 @@ internal static class AddCommand
                         }
                         else
                         {
+                            var normalized = p.Replace('\\', '/').Trim('/');
+                            var fullPath = Path.Combine(ctx.Repository.RootPath, p.Replace('/', Path.DirectorySeparatorChar));
+                            var existsOnDisk = File.Exists(fullPath) || Directory.Exists(fullPath);
+                            var existsInIndex = index.FindEntry(normalized) != null || index.Entries.Any(e => e.Path.StartsWith(normalized + "/", StringComparison.Ordinal));
+                            if (!existsOnDisk && !existsInIndex)
+                            {
+                                return ctx.WriteFatal($"pathspec '{p}' did not match any files");
+                            }
                             expanded.Add(p);
                         }
                     }
                     paths = expanded.Distinct(StringComparer.Ordinal).ToArray();
+                }
+                else
+                {
+                    foreach (var p in paths)
+                    {
+                        var normalized = p.Replace('\\', '/').Trim('/');
+                        var fullPath = Path.Combine(ctx.Repository.RootPath, p.Replace('/', Path.DirectorySeparatorChar));
+                        var existsOnDisk = File.Exists(fullPath) || Directory.Exists(fullPath);
+                        var existsInIndex = index.FindEntry(normalized) != null || index.Entries.Any(e => e.Path.StartsWith(normalized + "/", StringComparison.Ordinal));
+                        if (!existsOnDisk && !existsInIndex)
+                        {
+                            return ctx.WriteFatal($"pathspec '{p}' did not match any files");
+                        }
+                    }
                 }
 
                 await ctx.Repository.StageAsync(paths, ct);

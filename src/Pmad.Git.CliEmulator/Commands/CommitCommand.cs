@@ -45,6 +45,19 @@ internal static class CommitCommand
                     }
                 }
 
+                if (all)
+                {
+                    var status = await ctx.Repository.GetStatusAsync(includeUntracked: false, cancellationToken: ct);
+                    var trackedDirty = status.Entries
+                        .Where(e => e.WorkingTreeStatus == GitFileStatus.Modified || e.WorkingTreeStatus == GitFileStatus.Deleted || e.IsConflicted)
+                        .Select(e => e.Path)
+                        .ToList();
+                    if (trackedDirty.Count > 0)
+                    {
+                        await ctx.Repository.StageAsync(trackedDirty, ct);
+                    }
+                }
+
                 if (amend)
                 {
                     var headCommit = await ctx.Repository.GetCommitAsync(cancellationToken: ct);
@@ -64,7 +77,7 @@ internal static class CommitCommand
                             ct);
                     }
 
-                    var hash = await ctx.Repository.CommitAmendAsync(message, stageAll: all, cancellationToken: ct);
+                    var hash = await ctx.Repository.CommitAmendAsync(message, stageAll: false, cancellationToken: ct);
                     var currentBranch = await ctx.Repository.GetCurrentBranchNameAsync(ct) ?? "HEAD";
                     await ctx.StdOut.WriteLineAsync($"[{currentBranch} (amend) {hash.ToString()[..7]}] {message ?? "(amended)"}");
                     return 0;
@@ -76,7 +89,7 @@ internal static class CommitCommand
                         return ctx.WriteError("Commit message required. Use -m <message>.");
                     }
 
-                    var hash = await ctx.Repository.CommitAsync(message!, stageAll: all, cancellationToken: ct);
+                    var hash = await ctx.Repository.CommitAsync(message!, stageAll: false, cancellationToken: ct);
                     var branch = await ctx.Repository.GetCurrentBranchNameAsync(ct) ?? "HEAD";
                     await ctx.StdOut.WriteLineAsync($"[{branch} {hash.ToString()[..7]}] {message}");
                     return 0;

@@ -33,7 +33,13 @@ internal static class TagCommand
                     {
                         return ctx.WriteError("Tag name required.");
                     }
-                    await ctx.Repository.DeleteReferenceAsync($"refs/tags/{name}", ct);
+                    var tagRef = $"refs/tags/{name}";
+                    var resolved = await ctx.Repository.ReferenceStore.TryResolveReferenceAsync(tagRef, ct);
+                    if (!resolved.HasValue)
+                    {
+                        return ctx.WriteError($"tag '{name}' not found.");
+                    }
+                    await ctx.Repository.DeleteReferenceAsync(tagRef, ct);
                     await ctx.StdOut.WriteLineAsync($"Deleted tag '{name}'.");
                     return 0;
                 }
