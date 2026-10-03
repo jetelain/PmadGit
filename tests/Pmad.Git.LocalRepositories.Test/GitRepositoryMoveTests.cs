@@ -544,4 +544,171 @@ public class GitRepositoryMoveTests
         var ex = await Assert.ThrowsAsync<InvalidOperationException>(() => repo.MoveAsync("conflicted.txt", "dest.txt"));
         Assert.Contains("conflicted", ex.Message);
     }
+
+    [Fact]
+    public async Task MoveAsync_CaseInsensitiveFs_DuplicateDestinationsDifferentCasing_ThrowsOrSkips()
+    {
+        using var testRepo = GitTestRepository.Create();
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+
+        if (!GitIndexManager.IsFileSystemCaseInsensitive(testRepo.WorkingDirectory))
+        {
+            return;
+        }
+
+        Directory.CreateDirectory(Path.Combine(testRepo.WorkingDirectory, "left"));
+        Directory.CreateDirectory(Path.Combine(testRepo.WorkingDirectory, "right"));
+        Directory.CreateDirectory(Path.Combine(testRepo.WorkingDirectory, "out"));
+        await File.WriteAllTextAsync(Path.Combine(testRepo.WorkingDirectory, "left", "a.txt"), "left A");
+        await File.WriteAllTextAsync(Path.Combine(testRepo.WorkingDirectory, "right", "A.txt"), "right A");
+        await repo.StageAsync(["left/a.txt", "right/A.txt"]);
+        await repo.CommitAsync("Add left and right files");
+
+        // Without skip errors: throws duplicate destination error
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(() => repo.MoveAsync(["left/a.txt", "right/A.txt"], "out"));
+        Assert.Contains("destination exists", ex.Message);
+
+        // With skip errors: removes duplicate destinations and moves nothing
+        var result = await repo.MoveAsync(["left/a.txt", "right/A.txt"], "out", new GitMoveOptions { SkipErrors = true });
+        Assert.Empty(result.MovedItems);
+    }
+
+    [Fact]
+    public async Task MoveAsync_CaseSensitiveVolume_DistinctCaseFiles_ThrowsWithoutForce()
+    {
+        using var testRepo = GitTestRepository.Create();
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+
+        // Force case-sensitive mode for test
+        GitIndexManager.SetFileSystemCaseSensitivityForTest(repo.RootPath, false);
+        try
+        {
+            await File.WriteAllTextAsync(Path.Combine(testRepo.WorkingDirectory, "file.txt"), "lowercase");
+            await repo.StageAsync("file.txt");
+            await repo.CommitAsync("Add file.txt");
+
+            // Also add FILE.TXT to index as a distinct file
+            var index = await GitIndex.ReadAsync(repo.IndexManager.IndexPath, repo.HashLengthBytes);
+            var entry = index.FindEntry("file.txt")!;
+            index.AddOrUpdate(new GitIndexEntry("FILE.TXT", entry.Hash, entry.FileMode));
+            await index.WriteAsync(repo.IndexManager.IndexPath, repo.HashLengthBytes);
+
+            var ex = await Assert.ThrowsAsync<InvalidOperationException>(() => repo.MoveAsync("file.txt", "FILE.TXT"));
+            Assert.Contains("destination exists", ex.Message);
+        }
+        finally
+        {
+            GitIndexManager.SetFileSystemCaseSensitivityForTest(repo.RootPath, null);
+        }
+    }
+
+    [Fact]
+    public async Task MoveAsync_TrackedDirectorySymlink_MovesLinkItselfWithoutTraversing()
+    {
+        using var testRepo = GitTestRepository.Create();
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+
+        var targetDir = Path.Combine(testRepo.WorkingDirectory, "target");
+        Directory.CreateDirectory(targetDir);
+        await File.WriteAllTextAsync(Path.Combine(targetDir, "target_file.txt"), "target data");
+        await repo.StageAsync("target/target_file.txt");
+        await repo.CommitAsync("Add target file");
+
+        var linkPath = Path.Combine(testRepo.WorkingDirectory, "link_to_target");
+        try
+        {
+            Directory.CreateSymbolicLink(linkPath, targetDir);
+        }
+        catch (Exception ex) when (ex is UnauthorizedAccessException or IOException)
+        {
+            // Skip test if symbolic link creation is not supported by environment
+            return;
+        }
+
+        // Add symlink to index with mode 40960 (symlink mode)
+        var index = await GitIndex.ReadAsync(repo.IndexManager.IndexPath, repo.HashLengthBytes);
+        var targetEntry = index.FindEntry("target/target_file.txt")!;
+        index.AddOrUpdate(new GitIndexEntry("link_to_target", targetEntry.Hash, fileMode: 40960));
+        await index.WriteAsync(repo.IndexManager.IndexPath, repo.HashLengthBytes);
+
+        var result = await repo.MoveAsync(["link_to_target"], "new_link_to_target", new GitMoveOptions());
+        Assert.Single(result.MovedItems);
+        Assert.Equal("link_to_target", result.MovedItems[0].SourcePath);
+        Assert.Equal("new_link_to_target", result.MovedItems[0].DestinationPath);
+
+        // Verify index contains new_link_to_target with symlink mode
+        var updatedIndex = await GitIndex.ReadAsync(repo.IndexManager.IndexPath, repo.HashLengthBytes);
+        var movedEntry = updatedIndex.FindEntry("new_link_to_target");
+        Assert.NotNull(movedEntry);
+        Assert.Equal(40960, movedEntry.FileMode);
+        Assert.Null(updatedIndex.FindEntry("link_to_target"));
+
+        // Verify target file still exists
+        Assert.True(File.Exists(Path.Combine(targetDir, "target_file.txt")));
+    }
+
+    [Fact]
+    public async Task MoveAsync_DirectoryMove_TargetAncestorIsIndexedFile_Throws()
+    {
+        using var testRepo = GitTestRepository.Create();
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+
+        // Add tracked file "dest"
+        await File.WriteAllTextAsync(Path.Combine(testRepo.WorkingDirectory, "dest"), "dest content");
+        // Add tracked directory "src/a.txt"
+        Directory.CreateDirectory(Path.Combine(testRepo.WorkingDirectory, "src"));
+        await File.WriteAllTextAsync(Path.Combine(testRepo.WorkingDirectory, "src", "a.txt"), "A");
+        await repo.StageAsync(["dest", "src/a.txt"]);
+        await repo.CommitAsync("Add dest and src/a.txt");
+
+        // Delete "dest" on disk only, leaving it in index
+        File.Delete(Path.Combine(testRepo.WorkingDirectory, "dest"));
+
+        // Moving directory "src" to "dest" should throw because "dest" is an ancestor conflict in index
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(() => repo.MoveAsync("src", "dest"));
+        Assert.Contains("destination exists", ex.Message);
+    }
+
+    [Fact]
+    public async Task MoveAsync_OverlappingSources_Throws()
+    {
+        using var testRepo = GitTestRepository.Create();
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+
+        Directory.CreateDirectory(Path.Combine(testRepo.WorkingDirectory, "src"));
+        await File.WriteAllTextAsync(Path.Combine(testRepo.WorkingDirectory, "src", "a.txt"), "A");
+        Directory.CreateDirectory(Path.Combine(testRepo.WorkingDirectory, "out"));
+        await repo.StageAsync("src/a.txt");
+        await repo.CommitAsync("Add src/a.txt");
+
+        // "src" and "src/a.txt" overlap
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(() => repo.MoveAsync(["src", "src/a.txt"], "out"));
+        Assert.Contains("overlapping source", ex.Message);
+    }
+
+    [Fact]
+    public async Task MoveAsync_SkipErrors_DuplicateSources_DropsWholeDirectory()
+    {
+        using var testRepo = GitTestRepository.Create();
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+
+        Directory.CreateDirectory(Path.Combine(testRepo.WorkingDirectory, "src"));
+        await File.WriteAllTextAsync(Path.Combine(testRepo.WorkingDirectory, "src", "a.txt"), "A");
+        Directory.CreateDirectory(Path.Combine(testRepo.WorkingDirectory, "out"));
+        await repo.StageAsync("src/a.txt");
+        await repo.CommitAsync("Add src/a.txt");
+
+        var result = await repo.MoveAsync(["src", "src"], "out", new GitMoveOptions { SkipErrors = true });
+
+        // Whole directory operation was dropped because child had duplicate destination
+        Assert.Empty(result.MovedItems);
+        Assert.True(Directory.Exists(Path.Combine(testRepo.WorkingDirectory, "src")));
+        Assert.True(File.Exists(Path.Combine(testRepo.WorkingDirectory, "src", "a.txt")));
+        Assert.False(Directory.Exists(Path.Combine(testRepo.WorkingDirectory, "out", "src")));
+
+        var index = await GitIndex.ReadAsync(repo.IndexManager.IndexPath, repo.HashLengthBytes);
+        Assert.NotNull(index.FindEntry("src/a.txt"));
+        Assert.Null(index.FindEntry("out/src/a.txt"));
+    }
 }
+

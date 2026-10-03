@@ -37,4 +37,9 @@ public sealed class GitMoveResult
     /// Gets the list of items that were moved (or would be moved in dry-run mode).
     /// </summary>
     public IReadOnlyList<GitMoveItem> MovedItems { get; init; } = [];
+
+    /// <summary>
+    /// Gets the list of destination files that were overwritten (or would be overwritten in dry-run mode).
+    /// </summary>
+    public IReadOnlyList<string> OverwrittenFiles { get; init; } = [];
 }

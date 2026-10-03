@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.IO;
 using System.Security.Cryptography;
 using System.Text;
@@ -569,7 +570,459 @@ public sealed class GitIndexManager
     }
 
     private sealed record PlannedMove(string SourcePath, string DestinationPath, List<GitIndexEntry> Entries, bool IsCaseOnly);
-    private sealed record PlannedDirMove(string SourceDir, string DestinationDir, bool IsCaseOnly);
+
+    private abstract class PlannedOp
+    {
+        public abstract IReadOnlyList<PlannedMove> FileMoves { get; }
+    }
+
+    private sealed class PlannedFileOp(PlannedMove move) : PlannedOp
+    {
+        public PlannedMove Move { get; } = move;
+        public override IReadOnlyList<PlannedMove> FileMoves => [Move];
+    }
+
+    private sealed class PlannedDirOp(string sourceDir, string destinationDir, bool isCaseOnly, List<PlannedMove> moves) : PlannedOp
+    {
+        public string SourceDir { get; } = sourceDir;
+        public string DestinationDir { get; } = destinationDir;
+        public bool IsCaseOnly { get; } = isCaseOnly;
+        public List<PlannedMove> Moves { get; } = moves;
+        public override IReadOnlyList<PlannedMove> FileMoves => Moves;
+    }
+
+    private interface IJournalAction : IDisposable
+    {
+        void Rollback();
+        void Commit();
+    }
+
+    private sealed class FilesystemJournal : IDisposable
+    {
+        private readonly List<IJournalAction> _actions = new();
+        private bool _committed;
+
+        public void Record(IJournalAction action) => _actions.Add(action);
+
+        public void MoveFile(string source, string destination, bool force)
+        {
+            var action = new MoveFileAction(source, destination, force);
+            action.Execute();
+            Record(action);
+        }
+
+        public void MoveCaseOnlyFile(string source, string destination)
+        {
+            var action = new MoveCaseOnlyFileAction(source, destination);
+            action.Execute();
+            Record(action);
+        }
+
+        public void MoveDirectory(string source, string destination)
+        {
+            var action = new MoveDirectoryAction(source, destination);
+            action.Execute();
+            Record(action);
+        }
+
+        public void MoveCaseOnlyDirectory(string source, string destination)
+        {
+            var action = new MoveCaseOnlyDirectoryAction(source, destination);
+            action.Execute();
+            Record(action);
+        }
+
+        public void MoveDirectoryLink(string source, string destination, bool force)
+        {
+            var action = new MoveDirectoryLinkAction(source, destination, force);
+            action.Execute();
+            Record(action);
+        }
+
+        public void EnsureDirectory(string path)
+        {
+            if (!Directory.Exists(path))
+            {
+                var action = new EnsureDirectoryAction(path);
+                action.Execute();
+                Record(action);
+            }
+        }
+
+        public void DeleteEmptyDirectory(string path)
+        {
+            var action = new DeleteEmptyDirectoryAction(path);
+            action.Execute();
+            Record(action);
+        }
+
+        public void Rollback()
+        {
+            if (_committed) return;
+            for (var i = _actions.Count - 1; i >= 0; i--)
+            {
+                try
+                {
+                    _actions[i].Rollback();
+                }
+                catch { /* best-effort rollback */ }
+            }
+        }
+
+        public void Commit()
+        {
+            _committed = true;
+            foreach (var action in _actions)
+            {
+                try
+                {
+                    action.Commit();
+                }
+                catch { /* best-effort commit */ }
+            }
+        }
+
+        public void Dispose()
+        {
+            if (!_committed)
+            {
+                Rollback();
+            }
+            foreach (var action in _actions)
+            {
+                action.Dispose();
+            }
+        }
+    }
+
+    private sealed class MoveFileAction(string source, string destination, bool force) : IJournalAction
+    {
+        private string? _backupPath;
+
+        public void Execute()
+        {
+            if (File.Exists(destination))
+            {
+                if (!force)
+                {
+                    throw new IOException($"Destination file '{destination}' already exists.");
+                }
+                _backupPath = destination + "_git_mv_bak_" + Guid.NewGuid().ToString("N");
+                File.Move(destination, _backupPath);
+            }
+            File.Move(source, destination);
+        }
+
+        public void Rollback()
+        {
+            if (File.Exists(destination))
+            {
+                File.Move(destination, source, overwrite: true);
+            }
+            if (_backupPath != null && File.Exists(_backupPath))
+            {
+                File.Move(_backupPath, destination, overwrite: true);
+            }
+        }
+
+        public void Commit()
+        {
+            if (_backupPath != null && File.Exists(_backupPath))
+            {
+                try { File.Delete(_backupPath); } catch { }
+            }
+        }
+
+        public void Dispose() => Commit();
+    }
+
+    private sealed class MoveCaseOnlyFileAction(string source, string destination) : IJournalAction
+    {
+        private string? _tempPath;
+
+        public void Execute()
+        {
+            _tempPath = source + "_git_mv_temp_" + Guid.NewGuid().ToString("N");
+            File.Move(source, _tempPath);
+            File.Move(_tempPath, destination);
+        }
+
+        public void Rollback()
+        {
+            if (_tempPath != null)
+            {
+                if (File.Exists(destination))
+                {
+                    File.Move(destination, _tempPath);
+                    File.Move(_tempPath, source);
+                }
+                else if (File.Exists(_tempPath))
+                {
+                    File.Move(_tempPath, source);
+                }
+            }
+        }
+
+        public void Commit() { }
+        public void Dispose() { }
+    }
+
+    private sealed class MoveDirectoryAction(string source, string destination) : IJournalAction
+    {
+        public void Execute()
+        {
+            Directory.Move(source, destination);
+        }
+
+        public void Rollback()
+        {
+            if (Directory.Exists(destination) && !Directory.Exists(source))
+            {
+                Directory.Move(destination, source);
+            }
+        }
+
+        public void Commit() { }
+        public void Dispose() { }
+    }
+
+    private sealed class MoveCaseOnlyDirectoryAction(string source, string destination) : IJournalAction
+    {
+        private string? _tempPath;
+
+        public void Execute()
+        {
+            _tempPath = source + "_git_mv_temp_" + Guid.NewGuid().ToString("N");
+            Directory.Move(source, _tempPath);
+            Directory.Move(_tempPath, destination);
+        }
+
+        public void Rollback()
+        {
+            if (_tempPath != null)
+            {
+                if (Directory.Exists(destination))
+                {
+                    Directory.Move(destination, _tempPath);
+                    Directory.Move(_tempPath, source);
+                }
+                else if (Directory.Exists(_tempPath))
+                {
+                    Directory.Move(_tempPath, source);
+                }
+            }
+        }
+
+        public void Commit() { }
+        public void Dispose() { }
+    }
+
+    private sealed class MoveDirectoryLinkAction(string source, string destination, bool force) : IJournalAction
+    {
+        private string? _backupPath;
+
+        public void Execute()
+        {
+            if (Directory.Exists(destination) || File.Exists(destination))
+            {
+                if (!force)
+                {
+                    throw new IOException($"Destination '{destination}' already exists.");
+                }
+                _backupPath = destination + "_git_mv_bak_" + Guid.NewGuid().ToString("N");
+                if (Directory.Exists(destination))
+                {
+                    Directory.Move(destination, _backupPath);
+                }
+                else
+                {
+                    File.Move(destination, _backupPath);
+                }
+            }
+            Directory.Move(source, destination);
+        }
+
+        public void Rollback()
+        {
+            if (Directory.Exists(destination))
+            {
+                Directory.Move(destination, source);
+            }
+            if (_backupPath != null)
+            {
+                if (Directory.Exists(_backupPath))
+                {
+                    Directory.Move(_backupPath, destination);
+                }
+                else if (File.Exists(_backupPath))
+                {
+                    File.Move(_backupPath, destination);
+                }
+            }
+        }
+
+        public void Commit()
+        {
+            if (_backupPath != null)
+            {
+                if (Directory.Exists(_backupPath))
+                {
+                    try { Directory.Delete(_backupPath, recursive: true); } catch { }
+                }
+                else if (File.Exists(_backupPath))
+                {
+                    try { File.Delete(_backupPath); } catch { }
+                }
+            }
+        }
+
+        public void Dispose() => Commit();
+    }
+
+    private sealed class EnsureDirectoryAction(string path) : IJournalAction
+    {
+        private bool _created;
+
+        public void Execute()
+        {
+            if (!Directory.Exists(path))
+            {
+                Directory.CreateDirectory(path);
+                _created = true;
+            }
+        }
+
+        public void Rollback()
+        {
+            if (_created && Directory.Exists(path) && !Directory.EnumerateFileSystemEntries(path).Any())
+            {
+                try { Directory.Delete(path); } catch { }
+            }
+        }
+
+        public void Commit() { }
+        public void Dispose() { }
+    }
+
+    private sealed class DeleteEmptyDirectoryAction(string path) : IJournalAction
+    {
+        public void Execute()
+        {
+            if (Directory.Exists(path) && !Directory.EnumerateFileSystemEntries(path).Any())
+            {
+                Directory.Delete(path);
+            }
+        }
+
+        public void Rollback()
+        {
+            if (!Directory.Exists(path))
+            {
+                try { Directory.CreateDirectory(path); } catch { }
+            }
+        }
+
+        public void Commit() { }
+        public void Dispose() { }
+    }
+
+    private static readonly ConcurrentDictionary<string, bool> _caseSensitivityCache = new(StringComparer.Ordinal);
+    private static readonly ConcurrentDictionary<string, bool> _caseSensitivityOverrides = new(StringComparer.Ordinal);
+
+    internal static void SetFileSystemCaseSensitivityForTest(string directory, bool? isCaseInsensitive)
+    {
+        var normalized = Path.GetFullPath(directory);
+        if (isCaseInsensitive.HasValue)
+        {
+            _caseSensitivityOverrides[normalized] = isCaseInsensitive.Value;
+        }
+        else
+        {
+            _caseSensitivityOverrides.TryRemove(normalized, out _);
+        }
+    }
+
+    /// <summary>
+    /// Determines whether the filesystem hosting the specified directory is case-insensitive.
+    /// </summary>
+    /// <param name="directory">Directory path to probe.</param>
+    /// <returns><see langword="true"/> if the filesystem is case-insensitive; otherwise, <see langword="false"/>.</returns>
+    public static bool IsFileSystemCaseInsensitive(string directory)
+    {
+        var normalized = Path.GetFullPath(directory);
+        if (_caseSensitivityOverrides.TryGetValue(normalized, out var overridden))
+        {
+            return overridden;
+        }
+
+        return _caseSensitivityCache.GetOrAdd(normalized, dir =>
+        {
+            try
+            {
+                var probeDir = Directory.Exists(Path.Combine(dir, ".git"))
+                    ? Path.Combine(dir, ".git")
+                    : dir;
+
+                if (Directory.Exists(probeDir))
+                {
+                    var probeName = "case_probe_" + Guid.NewGuid().ToString("N").ToLowerInvariant();
+                    var probePath = Path.Combine(probeDir, probeName);
+                    File.WriteAllText(probePath, "");
+                    try
+                    {
+                        return File.Exists(Path.Combine(probeDir, probeName.ToUpperInvariant()));
+                    }
+                    finally
+                    {
+                        try { File.Delete(probePath); } catch { }
+                    }
+                }
+            }
+            catch
+            {
+                // Fallback if probe fails
+            }
+            return OperatingSystem.IsWindows();
+        });
+    }
+
+    /// <summary>
+    /// Determines whether two filesystem paths identify the same entry on disk.
+    /// </summary>
+    /// <param name="full1">First full path.</param>
+    /// <param name="full2">Second full path.</param>
+    /// <param name="workingDir">Repository working directory used to evaluate filesystem case-sensitivity.</param>
+    /// <returns><see langword="true"/> if both paths identify the same entry; otherwise, <see langword="false"/>.</returns>
+    public static bool AreSameFileSystemEntry(string full1, string full2, string workingDir)
+    {
+        if (string.Equals(full1, full2, StringComparison.Ordinal))
+        {
+            return true;
+        }
+        if (!string.Equals(full1, full2, StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+        if (!IsFileSystemCaseInsensitive(workingDir))
+        {
+            return false;
+        }
+        var p1 = Path.GetFullPath(full1);
+        var p2 = Path.GetFullPath(full2);
+        if (File.Exists(p1) && File.Exists(p2))
+        {
+            return true;
+        }
+        if (Directory.Exists(p1) && Directory.Exists(p2))
+        {
+            return true;
+        }
+        if (!File.Exists(p1) && !File.Exists(p2) && !Directory.Exists(p1) && !Directory.Exists(p2))
+        {
+            return true;
+        }
+        return false;
+    }
 
     /// <summary>
     /// Moves or renames a tracked file or directory in the working tree and index.
@@ -628,7 +1081,9 @@ public sealed class GitIndexManager
         CancellationToken cancellationToken)
     {
         var index = await GitIndex.ReadAsync(IndexPath, _repository.HashLengthBytes, cancellationToken).ConfigureAwait(false);
-        var isCaseInsensitiveFs = OperatingSystem.IsWindows() || OperatingSystem.IsMacOS();
+        var isCaseInsensitiveFs = IsFileSystemCaseInsensitive(WorkingDirectory);
+        var pathComparer = isCaseInsensitiveFs ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal;
+        var pathComparison = isCaseInsensitiveFs ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
         var destHasTrailingSlash = destinationPath.EndsWith('/') || destinationPath.EndsWith('\\');
 
         string normalizedDest;
@@ -664,17 +1119,14 @@ public sealed class GitIndexManager
             return string.IsNullOrEmpty(dir) ? file : dir + "/" + file;
         }
 
-        var plannedFileMoves = new List<PlannedMove>();
-        var plannedDirMoves = new List<PlannedDirMove>();
-
+        // Normalize source paths and check for overlapping or duplicate sources
+        var normalizedSources = new List<(string Original, string Normalized)>();
         foreach (var source in sourcesList)
         {
-            cancellationToken.ThrowIfCancellationRequested();
-
-            string normalizedSrc;
+            string norm;
             try
             {
-                normalizedSrc = NormalizeAndValidateRelativePath(source);
+                norm = NormalizeAndValidateRelativePath(source);
             }
             catch
             {
@@ -684,29 +1136,80 @@ public sealed class GitIndexManager
                 }
                 throw;
             }
+            normalizedSources.Add((source, norm));
+        }
+
+        var skippedSources = new HashSet<string>(pathComparer);
+        for (var i = 0; i < normalizedSources.Count; i++)
+        {
+            for (var j = i + 1; j < normalizedSources.Count; j++)
+            {
+                var s1 = normalizedSources[i].Normalized;
+                var s2 = normalizedSources[j].Normalized;
+                if (s1.Equals(s2, pathComparison) ||
+                    s2.StartsWith(s1 + "/", pathComparison) ||
+                    s1.StartsWith(s2 + "/", pathComparison))
+                {
+                    if (!opt.SkipErrors)
+                    {
+                        throw new InvalidOperationException($"cannot move '{normalizedSources[j].Original}': overlapping source");
+                    }
+                    skippedSources.Add(normalizedSources[j].Normalized);
+                    skippedSources.Add(normalizedSources[i].Normalized);
+                }
+            }
+        }
+
+        var operations = new List<PlannedOp>();
+
+        foreach (var (origSource, normalizedSrc) in normalizedSources)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            if (skippedSources.Contains(normalizedSrc))
+            {
+                continue;
+            }
 
             var fullSrc = Path.Combine(WorkingDirectory, normalizedSrc);
-            var srcIsFile = File.Exists(fullSrc);
-            var srcIsDir = Directory.Exists(fullSrc);
+            var exactEntry = index.Entries.FirstOrDefault(e => e.Path.Equals(normalizedSrc, StringComparison.Ordinal));
+            FileSystemInfo? fullSrcInfo = Directory.Exists(fullSrc) ? new DirectoryInfo(fullSrc) : (File.Exists(fullSrc) ? new FileInfo(fullSrc) : null);
+            var isSymlinkOnDisk = fullSrcInfo != null && ((fullSrcInfo.Attributes & FileAttributes.ReparsePoint) != 0 || fullSrcInfo.LinkTarget != null);
 
-            if (!srcIsFile && !srcIsDir)
+            bool srcIsFile;
+
+            if (exactEntry != null)
             {
-                if (index.Entries.Any(e => e.Path.Equals(normalizedSrc, StringComparison.Ordinal)))
+                // Tracked leaf entry in index (file or symlink)
+                srcIsFile = true;
+            }
+            else if (isSymlinkOnDisk && !Directory.Exists(fullSrc))
+            {
+                srcIsFile = true;
+            }
+            else if (File.Exists(fullSrc))
+            {
+                srcIsFile = true;
+            }
+            else if (Directory.Exists(fullSrc))
+            {
+                srcIsFile = false;
+            }
+            else if (index.Entries.Any(e => e.Path.Equals(normalizedSrc, StringComparison.Ordinal)))
+            {
+                srcIsFile = true;
+            }
+            else if (index.Entries.Any(e => e.Path.StartsWith(normalizedSrc + "/", StringComparison.Ordinal)))
+            {
+                srcIsFile = false;
+            }
+            else
+            {
+                if (opt.SkipErrors)
                 {
-                    srcIsFile = true;
+                    continue;
                 }
-                else if (index.Entries.Any(e => e.Path.StartsWith(normalizedSrc + "/", StringComparison.Ordinal)))
-                {
-                    srcIsDir = true;
-                }
-                else
-                {
-                    if (opt.SkipErrors)
-                    {
-                        continue;
-                    }
-                    throw new FileNotFoundException($"bad source, source={source}, destination={destinationPath}");
-                }
+                throw new FileNotFoundException($"bad source, source={origSource}, destination={destinationPath}");
             }
 
             if (srcIsFile)
@@ -718,7 +1221,7 @@ public sealed class GitIndexManager
                     {
                         continue;
                     }
-                    throw new InvalidOperationException($"not under version control, source={source}, destination={destinationPath}");
+                    throw new InvalidOperationException($"not under version control, source={origSource}, destination={destinationPath}");
                 }
 
                 if (fileEntries.Any(e => e.Stage != 0))
@@ -727,7 +1230,7 @@ public sealed class GitIndexManager
                     {
                         continue;
                     }
-                    throw new InvalidOperationException($"conflicted, source={source}, destination={destinationPath}");
+                    throw new InvalidOperationException($"conflicted, source={origSource}, destination={destinationPath}");
                 }
 
                 var destFilePath = destIsDir
@@ -753,7 +1256,7 @@ public sealed class GitIndexManager
                     {
                         continue;
                     }
-                    throw new InvalidOperationException($"destination exists, source={source}, destination={destinationPath}");
+                    throw new InvalidOperationException($"destination exists, source={origSource}, destination={destinationPath}");
                 }
 
                 // Reject if target has indexed descendants (file/directory conflict in index)
@@ -763,7 +1266,7 @@ public sealed class GitIndexManager
                     {
                         continue;
                     }
-                    throw new InvalidOperationException($"destination exists, source={source}, destination={destFilePath}");
+                    throw new InvalidOperationException($"destination exists, source={origSource}, destination={destFilePath}");
                 }
 
                 // Reject if any ancestor of target is an indexed file
@@ -785,7 +1288,7 @@ public sealed class GitIndexManager
                     {
                         continue;
                     }
-                    throw new InvalidOperationException($"destination exists, source={source}, destination={destFilePath}");
+                    throw new InvalidOperationException($"destination exists, source={origSource}, destination={destFilePath}");
                 }
 
                 var destEntries = index.Entries.Where(e => e.Path.Equals(destFilePath, StringComparison.Ordinal)).ToList();
@@ -795,13 +1298,16 @@ public sealed class GitIndexManager
                     {
                         continue;
                     }
-                    throw new InvalidOperationException($"conflicted, source={source}, destination={destFilePath}");
+                    throw new InvalidOperationException($"conflicted, source={origSource}, destination={destFilePath}");
                 }
 
                 var fullDestFilePath = Path.Combine(WorkingDirectory, destFilePath);
                 var destExistsOnDisk = File.Exists(fullDestFilePath) || Directory.Exists(fullDestFilePath);
                 var destExistsInIndex = destEntries.Count > 0;
-                var isCaseOnlyRename = isCaseInsensitiveFs && normalizedSrc.Equals(destFilePath, StringComparison.OrdinalIgnoreCase);
+                var isCaseOnlyRename = isCaseInsensitiveFs &&
+                    normalizedSrc.Equals(destFilePath, StringComparison.OrdinalIgnoreCase) &&
+                    !normalizedSrc.Equals(destFilePath, StringComparison.Ordinal) &&
+                    AreSameFileSystemEntry(fullSrc, fullDestFilePath, WorkingDirectory);
 
                 if (!isCaseOnlyRename && (destExistsOnDisk || destExistsInIndex) && !opt.Force)
                 {
@@ -809,10 +1315,10 @@ public sealed class GitIndexManager
                     {
                         continue;
                     }
-                    throw new InvalidOperationException($"destination exists, source={source}, destination={destFilePath}");
+                    throw new InvalidOperationException($"destination exists, source={origSource}, destination={destFilePath}");
                 }
 
-                plannedFileMoves.Add(new PlannedMove(normalizedSrc, destFilePath, fileEntries, isCaseOnlyRename));
+                operations.Add(new PlannedFileOp(new PlannedMove(normalizedSrc, destFilePath, fileEntries, isCaseOnlyRename)));
             }
             else // srcIsDir
             {
@@ -824,7 +1330,7 @@ public sealed class GitIndexManager
                     {
                         continue;
                     }
-                    throw new InvalidOperationException($"not under version control, source={source}, destination={destinationPath}");
+                    throw new InvalidOperationException($"not under version control, source={origSource}, destination={destinationPath}");
                 }
 
                 if (dirEntries.Any(e => e.Stage != 0))
@@ -833,12 +1339,14 @@ public sealed class GitIndexManager
                     {
                         continue;
                     }
-                    throw new InvalidOperationException($"conflicted, source={source}, destination={destinationPath}");
+                    throw new InvalidOperationException($"conflicted, source={origSource}, destination={destinationPath}");
                 }
 
+                var fullDestDir = Path.Combine(WorkingDirectory, normalizedDest);
                 var isCaseOnlyDirRename = isCaseInsensitiveFs &&
                     normalizedSrc.Equals(normalizedDest, StringComparison.OrdinalIgnoreCase) &&
-                    !normalizedSrc.Equals(normalizedDest, StringComparison.Ordinal);
+                    !normalizedSrc.Equals(normalizedDest, StringComparison.Ordinal) &&
+                    AreSameFileSystemEntry(fullSrc, fullDestDir, WorkingDirectory);
 
                 string finalDestDir;
                 if (destIsDir && !isCaseOnlyDirRename)
@@ -858,7 +1366,7 @@ public sealed class GitIndexManager
                     {
                         continue;
                     }
-                    throw new InvalidOperationException($"can not move directory into itself, source={source}, destination={destinationPath}");
+                    throw new InvalidOperationException($"can not move directory into itself, source={origSource}, destination={destinationPath}");
                 }
 
                 if (finalDestDir.StartsWith(normalizedSrc + "/", StringComparison.Ordinal) ||
@@ -868,7 +1376,7 @@ public sealed class GitIndexManager
                     {
                         continue;
                     }
-                    throw new InvalidOperationException($"can not move directory into itself, source={source}, destination={destinationPath}");
+                    throw new InvalidOperationException($"can not move directory into itself, source={origSource}, destination={destinationPath}");
                 }
 
                 var grouped = dirEntries.GroupBy(e => e.Path, StringComparer.Ordinal);
@@ -906,6 +1414,29 @@ public sealed class GitIndexManager
                         throw new InvalidOperationException($"destination exists, source={g.Key}, destination={targetFilePath}");
                     }
 
+                    // Reject if any ancestor of target is an indexed file
+                    var segs = targetFilePath.Split('/');
+                    var ancestorConflict = false;
+                    var currentAncestor = "";
+                    for (var s = 0; s < segs.Length - 1; s++)
+                    {
+                        currentAncestor = CombineRelative(currentAncestor, segs[s]);
+                        if (index.Entries.Any(e => e.Path.Equals(currentAncestor, StringComparison.Ordinal)))
+                        {
+                            ancestorConflict = true;
+                            break;
+                        }
+                    }
+                    if (ancestorConflict)
+                    {
+                        if (opt.SkipErrors)
+                        {
+                            hasErrorInDir = true;
+                            break;
+                        }
+                        throw new InvalidOperationException($"destination exists, source={g.Key}, destination={targetFilePath}");
+                    }
+
                     // Reject if destination entry has unresolved conflict
                     var targetEntries = index.Entries.Where(e => e.Path.Equals(targetFilePath, StringComparison.Ordinal)).ToList();
                     if (targetEntries.Any(e => e.Stage != 0))
@@ -920,7 +1451,10 @@ public sealed class GitIndexManager
 
                     var fullTarget = Path.Combine(WorkingDirectory, targetFilePath);
                     var targetExists = File.Exists(fullTarget) || Directory.Exists(fullTarget) || targetEntries.Count > 0;
-                    var isCaseOnly = isCaseInsensitiveFs && g.Key.Equals(targetFilePath, StringComparison.OrdinalIgnoreCase);
+                    var isCaseOnly = isCaseInsensitiveFs &&
+                        g.Key.Equals(targetFilePath, StringComparison.OrdinalIgnoreCase) &&
+                        !g.Key.Equals(targetFilePath, StringComparison.Ordinal) &&
+                        AreSameFileSystemEntry(Path.Combine(WorkingDirectory, g.Key), fullTarget, WorkingDirectory);
 
                     if (!isCaseOnly && targetExists && !opt.Force)
                     {
@@ -937,289 +1471,440 @@ public sealed class GitIndexManager
 
                 if (!hasErrorInDir)
                 {
-                    plannedFileMoves.AddRange(dirPlannedMoves);
-                    plannedDirMoves.Add(new PlannedDirMove(normalizedSrc, finalDestDir, isCaseOnlyDirRename));
+                    operations.Add(new PlannedDirOp(normalizedSrc, finalDestDir, isCaseOnlyDirRename, dirPlannedMoves));
                 }
             }
         }
 
-        // Filter every duplicate-destination group
-        var duplicateGroups = plannedFileMoves.GroupBy(p => p.DestinationPath, StringComparer.Ordinal)
+        // Filter every duplicate-destination group across all operations
+        var allPlannedMoves = operations.SelectMany(op => op.FileMoves).ToList();
+        var duplicateDestGroups = allPlannedMoves.GroupBy(p => p.DestinationPath, pathComparer)
             .Where(g => g.Count() > 1)
             .ToList();
-        if (duplicateGroups.Count > 0)
+        if (duplicateDestGroups.Count > 0)
         {
             if (!opt.SkipErrors)
             {
-                throw new InvalidOperationException($"destination exists, source={duplicateGroups[0].Last().SourcePath}, destination={duplicateGroups[0].Key}");
+                throw new InvalidOperationException($"destination exists, source={duplicateDestGroups[0].Last().SourcePath}, destination={duplicateDestGroups[0].Key}");
             }
-            foreach (var group in duplicateGroups)
+            var duplicateDestKeys = new HashSet<string>(duplicateDestGroups.Select(g => g.Key), pathComparer);
+            operations.RemoveAll(op => op.FileMoves.Any(m => duplicateDestKeys.Contains(m.DestinationPath)));
+        }
+
+        // Filter every duplicate-source group across all operations
+        var duplicateSourceGroups = operations.SelectMany(op => op.FileMoves)
+            .GroupBy(p => p.SourcePath, StringComparer.Ordinal)
+            .Where(g => g.Count() > 1)
+            .ToList();
+        if (duplicateSourceGroups.Count > 0)
+        {
+            if (!opt.SkipErrors)
             {
-                plannedFileMoves.RemoveAll(p => p.DestinationPath.Equals(group.Key, StringComparison.Ordinal));
+                throw new InvalidOperationException($"cannot move '{duplicateSourceGroups[0].Key}': multiple move destinations specified");
             }
+            var duplicateSourceKeys = new HashSet<string>(duplicateSourceGroups.Select(g => g.Key), StringComparer.Ordinal);
+            operations.RemoveAll(op => op.FileMoves.Any(m => duplicateSourceKeys.Contains(m.SourcePath)));
         }
 
         // Preflight destination types: File.Move cannot overwrite a directory with a file
         var rootFull = Path.GetFullPath(WorkingDirectory);
-        var invalidPlannedMoves = new HashSet<PlannedMove>();
-        foreach (var planned in plannedFileMoves)
+        var invalidOperations = new HashSet<PlannedOp>();
+        foreach (var op in operations)
         {
-            var dstFull = Path.Combine(WorkingDirectory, planned.DestinationPath);
-            if (Directory.Exists(dstFull))
+            if (op is PlannedDirOp dirOp)
             {
-                if (!opt.SkipErrors)
+                var dstDirFull = Path.Combine(WorkingDirectory, dirOp.DestinationDir);
+                var current = dstDirFull;
+                while (!string.IsNullOrEmpty(current) && !current.Equals(rootFull, StringComparison.OrdinalIgnoreCase))
                 {
-                    throw new InvalidOperationException($"destination exists, source={planned.SourcePath}, destination={planned.DestinationPath}");
+                    if (File.Exists(current))
+                    {
+                        if (!opt.SkipErrors)
+                        {
+                            throw new InvalidOperationException($"cannot create directory '{current}' because a file exists with that name");
+                        }
+                        invalidOperations.Add(op);
+                        break;
+                    }
+                    current = Path.GetDirectoryName(current);
                 }
-                invalidPlannedMoves.Add(planned);
-                continue;
             }
 
-            var parent = Path.GetDirectoryName(dstFull);
-            while (!string.IsNullOrEmpty(parent) && !parent.Equals(rootFull, StringComparison.OrdinalIgnoreCase))
+            foreach (var planned in op.FileMoves)
             {
-                if (File.Exists(parent))
+                var dstFull = Path.Combine(WorkingDirectory, planned.DestinationPath);
+                if (Directory.Exists(dstFull))
                 {
                     if (!opt.SkipErrors)
                     {
-                        throw new InvalidOperationException($"cannot create directory '{parent}' because a file exists with that name");
+                        throw new InvalidOperationException($"destination exists, source={planned.SourcePath}, destination={planned.DestinationPath}");
                     }
-                    invalidPlannedMoves.Add(planned);
+                    invalidOperations.Add(op);
                     break;
                 }
-                parent = Path.GetDirectoryName(parent);
+
+                var parent = Path.GetDirectoryName(dstFull);
+                while (!string.IsNullOrEmpty(parent) && !parent.Equals(rootFull, StringComparison.OrdinalIgnoreCase))
+                {
+                    if (File.Exists(parent))
+                    {
+                        if (!opt.SkipErrors)
+                        {
+                            throw new InvalidOperationException($"cannot create directory '{parent}' because a file exists with that name");
+                        }
+                        invalidOperations.Add(op);
+                        break;
+                    }
+                    parent = Path.GetDirectoryName(parent);
+                }
             }
         }
 
-        if (invalidPlannedMoves.Count > 0)
+        if (invalidOperations.Count > 0)
         {
-            plannedFileMoves.RemoveAll(invalidPlannedMoves.Contains);
+            operations.RemoveAll(invalidOperations.Contains);
         }
+
+        // Preflight directory merges, link validation, and collection of overwritten files
+        var overwrittenFilesList = new List<string>();
+        foreach (var op in operations)
+        {
+            if (op is PlannedDirOp dirOp)
+            {
+                var srcDirFull = Path.Combine(WorkingDirectory, dirOp.SourceDir);
+                var dstDirFull = Path.Combine(WorkingDirectory, dirOp.DestinationDir);
+                if (Directory.Exists(srcDirFull) && Directory.Exists(dstDirFull) && !dirOp.IsCaseOnly)
+                {
+                    ValidateDirectoryMerge(srcDirFull, dstDirFull, opt.Force, rootFull, isCaseInsensitiveFs, overwrittenFilesList);
+                }
+            }
+            foreach (var move in op.FileMoves)
+            {
+                var dstFull = Path.Combine(WorkingDirectory, move.DestinationPath);
+                if (!move.IsCaseOnly && (File.Exists(dstFull) || Directory.Exists(dstFull) || index.Entries.Any(e => e.Path.Equals(move.DestinationPath, StringComparison.Ordinal))))
+                {
+                    overwrittenFilesList.Add(move.DestinationPath);
+                }
+            }
+        }
+
+        var finalPlannedFileMoves = operations.SelectMany(op => op.FileMoves).ToList();
 
         if (opt.DryRun)
         {
             return new GitMoveResult
             {
-                MovedItems = plannedFileMoves.Select(p => new GitMoveItem(p.SourcePath, p.DestinationPath)).ToList()
+                MovedItems = finalPlannedFileMoves.Select(p => new GitMoveItem(p.SourcePath, p.DestinationPath)).ToList(),
+                OverwrittenFiles = overwrittenFilesList.Distinct(pathComparer).ToList()
             };
         }
 
-        // Execute filesystem directory moves first
-        var completedFilesystemMoves = new List<(string From, string To)>();
+        // Execute filesystem directory and file moves with journaling rollback
+        using var journal = new FilesystemJournal();
         try
         {
-            foreach (var dirMove in plannedDirMoves)
+            foreach (var op in operations)
             {
-                var srcDirFull = Path.Combine(WorkingDirectory, dirMove.SourceDir);
-                var dstDirFull = Path.Combine(WorkingDirectory, dirMove.DestinationDir);
-
-                if (Directory.Exists(srcDirFull))
+                if (op is PlannedDirOp dirOp)
                 {
-                    if (dirMove.IsCaseOnly && isCaseInsensitiveFs)
+                    var srcDirFull = Path.Combine(WorkingDirectory, dirOp.SourceDir);
+                    var dstDirFull = Path.Combine(WorkingDirectory, dirOp.DestinationDir);
+
+                    if (Directory.Exists(srcDirFull))
                     {
-                        var tempDir = srcDirFull + "_git_mv_temp_" + Guid.NewGuid().ToString("N");
-                        Directory.Move(srcDirFull, tempDir);
-                        Directory.Move(tempDir, dstDirFull);
-                        completedFilesystemMoves.Add((srcDirFull, dstDirFull));
-                    }
-                    else if (!Directory.Exists(dstDirFull))
-                    {
-                        var parentDst = Path.GetDirectoryName(dstDirFull);
-                        if (!string.IsNullOrEmpty(parentDst))
+                        if (dirOp.IsCaseOnly && isCaseInsensitiveFs)
                         {
-                            Directory.CreateDirectory(parentDst);
+                            journal.MoveCaseOnlyDirectory(srcDirFull, dstDirFull);
                         }
-                        Directory.Move(srcDirFull, dstDirFull);
-                        completedFilesystemMoves.Add((srcDirFull, dstDirFull));
-                    }
-                    else
-                    {
-                        // Target directory already exists: move all items from src into dst
-                        MoveDirectoryContents(srcDirFull, dstDirFull, opt.Force);
+                        else if (!Directory.Exists(dstDirFull))
+                        {
+                            var parentDst = Path.GetDirectoryName(dstDirFull);
+                            if (!string.IsNullOrEmpty(parentDst))
+                            {
+                                journal.EnsureDirectory(parentDst);
+                            }
+                            journal.MoveDirectory(srcDirFull, dstDirFull);
+                        }
+                        else
+                        {
+                            // Target directory already exists: merge contents with link safety
+                            MoveDirectoryContents(journal, srcDirFull, dstDirFull, opt.Force, rootFull);
+                        }
                     }
                 }
-            }
-
-            // Move any remaining individual files (whose parent directory wasn't moved as a whole)
-            foreach (var planned in plannedFileMoves)
-            {
-                var srcFull = Path.Combine(WorkingDirectory, planned.SourcePath);
-                var dstFull = Path.Combine(WorkingDirectory, planned.DestinationPath);
-
-                if (File.Exists(srcFull))
+                else if (op is PlannedFileOp fileOp)
                 {
+                    var srcFull = Path.Combine(WorkingDirectory, fileOp.Move.SourcePath);
+                    var dstFull = Path.Combine(WorkingDirectory, fileOp.Move.DestinationPath);
+                    var srcIsSymlinkDir = Directory.Exists(srcFull) &&
+                        ((File.GetAttributes(srcFull) & FileAttributes.ReparsePoint) != 0 || new DirectoryInfo(srcFull).LinkTarget != null);
+
                     var dstDir = Path.GetDirectoryName(dstFull);
                     if (!string.IsNullOrEmpty(dstDir))
                     {
-                        Directory.CreateDirectory(dstDir);
+                        journal.EnsureDirectory(dstDir);
                     }
-                    if (planned.IsCaseOnly && isCaseInsensitiveFs)
+
+                    if (srcIsSymlinkDir)
                     {
-                        var tempFile = srcFull + "_git_mv_temp_" + Guid.NewGuid().ToString("N");
-                        File.Move(srcFull, tempFile);
-                        File.Move(tempFile, dstFull);
-                        completedFilesystemMoves.Add((srcFull, dstFull));
+                        journal.MoveDirectoryLink(srcFull, dstFull, opt.Force);
+                    }
+                    else if (File.Exists(srcFull))
+                    {
+                        if (fileOp.Move.IsCaseOnly && isCaseInsensitiveFs)
+                        {
+                            journal.MoveCaseOnlyFile(srcFull, dstFull);
+                        }
+                        else
+                        {
+                            journal.MoveFile(srcFull, dstFull, opt.Force);
+                        }
+                    }
+                }
+            }
+
+            // Update index entries
+            foreach (var planned in finalPlannedFileMoves)
+            {
+                var dstFull = Path.Combine(WorkingDirectory, planned.DestinationPath);
+
+                index.Remove(planned.DestinationPath, stage: 0);
+                index.Remove(planned.DestinationPath, stage: 1);
+                index.Remove(planned.DestinationPath, stage: 2);
+                index.Remove(planned.DestinationPath, stage: 3);
+
+                var fileOnDisk = File.Exists(dstFull);
+                FileInfo? dstFileInfo = fileOnDisk ? new FileInfo(dstFull) : null;
+                GitHash? computedHash = fileOnDisk
+                    ? await ComputeFileBlobHashAsync(dstFull, cancellationToken).ConfigureAwait(false)
+                    : null;
+
+                foreach (var entry in planned.Entries)
+                {
+                    index.Remove(planned.SourcePath, stage: entry.Stage);
+
+                    GitIndexEntry newEntry;
+                    if (!fileOnDisk || computedHash != entry.Hash)
+                    {
+                        // File absent, symlink, or has unstaged modifications: preserve original staged stat cache
+                        newEntry = new GitIndexEntry(
+                            planned.DestinationPath,
+                            entry.Hash,
+                            fileMode: entry.FileMode,
+                            fileSize: entry.FileSize,
+                            mtimeSeconds: entry.MtimeSeconds,
+                            mtimeNanoseconds: entry.MtimeNanoseconds,
+                            ctimeSeconds: entry.CtimeSeconds,
+                            ctimeNanoseconds: entry.CtimeNanoseconds,
+                            dev: entry.Dev,
+                            ino: entry.Ino,
+                            uid: entry.Uid,
+                            gid: entry.Gid,
+                            flags: 0);
                     }
                     else
                     {
-                        File.Move(srcFull, dstFull, overwrite: opt.Force);
-                        completedFilesystemMoves.Add((srcFull, dstFull));
+                        // File is clean: refresh stat cache with dstFileInfo
+                        newEntry = GitIndexEntry.FromFileInfo(
+                            planned.DestinationPath,
+                            dstFileInfo!,
+                            entry.Hash,
+                            stage: entry.Stage,
+                            preserveFileMode: entry.FileMode);
                     }
+
+                    // Preserve upper flags (stage, assume-unchanged) and extended flags
+                    var pathBytesLen = Encoding.UTF8.GetByteCount(planned.DestinationPath);
+                    var pathLen = (ushort)Math.Min(pathBytesLen, 0x0FFF);
+                    var upperFlags = (ushort)(entry.Flags & ~0x0FFF);
+                    newEntry.Flags = (ushort)(upperFlags | pathLen);
+                    newEntry.ExtendedFlags = entry.ExtendedFlags;
+
+                    index.AddOrUpdate(newEntry);
                 }
             }
-        }
-        catch
-        {
-            // Restore consistency if filesystem moves failed partway through
-            for (var i = completedFilesystemMoves.Count - 1; i >= 0; i--)
+
+            // Clean up empty directories
+            foreach (var planned in finalPlannedFileMoves)
             {
-                var (from, to) = completedFilesystemMoves[i];
-                try
+                var srcDir = Path.GetDirectoryName(Path.Combine(WorkingDirectory, planned.SourcePath));
+                while (!string.IsNullOrEmpty(srcDir) && !srcDir.Equals(rootFull, StringComparison.OrdinalIgnoreCase))
                 {
-                    if (File.Exists(to))
+                    if (Directory.Exists(srcDir) && !Directory.EnumerateFileSystemEntries(srcDir).Any())
                     {
-                        if (isCaseInsensitiveFs && from.Equals(to, StringComparison.OrdinalIgnoreCase) && !from.Equals(to, StringComparison.Ordinal))
+                        try
                         {
-                            var tempFile = to + "_git_mv_temp_" + Guid.NewGuid().ToString("N");
-                            File.Move(to, tempFile);
-                            File.Move(tempFile, from);
+                            journal.DeleteEmptyDirectory(srcDir);
                         }
-                        else
+                        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
                         {
-                            File.Move(to, from, overwrite: true);
+                            break;
                         }
                     }
-                    else if (Directory.Exists(to) && !Directory.Exists(from))
-                    {
-                        if (isCaseInsensitiveFs && from.Equals(to, StringComparison.OrdinalIgnoreCase) && !from.Equals(to, StringComparison.Ordinal))
-                        {
-                            var tempDir = to + "_git_mv_temp_" + Guid.NewGuid().ToString("N");
-                            Directory.Move(to, tempDir);
-                            Directory.Move(tempDir, from);
-                        }
-                        else
-                        {
-                            Directory.Move(to, from);
-                        }
-                    }
-                }
-                catch { /* best-effort rollback */ }
-            }
-            throw;
-        }
-
-        // Update index entries
-        foreach (var planned in plannedFileMoves)
-        {
-            var dstFull = Path.Combine(WorkingDirectory, planned.DestinationPath);
-
-            index.Remove(planned.DestinationPath, stage: 0);
-            index.Remove(planned.DestinationPath, stage: 1);
-            index.Remove(planned.DestinationPath, stage: 2);
-            index.Remove(planned.DestinationPath, stage: 3);
-
-            var fileOnDisk = File.Exists(dstFull);
-            FileInfo? dstFileInfo = fileOnDisk ? new FileInfo(dstFull) : null;
-            GitHash? computedHash = fileOnDisk
-                ? await ComputeFileBlobHashAsync(dstFull, cancellationToken).ConfigureAwait(false)
-                : null;
-
-            foreach (var entry in planned.Entries)
-            {
-                index.Remove(planned.SourcePath, stage: entry.Stage);
-
-                GitIndexEntry newEntry;
-                if (!fileOnDisk || computedHash != entry.Hash)
-                {
-                    // File absent or has unstaged modifications: preserve original staged stat cache
-                    newEntry = new GitIndexEntry(
-                        planned.DestinationPath,
-                        entry.Hash,
-                        fileMode: entry.FileMode,
-                        fileSize: entry.FileSize,
-                        mtimeSeconds: entry.MtimeSeconds,
-                        mtimeNanoseconds: entry.MtimeNanoseconds,
-                        ctimeSeconds: entry.CtimeSeconds,
-                        ctimeNanoseconds: entry.CtimeNanoseconds,
-                        dev: entry.Dev,
-                        ino: entry.Ino,
-                        uid: entry.Uid,
-                        gid: entry.Gid,
-                        flags: 0);
-                }
-                else
-                {
-                    // File is clean: refresh stat cache with dstFileInfo
-                    newEntry = GitIndexEntry.FromFileInfo(
-                        planned.DestinationPath,
-                        dstFileInfo!,
-                        entry.Hash,
-                        stage: entry.Stage,
-                        preserveFileMode: entry.FileMode);
-                }
-
-                // Preserve upper flags (stage, assume-unchanged) and extended flags
-                var pathBytesLen = Encoding.UTF8.GetByteCount(planned.DestinationPath);
-                var pathLen = (ushort)Math.Min(pathBytesLen, 0x0FFF);
-                var upperFlags = (ushort)(entry.Flags & ~0x0FFF);
-                newEntry.Flags = (ushort)(upperFlags | pathLen);
-                newEntry.ExtendedFlags = entry.ExtendedFlags;
-
-                index.AddOrUpdate(newEntry);
-            }
-        }
-
-        // Clean up empty directories
-        foreach (var planned in plannedFileMoves)
-        {
-            var srcDir = Path.GetDirectoryName(Path.Combine(WorkingDirectory, planned.SourcePath));
-            while (!string.IsNullOrEmpty(srcDir) && !srcDir.Equals(rootFull, StringComparison.OrdinalIgnoreCase))
-            {
-                if (Directory.Exists(srcDir) && !Directory.EnumerateFileSystemEntries(srcDir).Any())
-                {
-                    try
-                    {
-                        Directory.Delete(srcDir);
-                    }
-                    catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+                    else
                     {
                         break;
                     }
+                    srcDir = Path.GetDirectoryName(srcDir);
                 }
-                else
-                {
-                    break;
-                }
-                srcDir = Path.GetDirectoryName(srcDir);
             }
+
+            await index.WriteAsync(IndexPath, _repository.HashLengthBytes, cancellationToken).ConfigureAwait(false);
+            journal.Commit();
+
+            return new GitMoveResult
+            {
+                MovedItems = finalPlannedFileMoves.Select(p => new GitMoveItem(p.SourcePath, p.DestinationPath)).ToList(),
+                OverwrittenFiles = overwrittenFilesList.Distinct(pathComparer).ToList()
+            };
         }
-
-        await index.WriteAsync(IndexPath, _repository.HashLengthBytes, cancellationToken).ConfigureAwait(false);
-
-        return new GitMoveResult
+        catch
         {
-            MovedItems = plannedFileMoves.Select(p => new GitMoveItem(p.SourcePath, p.DestinationPath)).ToList()
-        };
+            journal.Rollback();
+            throw;
+        }
     }
 
-    private static void MoveDirectoryContents(string sourceDir, string targetDir, bool force)
+    private static void ValidateDirectoryMerge(
+        string sourceDir,
+        string targetDir,
+        bool force,
+        string workingDirFull,
+        bool isCaseInsensitiveFs,
+        List<string> overwrittenFiles)
     {
-        Directory.CreateDirectory(targetDir);
+        var targetFull = Path.GetFullPath(targetDir);
+        if (!targetFull.StartsWith(workingDirFull, StringComparison.OrdinalIgnoreCase) &&
+            !targetFull.Equals(workingDirFull.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar), StringComparison.OrdinalIgnoreCase))
+        {
+            throw new ArgumentException($"Destination directory escapes working directory: '{targetDir}'");
+        }
+
         foreach (var file in Directory.EnumerateFiles(sourceDir))
         {
             var fileName = Path.GetFileName(file);
             var destFile = Path.Combine(targetDir, fileName);
-            File.Move(file, destFile, overwrite: force);
+            var destFileFull = Path.GetFullPath(destFile);
+            if (!destFileFull.StartsWith(workingDirFull, StringComparison.OrdinalIgnoreCase))
+            {
+                throw new ArgumentException($"Destination file escapes working directory: '{destFile}'");
+            }
+
+            if (File.Exists(destFile))
+            {
+                var relPath = Path.GetRelativePath(workingDirFull, destFileFull).Replace('\\', '/');
+                if (!force)
+                {
+                    throw new InvalidOperationException($"destination exists, source={Path.GetRelativePath(workingDirFull, file).Replace('\\', '/')}, destination={relPath}");
+                }
+                overwrittenFiles.Add(relPath);
+            }
         }
+
         foreach (var subDir in Directory.EnumerateDirectories(sourceDir))
         {
             var dirName = Path.GetFileName(subDir);
             var destSub = Path.Combine(targetDir, dirName);
-            MoveDirectoryContents(subDir, destSub, force);
+            var destSubFull = Path.GetFullPath(destSub);
+            if (!destSubFull.StartsWith(workingDirFull, StringComparison.OrdinalIgnoreCase))
+            {
+                throw new ArgumentException($"Destination directory escapes working directory: '{destSub}'");
+            }
+
+            var subDirInfo = new DirectoryInfo(subDir);
+            var isLink = (subDirInfo.Attributes & FileAttributes.ReparsePoint) != 0 || subDirInfo.LinkTarget != null;
+
+            if (isLink)
+            {
+                // Subdirectory link: do not traverse! Check destination exists
+                if (Directory.Exists(destSub) || File.Exists(destSub))
+                {
+                    var relPath = Path.GetRelativePath(workingDirFull, destSubFull).Replace('\\', '/');
+                    if (!force)
+                    {
+                        throw new InvalidOperationException($"destination exists, source={Path.GetRelativePath(workingDirFull, subDir).Replace('\\', '/')}, destination={relPath}");
+                    }
+                    overwrittenFiles.Add(relPath);
+                }
+            }
+            else
+            {
+                if (Directory.Exists(destSub))
+                {
+                    var destSubInfo = new DirectoryInfo(destSub);
+                    var destIsLink = (destSubInfo.Attributes & FileAttributes.ReparsePoint) != 0 || destSubInfo.LinkTarget != null;
+                    if (destIsLink)
+                    {
+                        var relPath = Path.GetRelativePath(workingDirFull, destSubFull).Replace('\\', '/');
+                        if (!force)
+                        {
+                            throw new InvalidOperationException($"destination exists, source={Path.GetRelativePath(workingDirFull, subDir).Replace('\\', '/')}, destination={relPath}");
+                        }
+                        overwrittenFiles.Add(relPath);
+                    }
+                    else
+                    {
+                        ValidateDirectoryMerge(subDir, destSub, force, workingDirFull, isCaseInsensitiveFs, overwrittenFiles);
+                    }
+                }
+            }
         }
+    }
+
+    private static void MoveDirectoryContents(
+        FilesystemJournal journal,
+        string sourceDir,
+        string targetDir,
+        bool force,
+        string workingDirFull)
+    {
+        journal.EnsureDirectory(targetDir);
+
+        foreach (var file in Directory.EnumerateFiles(sourceDir))
+        {
+            var fileName = Path.GetFileName(file);
+            var destFile = Path.Combine(targetDir, fileName);
+            journal.MoveFile(file, destFile, force);
+        }
+
+        foreach (var subDir in Directory.EnumerateDirectories(sourceDir))
+        {
+            var dirName = Path.GetFileName(subDir);
+            var destSub = Path.Combine(targetDir, dirName);
+
+            var subDirInfo = new DirectoryInfo(subDir);
+            var isLink = (subDirInfo.Attributes & FileAttributes.ReparsePoint) != 0 || subDirInfo.LinkTarget != null;
+
+            if (isLink)
+            {
+                // Move the directory link itself without traversing target
+                journal.MoveDirectoryLink(subDir, destSub, force);
+            }
+            else
+            {
+                if (Directory.Exists(destSub))
+                {
+                    var destSubInfo = new DirectoryInfo(destSub);
+                    var destIsLink = (destSubInfo.Attributes & FileAttributes.ReparsePoint) != 0 || destSubInfo.LinkTarget != null;
+                    if (destIsLink)
+                    {
+                        journal.MoveDirectoryLink(subDir, destSub, force);
+                    }
+                    else
+                    {
+                        MoveDirectoryContents(journal, subDir, destSub, force, workingDirFull);
+                    }
+                }
+                else
+                {
+                    journal.MoveDirectory(subDir, destSub);
+                }
+            }
+        }
+
         if (!Directory.EnumerateFileSystemEntries(sourceDir).Any())
         {
-            Directory.Delete(sourceDir);
+            journal.DeleteEmptyDirectory(sourceDir);
         }
     }
 

@@ -282,4 +282,34 @@ public class MvCommandTests
         Assert.True(File.Exists(Path.Combine(testRepo.WorkingDirectory, "b.txt")));
         Assert.Equal("A", await File.ReadAllTextAsync(Path.Combine(testRepo.WorkingDirectory, "b.txt")));
     }
+
+    [Fact]
+    public async Task Mv_DirectoryMerge_UntrackedFileOverwritesExisting_RequiresApproval()
+    {
+        using var testRepo = GitTestRepository.Create();
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+        var emulator = new GitCliEmulator(repo);
+        var approval = new TestUserApproval();
+
+        // Tracked src/a.txt
+        Directory.CreateDirectory(Path.Combine(testRepo.WorkingDirectory, "src"));
+        await File.WriteAllTextAsync(Path.Combine(testRepo.WorkingDirectory, "src", "a.txt"), "A");
+        await emulator.InvokeAsync(["add", "src/a.txt"], approval);
+        await emulator.InvokeAsync(["commit", "-m", "Add src/a.txt"], approval);
+
+        // Untracked src/notes.txt
+        await File.WriteAllTextAsync(Path.Combine(testRepo.WorkingDirectory, "src", "notes.txt"), "untracked notes in src");
+
+        // Existing out/src/notes.txt
+        Directory.CreateDirectory(Path.Combine(testRepo.WorkingDirectory, "out", "src"));
+        await File.WriteAllTextAsync(Path.Combine(testRepo.WorkingDirectory, "out", "src", "notes.txt"), "existing notes in out");
+
+        var response = await emulator.InvokeAsync(["mv", "-f", "src", "out"], approval);
+
+        Assert.Equal(0, response.ExitCode);
+        Assert.Single(approval.DiscardLocalChangesCalls);
+        Assert.Equal("mv --force", approval.DiscardLocalChangesCalls[0].Operation);
+        Assert.Contains("out/src/notes.txt", approval.DiscardLocalChangesCalls[0].AffectedFiles);
+        Assert.Equal("untracked notes in src", await File.ReadAllTextAsync(Path.Combine(testRepo.WorkingDirectory, "out", "src", "notes.txt")));
+    }
 }

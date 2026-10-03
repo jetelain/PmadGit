@@ -62,19 +62,21 @@ internal static class MvCommand
                         ct).ConfigureAwait(false);
                     var indexedPaths = new HashSet<string>(index.Entries.Select(e => e.Path), StringComparer.Ordinal);
 
-                    var overwrittenFiles = new HashSet<string>(StringComparer.Ordinal);
+                    var isCaseInsensitiveFs = GitIndexManager.IsFileSystemCaseInsensitive(ctx.Repository.RootPath);
+                    var overwrittenFiles = new HashSet<string>(plan.OverwrittenFiles, StringComparer.Ordinal);
                     foreach (var item in plan.MovedItems)
                     {
-                        var isCaseOnlySelfRename = (OperatingSystem.IsWindows() || OperatingSystem.IsMacOS()) &&
-                            item.SourcePath.Equals(item.DestinationPath, StringComparison.OrdinalIgnoreCase);
+                        var sourceFull = Path.Combine(ctx.Repository.RootPath, item.SourcePath);
+                        var targetFull = Path.Combine(ctx.Repository.RootPath, item.DestinationPath);
+                        var isCaseOnlySelfRename = isCaseInsensitiveFs &&
+                            GitIndexManager.AreSameFileSystemEntry(sourceFull, targetFull, ctx.Repository.RootPath);
 
                         if (isCaseOnlySelfRename)
                         {
                             continue;
                         }
 
-                        var targetFull = Path.Combine(ctx.Repository.RootPath, item.DestinationPath);
-                        var existsOnDisk = File.Exists(targetFull);
+                        var existsOnDisk = File.Exists(targetFull) || Directory.Exists(targetFull);
                         var existsInIndex = indexedPaths.Contains(item.DestinationPath);
                         var hasLocalStatusChanges = statusLookup.ContainsKey(item.DestinationPath);
 
