@@ -293,4 +293,44 @@ public interface IGitWorkspaceRepository : IGitRepository, IDisposable
         string? startPoint = null,
         bool force = false,
         CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Moves or renames a tracked file or directory in the working tree and index.
+    /// </summary>
+    /// <param name="sourcePath">Repository-relative source file or directory path.</param>
+    /// <param name="destinationPath">Repository-relative destination file or directory path.</param>
+    /// <param name="force">When true, allows overwriting existing destination files.</param>
+    /// <param name="cancellationToken">Token used to cancel the async operation.</param>
+    Task MoveAsync(
+        string sourcePath,
+        string destinationPath,
+        bool force = false,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Moves multiple tracked files or directories into a target destination directory in the working tree and index.
+    /// </summary>
+    /// <param name="sourcePaths">Collection of repository-relative source paths.</param>
+    /// <param name="destinationDirectory">Repository-relative destination directory path.</param>
+    /// <param name="force">When true, allows overwriting existing destination files.</param>
+    /// <param name="cancellationToken">Token used to cancel the async operation.</param>
+    Task MoveAsync(
+        IEnumerable<string> sourcePaths,
+        string destinationDirectory,
+        bool force = false,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Moves tracked files or directories with advanced options (force, skip errors, dry-run).
+    /// </summary>
+    /// <param name="sourcePaths">Collection of repository-relative source paths.</param>
+    /// <param name="destinationPath">Repository-relative destination file or directory path.</param>
+    /// <param name="options">Options controlling force, skip errors, and dry-run behavior.</param>
+    /// <param name="cancellationToken">Token used to cancel the async operation.</param>
+    /// <returns>A <see cref="GitMoveResult"/> describing the moved items.</returns>
+    Task<GitMoveResult> MoveAsync(
+        IEnumerable<string> sourcePaths,
+        string destinationPath,
+        GitMoveOptions options,
+        CancellationToken cancellationToken = default);
 }

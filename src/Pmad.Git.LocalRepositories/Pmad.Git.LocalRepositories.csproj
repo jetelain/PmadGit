@@ -30,6 +30,8 @@
 		<InternalsVisibleTo Include="Pmad.Git.RemoteClient.Test" />
 		<InternalsVisibleTo Include="Pmad.Git.Cli" />
 		<InternalsVisibleTo Include="Pmad.Git.Cli.Test" />
+		<InternalsVisibleTo Include="Pmad.Git.CliEmulator" />
+		<InternalsVisibleTo Include="Pmad.Git.CliEmulator.Test" />
 	</ItemGroup>
 	<ItemGroup>
 		<None Include="README.md" Pack="true" PackagePath="\" />
