@@ -797,5 +797,236 @@ public sealed class GitWorkspaceCliEdgeCaseInteropTests
         var status = testRepo.RunGit("status --porcelain").Trim();
         Assert.Empty(status);
     }
-}
 
+    [Fact]
+    public async Task ResetAsync_MixedMode_NonEmptyFilesReportedClean_ConsistentWithGitCli()
+    {
+        using var testRepo = GitTestRepository.Create();
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+
+        var file1 = Path.Combine(testRepo.WorkingDirectory, "file1.txt");
+        await File.WriteAllTextAsync(file1, "non-empty content for file 1\n");
+        await repo.StageAsync("file1.txt");
+        var commit = await repo.CommitAsync("Commit 1", new GitCommitMetadata("Commit 1", TestSignature));
+
+        // Mixed reset to commit 1 (where working tree is identical to commit 1)
+        await repo.ResetAsync(commit, GitResetMode.Mixed);
+
+        var index = await GitIndex.ReadAsync(repo.IndexManager.IndexPath);
+        var idxEntry = index.FindEntry("file1.txt");
+        Assert.NotNull(idxEntry);
+        Assert.Equal(0u, idxEntry.FileSize);
+
+        // Check managed status FIRST (before native git status refreshes index stat cache)
+        var managedStatus = await repo.GetStatusAsync(includeClean: true);
+        var fileEntry = managedStatus.FindEntry("file1.txt");
+        Assert.NotNull(fileEntry);
+        Assert.Equal(GitFileStatus.Clean, fileEntry.StagedStatus);
+        Assert.Equal(GitFileStatus.Clean, fileEntry.WorkingTreeStatus);
+        Assert.True(managedStatus.IsClean);
+
+        // Native git status must be clean
+        var nativeStatus = testRepo.RunGit("status --porcelain").Trim();
+        Assert.Empty(nativeStatus);
+    }
+
+    [Fact]
+    public async Task UnstageAllAsync_NonEmptyFilesReportedClean_ConsistentWithGitCli()
+    {
+        using var testRepo = GitTestRepository.Create();
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+
+        var file1 = Path.Combine(testRepo.WorkingDirectory, "file1.txt");
+        await File.WriteAllTextAsync(file1, "sample file content\n");
+        await repo.StageAsync("file1.txt");
+        await repo.CommitAsync("Commit 1", new GitCommitMetadata("Commit 1", TestSignature));
+
+        // Unstage all files back to HEAD
+        await repo.IndexManager.UnstageAllAsync();
+
+        // Check managed status first (before native git status refreshes index stat cache)
+        var managedStatus = await repo.GetStatusAsync(includeClean: true);
+        var fileEntry = managedStatus.FindEntry("file1.txt");
+        Assert.NotNull(fileEntry);
+        Assert.Equal(GitFileStatus.Clean, fileEntry.StagedStatus);
+        Assert.Equal(GitFileStatus.Clean, fileEntry.WorkingTreeStatus);
+        Assert.True(managedStatus.IsClean);
+
+        var nativeStatus = testRepo.RunGit("status --porcelain").Trim();
+        Assert.Empty(nativeStatus);
+    }
+
+    [Fact]
+    public async Task UnstageAsync_SpecificFile_ReportedClean_ConsistentWithGitCli()
+    {
+        using var testRepo = GitTestRepository.Create();
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+
+        var file1 = Path.Combine(testRepo.WorkingDirectory, "item.txt");
+        await File.WriteAllTextAsync(file1, "item content\n");
+        await repo.StageAsync("item.txt");
+        await repo.CommitAsync("Add item", new GitCommitMetadata("Add item", TestSignature));
+
+        // Modify and stage
+        await File.WriteAllTextAsync(file1, "item content modified\n");
+        await repo.StageAsync("item.txt");
+
+        // Revert disk back to committed content and unstage
+        await File.WriteAllTextAsync(file1, "item content\n");
+        await repo.UnstageAsync("item.txt");
+
+        var managedStatus = await repo.GetStatusAsync(includeClean: true);
+        var entry = managedStatus.FindEntry("item.txt");
+        Assert.NotNull(entry);
+        Assert.Equal(GitFileStatus.Clean, entry.StagedStatus);
+        Assert.Equal(GitFileStatus.Clean, entry.WorkingTreeStatus);
+        Assert.True(managedStatus.IsClean);
+
+        var nativeStatus = testRepo.RunGit("status --porcelain").Trim();
+        Assert.Empty(nativeStatus);
+    }
+
+    [Fact]
+    public async Task ObjectStore_AggressivePackfileRepack_CommitTreeBlobDiff_ConsistentWithGitCli()
+    {
+        using var testRepo = GitTestRepository.Create();
+
+        // Create a chain of commits modifying common files to induce delta compression
+        var file = Path.Combine(testRepo.WorkingDirectory, "document.txt");
+        await File.WriteAllTextAsync(file, "Base version line 1\nBase version line 2\n");
+        testRepo.Commit("Base commit", ("document.txt", "Base version line 1\nBase version line 2\n"));
+
+        for (int i = 1; i <= 5; i++)
+        {
+            testRepo.Commit($"Delta commit {i}", ("document.txt", $"Base version line 1\nBase version line 2\nModification {i}\n"));
+        }
+
+        // Native git aggressive repack with delta compression and remove loose objects
+        testRepo.RunGit("repack -a -d -f --depth=50 --window=50 -q");
+
+        // Open in managed code
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+
+        // Read history from packfile
+        var headCommit = await repo.GetCommitAsync("HEAD");
+        Assert.Equal("Delta commit 5", headCommit.Message.Trim());
+
+        var commits = new List<GitCommit>();
+        await foreach (var c in repo.EnumerateCommitsAsync("HEAD"))
+        {
+            commits.Add(c);
+        }
+        Assert.True(commits.Count >= 6);
+
+        // Read tree and blob from packfile
+        var treeItems = new List<GitTreeItem>();
+        await foreach (var item in repo.EnumerateCommitTreeAsync("HEAD"))
+        {
+            treeItems.Add(item);
+        }
+        var docItem = treeItems.FirstOrDefault(t => t.Path == "document.txt");
+        Assert.NotNull(docItem);
+
+        var fileBytes = await repo.ReadFileAsync("document.txt", "HEAD");
+        var text = Encoding.UTF8.GetString(fileBytes).Replace("\r\n", "\n");
+        Assert.Contains("Modification 5", text);
+
+        // Compare diff between parent and head
+        var parentCommit = await repo.GetCommitAsync(headCommit.Parents[0].ToString());
+        var diff = await repo.GetDiffAsync(parentCommit.Id.ToString(), headCommit.Id.ToString());
+        Assert.Contains("document.txt", diff);
+
+        // Native git fsck should pass
+        var fsck = testRepo.RunGit("fsck --full --strict");
+        Assert.DoesNotContain("error:", fsck, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task PackedRefs_DeleteReferenceAsync_RewritesPackedRefsAndPassesFsck()
+    {
+        using var testRepo = GitTestRepository.Create();
+
+        // Create branches
+        testRepo.CreateBranch("feature/alpha");
+        testRepo.CreateBranch("feature/beta");
+
+        // Pack all refs into .git/packed-refs and delete loose refs
+        testRepo.RunGit("pack-refs --all --prune");
+
+        var packedRefsPath = Path.Combine(testRepo.GitDirectory, "packed-refs");
+        var packedContentBefore = await File.ReadAllTextAsync(packedRefsPath);
+        Assert.Contains("refs/heads/feature/alpha", packedContentBefore);
+        Assert.Contains("refs/heads/feature/beta", packedContentBefore);
+
+        // Ensure no loose ref file exists
+        Assert.False(File.Exists(Path.Combine(testRepo.GitDirectory, "refs", "heads", "feature", "alpha")));
+
+        // Delete reference through managed repository
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+        await repo.ReferenceStore.DeleteReferenceAsync("refs/heads/feature/alpha");
+
+        // Verify packed-refs file was updated
+        var packedContentAfter = await File.ReadAllTextAsync(packedRefsPath);
+        Assert.DoesNotContain("refs/heads/feature/alpha", packedContentAfter);
+        Assert.Contains("refs/heads/feature/beta", packedContentAfter);
+
+        // Native git rev-parse must fail for deleted branch
+        Assert.Throws<InvalidOperationException>(() => testRepo.RunGit("rev-parse --verify refs/heads/feature/alpha"));
+
+        // Native git fsck must pass cleanly
+        var fsck = testRepo.RunGit("fsck --full --strict");
+        Assert.DoesNotContain("error:", fsck, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task PackedRefs_BranchDirectoryFileConflict_ThrowsInvalidOperationException()
+    {
+        using var testRepo = GitTestRepository.Create();
+
+        // Create branch 'feature/login' and pack all refs
+        testRepo.CreateBranch("feature/login");
+        testRepo.RunGit("pack-refs --all --prune");
+
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+
+        // Attempting to create branch 'feature' when 'feature/login' exists in packed-refs must throw
+        await Assert.ThrowsAsync<InvalidOperationException>(() => repo.CreateBranchAsync("feature"));
+
+        // Native git branch must also refuse
+        Assert.Throws<InvalidOperationException>(() => testRepo.RunGit("branch feature"));
+    }
+
+    [Fact]
+    public async Task CheckoutBranch_UntrackedDirectoryCollidingWithTargetFile_AbortsLikeGitCli()
+    {
+        using var testRepo = GitTestRepository.Create();
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+
+        // Master branch has sub/nested.txt
+        var subDir = Path.Combine(testRepo.WorkingDirectory, "sub");
+        Directory.CreateDirectory(subDir);
+        await File.WriteAllTextAsync(Path.Combine(subDir, "nested.txt"), "nested in master\n");
+        await repo.StageAsync("sub/nested.txt");
+        await repo.CommitAsync("Add sub/nested.txt", new GitCommitMetadata("Add sub/nested.txt", TestSignature));
+
+        // Create branch file-branch where 'sub' is a file
+        await repo.CreateBranchAsync("file-branch");
+        await repo.CheckoutBranchAsync("file-branch");
+        Directory.Delete(subDir, recursive: true);
+        await File.WriteAllTextAsync(Path.Combine(testRepo.WorkingDirectory, "sub"), "sub as file\n");
+        await repo.StageAsync("sub");
+        await repo.CommitAsync("Replace sub dir with file", new GitCommitMetadata("Replace sub dir with file", TestSignature));
+
+        // Switch back to master
+        await repo.CheckoutBranchAsync("master");
+
+        // Add untracked file inside sub/
+        await File.WriteAllTextAsync(Path.Combine(subDir, "untracked.txt"), "untracked file\n");
+
+        // Switching to file-branch would clobber untracked.txt because 'sub' becomes a file
+        await Assert.ThrowsAsync<InvalidOperationException>(() => repo.CheckoutBranchAsync("file-branch"));
+
+        // Native git switch also aborts
+        Assert.Throws<InvalidOperationException>(() => testRepo.RunGit("switch file-branch"));
+    }
+}

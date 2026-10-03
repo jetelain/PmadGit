@@ -173,21 +173,22 @@ public sealed class GitIndexManager
                 else
                 {
                     var currentMode = GitIndexEntry.GetFileMode(fileInfo!);
+                    var hasStatCache = normalIndexEntry.FileSize > 0 || normalIndexEntry.MtimeSeconds > 0;
                     if (currentMode != normalIndexEntry.FileMode)
                     {
                         // Executable mode changed in working tree
                         workTreeStatus = GitFileStatus.Modified;
                     }
-                    else if (fileInfo!.Length != normalIndexEntry.FileSize)
+                    else if (hasStatCache && fileInfo!.Length != normalIndexEntry.FileSize)
                     {
                         workTreeStatus = GitFileStatus.Modified;
                     }
                     else
                     {
-                        var mtimeUtc = fileInfo.LastWriteTimeUtc;
+                        var mtimeUtc = fileInfo!.LastWriteTimeUtc;
                         var mtimeSec = (uint)Math.Max(0, new DateTimeOffset(mtimeUtc).ToUnixTimeSeconds());
                         var mtimeNano = (uint)((mtimeUtc.Ticks % TimeSpan.TicksPerSecond) * 100);
-                        if (mtimeSec == normalIndexEntry.MtimeSeconds && mtimeNano == normalIndexEntry.MtimeNanoseconds)
+                        if (hasStatCache && mtimeSec == normalIndexEntry.MtimeSeconds && mtimeNano == normalIndexEntry.MtimeNanoseconds)
                         {
                             // Stat cache matches: content and mode are unmodified
                             workTreeStatus = GitFileStatus.Clean;
@@ -195,8 +196,8 @@ public sealed class GitIndexManager
                         }
                         else
                         {
-                            // Timestamp changed: verify content hash
-                            var computedHash = await ComputeFileBlobHashAsync(fileInfo.FullName, cancellationToken).ConfigureAwait(false);
+                            // Timestamp changed or stat cache uninitialized: verify content hash
+                            var computedHash = await ComputeFileBlobHashAsync(fileInfo!.FullName, cancellationToken).ConfigureAwait(false);
                             workTreeHash = computedHash;
                             workTreeStatus = (computedHash == normalIndexEntry.Hash && currentMode == normalIndexEntry.FileMode)
                                 ? GitFileStatus.Clean
