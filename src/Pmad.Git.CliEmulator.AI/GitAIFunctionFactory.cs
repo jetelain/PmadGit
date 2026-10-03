@@ -35,7 +35,7 @@ public static class GitAIFunctionFactory
             "git",
             "Runs a git command against the current repository. " +
             "Supported sub-commands: status, log, diff, show, add, restore, commit, reset, revert, " +
-            "merge, branch, tag, config, remote, ls-tree, rev-parse, cat-file, fetch, pull, push. " +
+            "merge, branch, switch, checkout, tag, config, remote, ls-tree, rev-parse, cat-file, fetch, pull, push. " +
             "Returns stdout on success or an error message on failure.");
     }
 
@@ -66,7 +66,7 @@ public static class GitAIFunctionFactory
             "git",
             "Runs a git command against the current repository. " +
             "Supported sub-commands: status, log, diff, show, add, restore, commit, reset, revert, " +
-            "merge, branch, tag, config, remote, ls-tree, rev-parse, cat-file, fetch, pull, push. " +
+            "merge, branch, switch, checkout, tag, config, remote, ls-tree, rev-parse, cat-file, fetch, pull, push. " +
             "Pass the sub-command and flags as a single string. " +
             "Returns stdout on success or an error message on failure.");
     }

@@ -11,7 +11,7 @@ internal static class RestoreCommand
         var cmd = new Command("restore") { Description = "Restore working tree files" };
         var stagedOpt = new Option<bool>("--staged") { Description = "Restore the index (unstage)" };
         var worktreeOpt = new Option<bool>("--worktree") { Description = "Restore the working tree (default)" };
-        var sourceOpt = new Option<string?>("--source") { Description = "Restore from this tree-ish" };
+        var sourceOpt = new Option<string?>("-s", "--source") { Description = "Restore from this tree-ish" };
         var pathsArg = new Argument<string[]>("paths") { Description = "Files to restore", Arity = ArgumentArity.OneOrMore };
 
         cmd.Options.Add(stagedOpt);

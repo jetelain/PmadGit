@@ -579,5 +579,105 @@ public sealed class GitRepositoryWithIndexAndWorkspaceTests
         var diffIdentical = await repo.GetWorktreeDiffAsync("HEAD");
         Assert.Equal(string.Empty, diffIdentical);
     }
+
+    [Fact]
+    public async Task CheckoutBranchAsync_SwitchBetweenBranches_UpdatesWorkingTreeAndIndex()
+    {
+        using var testRepo = GitTestRepository.Create();
+        testRepo.Commit("Master commit", ("master.txt", "master-content"));
+
+        testRepo.CreateBranch("feature");
+        testRepo.Switch("feature");
+        testRepo.Commit("Feature commit", ("feature.txt", "feature-content"));
+
+        testRepo.Switch("master");
+
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+        Assert.Equal("master", await repo.GetCurrentBranchNameAsync());
+        Assert.True(File.Exists(Path.Combine(testRepo.WorkingDirectory, "master.txt")));
+        Assert.False(File.Exists(Path.Combine(testRepo.WorkingDirectory, "feature.txt")));
+
+        // Switch to feature
+        await repo.CheckoutBranchAsync("feature");
+
+        Assert.Equal("feature", await repo.GetCurrentBranchNameAsync());
+        Assert.True(File.Exists(Path.Combine(testRepo.WorkingDirectory, "feature.txt")));
+        Assert.Equal("feature-content", await File.ReadAllTextAsync(Path.Combine(testRepo.WorkingDirectory, "feature.txt")));
+
+        // Switch back to master
+        await repo.CheckoutBranchAsync("master");
+
+        Assert.Equal("master", await repo.GetCurrentBranchNameAsync());
+        Assert.True(File.Exists(Path.Combine(testRepo.WorkingDirectory, "master.txt")));
+        Assert.False(File.Exists(Path.Combine(testRepo.WorkingDirectory, "feature.txt")));
+    }
+
+    [Fact]
+    public async Task CheckoutBranchAsync_WithCreateBranch_CreatesAndSwitches()
+    {
+        using var testRepo = GitTestRepository.Create();
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+
+        await repo.CheckoutBranchAsync("dev-branch", createBranch: true);
+
+        Assert.Equal("dev-branch", await repo.GetCurrentBranchNameAsync());
+        var devHash = await repo.ReferenceStore.TryResolveReferenceAsync("refs/heads/dev-branch");
+        Assert.NotNull(devHash);
+        Assert.Equal(testRepo.Head, devHash.Value);
+    }
+
+    [Fact]
+    public async Task CheckoutBranchAsync_WithDirtyWorkingTree_ThrowsInvalidOperationException()
+    {
+        using var testRepo = GitTestRepository.Create();
+        testRepo.CreateBranch("feature");
+        testRepo.Switch("feature");
+        testRepo.Commit("Feature commit", ("feature.txt", "feature content"));
+        testRepo.Switch("master");
+
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+        await File.WriteAllTextAsync(Path.Combine(testRepo.WorkingDirectory, "README.md"), "dirty changes");
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => repo.CheckoutBranchAsync("feature"));
+    }
+
+    [Fact]
+    public async Task CheckoutBranchAsync_ToCurrentBranch_IsNoOpAndSucceeds()
+    {
+        using var testRepo = GitTestRepository.Create();
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+
+        await repo.CheckoutBranchAsync("master");
+        Assert.Equal("master", await repo.GetCurrentBranchNameAsync());
+    }
+
+    [Fact]
+    public async Task CheckoutBranchAsync_BranchNotFound_ThrowsInvalidOperationException()
+    {
+        using var testRepo = GitTestRepository.Create();
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => repo.CheckoutBranchAsync("non-existent"));
+    }
+
+    [Fact]
+    public async Task CheckoutBranchAsync_CreateBranchAlreadyExists_ThrowsInvalidOperationException()
+    {
+        using var testRepo = GitTestRepository.Create();
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => repo.CheckoutBranchAsync("master", createBranch: true));
+    }
+
+    [Fact]
+    public async Task CheckoutBranchAsync_CreateBranchWithForce_WhenBranchAlreadyExists_ThrowsInvalidOperationException()
+    {
+        using var testRepo = GitTestRepository.Create();
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            repo.CheckoutBranchAsync("master", createBranch: true, force: true, overwriteBranch: false));
+    }
 }
+
 

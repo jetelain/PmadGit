@@ -15,24 +15,11 @@ public class MergeCommandTests
         var testRepo = GitTestRepository.Create();
         var featureBranch = "feature";
 
-        // Create and switch to feature branch
-        var gitDir = Path.Combine(testRepo.WorkingDirectory, ".git");
-        var headRef = File.ReadAllText(Path.Combine(gitDir, "HEAD")).Trim(); // "ref: refs/heads/master"
-        var masterHash = testRepo.Head;
-
-        // Write a new branch ref pointing at master HEAD
-        var featureRefPath = Path.Combine(gitDir, "refs", "heads", featureBranch);
-        Directory.CreateDirectory(Path.GetDirectoryName(featureRefPath)!);
-        File.WriteAllText(featureRefPath, masterHash.ToString());
-
-        // Switch HEAD to feature branch
-        File.WriteAllText(Path.Combine(gitDir, "HEAD"), $"ref: refs/heads/{featureBranch}");
-
+        testRepo.CreateBranch(featureBranch);
+        testRepo.Switch(featureBranch);
         testRepo.Commit("Feature commit", ("feature.txt", "feature content"));
 
-        // Switch back to master
-        File.WriteAllText(Path.Combine(gitDir, "HEAD"), "ref: refs/heads/master");
-
+        testRepo.Switch("master");
         testRepo.Commit("Master commit", ("master.txt", "master content"));
 
         return (testRepo, featureBranch);

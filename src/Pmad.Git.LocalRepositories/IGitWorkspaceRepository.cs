@@ -250,4 +250,47 @@ public interface IGitWorkspaceRepository : IGitRepository, IDisposable
     /// </summary>
     /// <param name="cancellationToken">Token used to cancel the async operation.</param>
     Task AbortMergeAsync(CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Switches the working tree, index, and HEAD to the specified branch, optionally creating it.
+    /// </summary>
+    /// <param name="branchName">The branch name to checkout (e.g. "main" or "feature").</param>
+    /// <param name="createBranch">When true, creates a new branch before switching to it.</param>
+    /// <param name="startPoint">Optional commit hash or reference to start from when <paramref name="createBranch"/> is true (defaults to HEAD).</param>
+    /// <param name="force">When true, discards uncommitted working tree changes.</param>
+    /// <param name="overwriteBranch">When true, allows overwriting an existing branch (when creating) without forcing workspace changes.</param>
+    /// <param name="cancellationToken">Token used to cancel the async operation.</param>
+    Task CheckoutBranchAsync(
+        string branchName,
+        bool createBranch = false,
+        string? startPoint = null,
+        bool force = false,
+        bool overwriteBranch = false,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Checks out the specified commit in a detached HEAD state, updating index and working tree.
+    /// </summary>
+    /// <param name="commitIsh">Commit hash or reference to check out.</param>
+    /// <param name="force">When true, discards uncommitted working tree changes.</param>
+    /// <param name="cancellationToken">Token used to cancel the async operation.</param>
+    Task CheckoutCommitAsync(
+        string commitIsh,
+        bool force = false,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Creates and switches to a new orphan branch (unborn branch with no commits yet).
+    /// </summary>
+    /// <param name="branchName">The name of the new orphan branch.</param>
+    /// <param name="empty">When true (e.g. switch --orphan), starts with an empty index and working tree. When false (e.g. checkout --orphan), keeps index and working tree (or synchronizes to startPoint).</param>
+    /// <param name="startPoint">Optional commit or tree-ish to start from when <paramref name="empty"/> is false.</param>
+    /// <param name="force">When true, discards uncommitted working tree changes when synchronizing to <paramref name="startPoint"/>.</param>
+    /// <param name="cancellationToken">Token used to cancel the async operation.</param>
+    Task CheckoutOrphanBranchAsync(
+        string branchName,
+        bool empty = false,
+        string? startPoint = null,
+        bool force = false,
+        CancellationToken cancellationToken = default);
 }
