@@ -591,7 +591,7 @@ public sealed class GitIndexManager
         public override IReadOnlyList<PlannedMove> FileMoves => Moves;
     }
 
-    private interface IJournalAction : IDisposable
+    private interface IJournalAction
     {
         void Rollback();
         void Commit();
@@ -688,10 +688,6 @@ public sealed class GitIndexManager
             {
                 Rollback();
             }
-            foreach (var action in _actions)
-            {
-                action.Dispose();
-            }
         }
     }
 
@@ -732,8 +728,6 @@ public sealed class GitIndexManager
                 try { File.Delete(_backupPath); } catch { }
             }
         }
-
-        public void Dispose() => Commit();
     }
 
     private sealed class MoveCaseOnlyFileAction(string source, string destination) : IJournalAction
@@ -764,7 +758,6 @@ public sealed class GitIndexManager
         }
 
         public void Commit() { }
-        public void Dispose() { }
     }
 
     private sealed class MoveDirectoryAction(string source, string destination) : IJournalAction
@@ -783,7 +776,6 @@ public sealed class GitIndexManager
         }
 
         public void Commit() { }
-        public void Dispose() { }
     }
 
     private sealed class MoveCaseOnlyDirectoryAction(string source, string destination) : IJournalAction
@@ -814,7 +806,6 @@ public sealed class GitIndexManager
         }
 
         public void Commit() { }
-        public void Dispose() { }
     }
 
     private sealed class MoveDirectoryLinkAction(string source, string destination, bool force) : IJournalAction
@@ -875,8 +866,6 @@ public sealed class GitIndexManager
                 }
             }
         }
-
-        public void Dispose() => Commit();
     }
 
     private sealed class EnsureDirectoryAction(string path) : IJournalAction
@@ -901,7 +890,6 @@ public sealed class GitIndexManager
         }
 
         public void Commit() { }
-        public void Dispose() { }
     }
 
     private sealed class DeleteEmptyDirectoryAction(string path) : IJournalAction
@@ -923,7 +911,6 @@ public sealed class GitIndexManager
         }
 
         public void Commit() { }
-        public void Dispose() { }
     }
 
     private static readonly ConcurrentDictionary<string, bool> _caseSensitivityCache = new(StringComparer.Ordinal);
@@ -1575,7 +1562,7 @@ public sealed class GitIndexManager
                 var dstDirFull = Path.Combine(WorkingDirectory, dirOp.DestinationDir);
                 if (Directory.Exists(srcDirFull) && Directory.Exists(dstDirFull) && !dirOp.IsCaseOnly)
                 {
-                    ValidateDirectoryMerge(srcDirFull, dstDirFull, opt.Force, rootFull, isCaseInsensitiveFs, overwrittenFilesList);
+                    ValidateDirectoryMerge(srcDirFull, dstDirFull, opt.Force, rootFull, overwrittenFilesList);
                 }
             }
             foreach (var move in op.FileMoves)
@@ -1770,7 +1757,6 @@ public sealed class GitIndexManager
         string targetDir,
         bool force,
         string workingDirFull,
-        bool isCaseInsensitiveFs,
         List<string> overwrittenFiles)
     {
         var targetFull = Path.GetFullPath(targetDir);
@@ -1844,7 +1830,7 @@ public sealed class GitIndexManager
                     }
                     else
                     {
-                        ValidateDirectoryMerge(subDir, destSub, force, workingDirFull, isCaseInsensitiveFs, overwrittenFiles);
+                        ValidateDirectoryMerge(subDir, destSub, force, workingDirFull, overwrittenFiles);
                     }
                 }
             }
