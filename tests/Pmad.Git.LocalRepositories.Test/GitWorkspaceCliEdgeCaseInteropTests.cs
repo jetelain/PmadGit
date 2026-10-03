@@ -532,6 +532,11 @@ public sealed class GitWorkspaceCliEdgeCaseInteropTests
         var scriptPath = Path.Combine(testRepo.WorkingDirectory, "script.sh");
         await File.WriteAllTextAsync(scriptPath, "#!/bin/sh\necho hello\n");
 
+        if (!OperatingSystem.IsWindows())
+        {
+            File.SetUnixFileMode(scriptPath, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute | UnixFileMode.GroupRead | UnixFileMode.OtherRead);
+        }
+
         testRepo.RunGit("add script.sh");
         testRepo.RunGit("update-index --chmod=+x script.sh");
         testRepo.RunGit("commit -m \"Add script.sh executable\"");
@@ -542,6 +547,10 @@ public sealed class GitWorkspaceCliEdgeCaseInteropTests
         // Modify via managed repo and commit
         using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
         await File.WriteAllTextAsync(scriptPath, "#!/bin/sh\necho updated\n");
+        if (!OperatingSystem.IsWindows())
+        {
+            File.SetUnixFileMode(scriptPath, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute | UnixFileMode.GroupRead | UnixFileMode.OtherRead);
+        }
         await repo.StageAsync("script.sh");
         await repo.CommitAsync("Update script.sh", new GitCommitMetadata("Update script.sh", TestSignature));
 
