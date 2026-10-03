@@ -241,4 +241,186 @@ public class GitRepositoryMoveTests
         var status = await repo.GetStatusAsync();
         Assert.True(status.IsClean);
     }
+
+    [Fact]
+    public async Task MoveAsync_ToRootDirectory_UsingDot()
+    {
+        using var testRepo = GitTestRepository.Create();
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+
+        var subDir = Path.Combine(testRepo.WorkingDirectory, "sub");
+        Directory.CreateDirectory(subDir);
+        var filePath = Path.Combine(subDir, "file.txt");
+        await File.WriteAllTextAsync(filePath, "data");
+        await repo.StageAsync("sub/file.txt");
+        await repo.CommitAsync("Add sub/file.txt");
+
+        await repo.MoveAsync("sub/file.txt", ".");
+
+        Assert.False(File.Exists(filePath));
+        var rootFile = Path.Combine(testRepo.WorkingDirectory, "file.txt");
+        Assert.True(File.Exists(rootFile));
+
+        var status = await repo.GetStatusAsync();
+        Assert.Contains(status.StagedEntries, e => e.Path == "file.txt" && e.StagedStatus == GitFileStatus.StagedNew);
+        Assert.Contains(status.StagedEntries, e => e.Path == "sub/file.txt" && e.StagedStatus == GitFileStatus.StagedDeleted);
+    }
+
+    [Fact]
+    public async Task MoveAsync_Directory_WithUntrackedFiles_MovesEntireDirectory()
+    {
+        using var testRepo = GitTestRepository.Create();
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+
+        var dir1 = Path.Combine(testRepo.WorkingDirectory, "dir1");
+        Directory.CreateDirectory(dir1);
+        await File.WriteAllTextAsync(Path.Combine(dir1, "tracked.txt"), "tracked");
+        await File.WriteAllTextAsync(Path.Combine(dir1, "untracked.txt"), "untracked");
+        await repo.StageAsync("dir1/tracked.txt");
+        await repo.CommitAsync("Add tracked");
+
+        await repo.MoveAsync("dir1", "dir2");
+
+        Assert.False(Directory.Exists(dir1));
+        var dir2 = Path.Combine(testRepo.WorkingDirectory, "dir2");
+        Assert.True(Directory.Exists(dir2));
+        Assert.True(File.Exists(Path.Combine(dir2, "tracked.txt")));
+        Assert.True(File.Exists(Path.Combine(dir2, "untracked.txt")));
+
+        var status = await repo.GetStatusAsync();
+        Assert.Contains(status.StagedEntries, e => e.Path == "dir2/tracked.txt" && e.StagedStatus == GitFileStatus.StagedNew);
+        Assert.Contains(status.UntrackedEntries, e => e.Path == "dir2/untracked.txt");
+    }
+
+    [Fact]
+    public async Task MoveAsync_Directory_CannotMoveIntoItself_Throws()
+    {
+        using var testRepo = GitTestRepository.Create();
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+
+        var dir1 = Path.Combine(testRepo.WorkingDirectory, "dir1");
+        Directory.CreateDirectory(dir1);
+        await File.WriteAllTextAsync(Path.Combine(dir1, "a.txt"), "a");
+        await repo.StageAsync("dir1/a.txt");
+        await repo.CommitAsync("Add file");
+
+        var exSelf = await Assert.ThrowsAsync<InvalidOperationException>(() => repo.MoveAsync("dir1", "dir1"));
+        Assert.Contains("can not move directory into itself", exSelf.Message);
+
+        var exChild = await Assert.ThrowsAsync<InvalidOperationException>(() => repo.MoveAsync("dir1", "dir1/child"));
+        Assert.Contains("can not move directory into itself", exChild.Message);
+    }
+
+    [Fact]
+    public async Task MoveAsync_FileDirectoryIndexConflict_Throws()
+    {
+        using var testRepo = GitTestRepository.Create();
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+
+        var destDir = Path.Combine(testRepo.WorkingDirectory, "dest");
+        var childDir = Path.Combine(destDir, "a.txt");
+        Directory.CreateDirectory(childDir);
+        await File.WriteAllTextAsync(Path.Combine(childDir, "child.txt"), "child");
+        await File.WriteAllTextAsync(Path.Combine(testRepo.WorkingDirectory, "a.txt"), "a file");
+        await repo.StageAsync(["dest/a.txt/child.txt", "a.txt"]);
+        await repo.CommitAsync("Add files");
+
+        // Delete childDir from disk, so dest/a.txt/child.txt is tracked in index but absent from disk
+        Directory.Delete(childDir, recursive: true);
+
+        // Moving a.txt into dest targets dest/a.txt, which conflicts with indexed descendant dest/a.txt/child.txt
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(() => repo.MoveAsync("a.txt", "dest", force: true));
+        Assert.Contains("destination exists", ex.Message);
+    }
+
+    [Fact]
+    public async Task MoveAsync_MultipleDuplicates_SkipErrors_FiltersAllDuplicates()
+    {
+        using var testRepo = GitTestRepository.Create();
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+
+        Directory.CreateDirectory(Path.Combine(testRepo.WorkingDirectory, "d1"));
+        Directory.CreateDirectory(Path.Combine(testRepo.WorkingDirectory, "d2"));
+        Directory.CreateDirectory(Path.Combine(testRepo.WorkingDirectory, "out"));
+        await File.WriteAllTextAsync(Path.Combine(testRepo.WorkingDirectory, "d1", "a.txt"), "d1/a");
+        await File.WriteAllTextAsync(Path.Combine(testRepo.WorkingDirectory, "d2", "a.txt"), "d2/a");
+        await File.WriteAllTextAsync(Path.Combine(testRepo.WorkingDirectory, "d1", "b.txt"), "d1/b");
+        await File.WriteAllTextAsync(Path.Combine(testRepo.WorkingDirectory, "d2", "b.txt"), "d2/b");
+        await File.WriteAllTextAsync(Path.Combine(testRepo.WorkingDirectory, "d1", "unique.txt"), "unique");
+        await repo.StageAsync(["d1/a.txt", "d2/a.txt", "d1/b.txt", "d2/b.txt", "d1/unique.txt"]);
+        await repo.CommitAsync("Add files");
+
+        var result = await repo.MoveAsync(
+            ["d1/a.txt", "d2/a.txt", "d1/b.txt", "d2/b.txt", "d1/unique.txt"],
+            "out",
+            new GitMoveOptions { SkipErrors = true });
+
+        Assert.Single(result.MovedItems);
+        Assert.Equal("d1/unique.txt", result.MovedItems[0].SourcePath);
+        Assert.Equal("out/unique.txt", result.MovedItems[0].DestinationPath);
+    }
+
+    [Fact]
+    public async Task MoveAsync_TrackedFileDeletedOnDisk_MovesIndexEntryWithoutThrowing()
+    {
+        using var testRepo = GitTestRepository.Create();
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+
+        var filePath = Path.Combine(testRepo.WorkingDirectory, "deleted_on_disk.txt");
+        await File.WriteAllTextAsync(filePath, "data");
+        await repo.StageAsync("deleted_on_disk.txt");
+        await repo.CommitAsync("Add file");
+
+        File.Delete(filePath);
+
+        await repo.MoveAsync("deleted_on_disk.txt", "moved_deleted.txt");
+
+        var status = await repo.GetStatusAsync();
+        Assert.Contains(status.StagedEntries, e => e.Path == "moved_deleted.txt" && e.StagedStatus == GitFileStatus.StagedNew);
+        Assert.Contains(status.DeletedEntries, e => e.Path == "moved_deleted.txt");
+    }
+
+    [Fact]
+    public async Task MoveAsync_PreservesAssumeUnchangedAndExtendedFlags()
+    {
+        using var testRepo = GitTestRepository.Create();
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+
+        var filePath = Path.Combine(testRepo.WorkingDirectory, "flagged.txt");
+        await File.WriteAllTextAsync(filePath, "data");
+        await repo.StageAsync("flagged.txt");
+
+        // Set assume-unchanged and extended flags
+        var index = await GitIndex.ReadAsync(repo.IndexManager.IndexPath, repo.HashLengthBytes);
+        var entry = index.FindEntry("flagged.txt")!;
+        entry.Flags |= 0x4000; // CE_VALID / assume-unchanged
+        entry.ExtendedFlags = 0x4000; // CE_SKIP_WORKTREE
+        await index.WriteAsync(repo.IndexManager.IndexPath, repo.HashLengthBytes);
+
+        await repo.MoveAsync("flagged.txt", "flagged_dest.txt");
+
+        var updatedIndex = await GitIndex.ReadAsync(repo.IndexManager.IndexPath, repo.HashLengthBytes);
+        var movedEntry = updatedIndex.FindEntry("flagged_dest.txt")!;
+        Assert.Equal(0x4000, movedEntry.Flags & 0x4000);
+        Assert.Equal(0x4000, movedEntry.ExtendedFlags);
+    }
+
+    [Fact]
+    public async Task MoveAsync_TwoArgumentCollectionOverload_CompilesWithoutAmbiguity()
+    {
+        using var testRepo = GitTestRepository.Create();
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+
+        Directory.CreateDirectory(Path.Combine(testRepo.WorkingDirectory, "sub"));
+        await File.WriteAllTextAsync(Path.Combine(testRepo.WorkingDirectory, "f1.txt"), "1");
+        await File.WriteAllTextAsync(Path.Combine(testRepo.WorkingDirectory, "f2.txt"), "2");
+        await repo.StageAsync(["f1.txt", "f2.txt"]);
+        await repo.CommitAsync("Add files");
+
+        // Two-argument call: should resolve to MoveAsync(IEnumerable<string>, string, bool, CancellationToken)
+        await repo.MoveAsync(new[] { "f1.txt", "f2.txt" }, "sub");
+
+        Assert.True(File.Exists(Path.Combine(testRepo.WorkingDirectory, "sub", "f1.txt")));
+        Assert.True(File.Exists(Path.Combine(testRepo.WorkingDirectory, "sub", "f2.txt")));
+    }
 }

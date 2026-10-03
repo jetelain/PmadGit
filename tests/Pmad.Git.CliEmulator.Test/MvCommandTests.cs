@@ -256,4 +256,30 @@ public class MvCommandTests
         Assert.Equal(0, response.ExitCode);
         Assert.True(File.Exists(Path.Combine(testRepo.WorkingDirectory, "sub", "valid.txt")));
     }
+
+    [Fact]
+    public async Task Mv_Force_WhenDestinationInIndexDeletedOnDisk_RequestsApproval()
+    {
+        using var testRepo = GitTestRepository.Create();
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+        var emulator = new GitCliEmulator(repo);
+        var approval = new TestUserApproval();
+
+        await File.WriteAllTextAsync(Path.Combine(testRepo.WorkingDirectory, "a.txt"), "A");
+        await File.WriteAllTextAsync(Path.Combine(testRepo.WorkingDirectory, "b.txt"), "B");
+        await emulator.InvokeAsync(["add", "a.txt", "b.txt"], approval);
+        await emulator.InvokeAsync(["commit", "-m", "Add files"], approval);
+
+        // Delete b.txt on disk but leave it in index
+        File.Delete(Path.Combine(testRepo.WorkingDirectory, "b.txt"));
+
+        var response = await emulator.InvokeAsync(["mv", "-f", "a.txt", "b.txt"], approval);
+
+        Assert.Equal(0, response.ExitCode);
+        Assert.Single(approval.DiscardLocalChangesCalls);
+        Assert.Equal("mv --force", approval.DiscardLocalChangesCalls[0].Operation);
+        Assert.Contains("b.txt", approval.DiscardLocalChangesCalls[0].AffectedFiles);
+        Assert.True(File.Exists(Path.Combine(testRepo.WorkingDirectory, "b.txt")));
+        Assert.Equal("A", await File.ReadAllTextAsync(Path.Combine(testRepo.WorkingDirectory, "b.txt")));
+    }
 }

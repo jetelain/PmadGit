@@ -363,7 +363,7 @@ public sealed class GitRepositoryWithIndexAndWorkspace : IGitWorkspaceRepository
         _indexManager.MoveAsync(sourcePaths, destinationDirectory, force, cancellationToken);
 
     /// <inheritdoc />
-    public Task<GitMoveResult> MoveAsync(IEnumerable<string> sourcePaths, string destinationPath, GitMoveOptions? options = null, CancellationToken cancellationToken = default) =>
+    public Task<GitMoveResult> MoveAsync(IEnumerable<string> sourcePaths, string destinationPath, GitMoveOptions options, CancellationToken cancellationToken = default) =>
         _indexManager.MoveAsync(sourcePaths, destinationPath, options, cancellationToken);
 
     /// <inheritdoc />

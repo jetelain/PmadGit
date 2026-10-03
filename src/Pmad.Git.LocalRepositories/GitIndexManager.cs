@@ -569,6 +569,7 @@ public sealed class GitIndexManager
     }
 
     private sealed record PlannedMove(string SourcePath, string DestinationPath, List<GitIndexEntry> Entries);
+    private sealed record PlannedDirMove(string SourceDir, string DestinationDir, bool IsCaseOnly);
 
     /// <summary>
     /// Moves or renames a tracked file or directory in the working tree and index.
@@ -592,19 +593,22 @@ public sealed class GitIndexManager
     public async Task<GitMoveResult> MoveAsync(
         IEnumerable<string> sourcePaths,
         string destinationPath,
-        GitMoveOptions? options = null,
+        GitMoveOptions options,
         CancellationToken cancellationToken = default)
     {
         if (sourcePaths is null)
         {
             throw new ArgumentNullException(nameof(sourcePaths));
         }
+        if (options is null)
+        {
+            throw new ArgumentNullException(nameof(options));
+        }
         if (string.IsNullOrWhiteSpace(destinationPath))
         {
             throw new ArgumentException("Destination path cannot be empty.", nameof(destinationPath));
         }
 
-        var opt = options ?? new GitMoveOptions();
         var sourcesList = sourcePaths.ToList();
         if (sourcesList.Count == 0)
         {
@@ -613,7 +617,7 @@ public sealed class GitIndexManager
 
         using (await AcquireIndexMutationLockAsync(cancellationToken).ConfigureAwait(false))
         {
-            return await MoveCoreAsync(sourcesList, destinationPath, opt, cancellationToken).ConfigureAwait(false);
+            return await MoveCoreAsync(sourcesList, destinationPath, options, cancellationToken).ConfigureAwait(false);
         }
     }
 
@@ -625,12 +629,22 @@ public sealed class GitIndexManager
     {
         var index = await GitIndex.ReadAsync(IndexPath, _repository.HashLengthBytes, cancellationToken).ConfigureAwait(false);
 
-        var normalizedDest = NormalizeAndValidateRelativePath(destinationPath);
-        var fullDest = Path.Combine(WorkingDirectory, normalizedDest);
-        var destIsDir = Directory.Exists(fullDest);
-        if (!destIsDir && index.Entries.Any(e => e.Path.StartsWith(normalizedDest + "/", StringComparison.Ordinal)))
+        string normalizedDest;
+        bool destIsDir;
+        if (destinationPath == "." || destinationPath == "./" || destinationPath == ".\\")
         {
+            normalizedDest = "";
             destIsDir = true;
+        }
+        else
+        {
+            normalizedDest = NormalizeAndValidateRelativePath(destinationPath);
+            var fullDest = Path.Combine(WorkingDirectory, normalizedDest);
+            destIsDir = Directory.Exists(fullDest);
+            if (!destIsDir && index.Entries.Any(e => e.Path.StartsWith(normalizedDest + "/", StringComparison.Ordinal)))
+            {
+                destIsDir = true;
+            }
         }
 
         if (sourcesList.Count > 1 && !destIsDir)
@@ -638,7 +652,13 @@ public sealed class GitIndexManager
             throw new InvalidOperationException($"destination '{destinationPath}' is not a directory");
         }
 
+        static string CombineRelative(string dir, string file)
+        {
+            return string.IsNullOrEmpty(dir) ? file : dir + "/" + file;
+        }
+
         var plannedFileMoves = new List<PlannedMove>();
+        var plannedDirMoves = new List<PlannedDirMove>();
 
         foreach (var source in sourcesList)
         {
@@ -664,11 +684,22 @@ public sealed class GitIndexManager
 
             if (!srcIsFile && !srcIsDir)
             {
-                if (opt.SkipErrors)
+                if (index.FindEntry(normalizedSrc) != null)
                 {
-                    continue;
+                    srcIsFile = true;
                 }
-                throw new FileNotFoundException($"bad source, source={source}, destination={destinationPath}");
+                else if (index.Entries.Any(e => e.Path.StartsWith(normalizedSrc + "/", StringComparison.Ordinal)))
+                {
+                    srcIsDir = true;
+                }
+                else
+                {
+                    if (opt.SkipErrors)
+                    {
+                        continue;
+                    }
+                    throw new FileNotFoundException($"bad source, source={source}, destination={destinationPath}");
+                }
             }
 
             if (srcIsFile)
@@ -693,8 +724,21 @@ public sealed class GitIndexManager
                 }
 
                 var destFilePath = destIsDir
-                    ? normalizedDest + "/" + Path.GetFileName(normalizedSrc)
+                    ? CombineRelative(normalizedDest, Path.GetFileName(normalizedSrc))
                     : normalizedDest;
+
+                try
+                {
+                    NormalizeAndValidateRelativePath(destFilePath);
+                }
+                catch
+                {
+                    if (opt.SkipErrors)
+                    {
+                        continue;
+                    }
+                    throw;
+                }
 
                 if (normalizedSrc.Equals(destFilePath, StringComparison.Ordinal))
                 {
@@ -703,6 +747,38 @@ public sealed class GitIndexManager
                         continue;
                     }
                     throw new InvalidOperationException($"destination exists, source={source}, destination={destinationPath}");
+                }
+
+                // Reject if target has indexed descendants (file/directory conflict in index)
+                if (index.Entries.Any(e => e.Path.StartsWith(destFilePath + "/", StringComparison.Ordinal)))
+                {
+                    if (opt.SkipErrors)
+                    {
+                        continue;
+                    }
+                    throw new InvalidOperationException($"destination exists, source={source}, destination={destFilePath}");
+                }
+
+                // Reject if any ancestor of target is an indexed file
+                var segs = destFilePath.Split('/');
+                var ancestorConflict = false;
+                var currentAncestor = "";
+                for (var s = 0; s < segs.Length - 1; s++)
+                {
+                    currentAncestor = CombineRelative(currentAncestor, segs[s]);
+                    if (index.Entries.Any(e => e.Path.Equals(currentAncestor, StringComparison.Ordinal)))
+                    {
+                        ancestorConflict = true;
+                        break;
+                    }
+                }
+                if (ancestorConflict)
+                {
+                    if (opt.SkipErrors)
+                    {
+                        continue;
+                    }
+                    throw new InvalidOperationException($"destination exists, source={source}, destination={destFilePath}");
                 }
 
                 var destEntries = index.Entries.Where(e => e.Path.Equals(destFilePath, StringComparison.Ordinal)).ToList();
@@ -753,9 +829,40 @@ public sealed class GitIndexManager
                     throw new InvalidOperationException($"conflicted, source={source}, destination={destinationPath}");
                 }
 
-                var destDirPrefix = destIsDir
-                    ? normalizedDest + "/" + Path.GetFileName(normalizedSrc) + "/"
-                    : normalizedDest + "/";
+                var isCaseOnlyDirRename = OperatingSystem.IsWindows() &&
+                    normalizedSrc.Equals(normalizedDest, StringComparison.OrdinalIgnoreCase) &&
+                    !normalizedSrc.Equals(normalizedDest, StringComparison.Ordinal);
+
+                string finalDestDir;
+                if (destIsDir && !isCaseOnlyDirRename)
+                {
+                    var srcDirName = Path.GetFileName(normalizedSrc.TrimEnd('/'));
+                    finalDestDir = CombineRelative(normalizedDest, srcDirName);
+                }
+                else
+                {
+                    finalDestDir = normalizedDest;
+                }
+
+                // Check self-move and moving directory into itself or child
+                if (normalizedSrc.Equals(finalDestDir, StringComparison.Ordinal))
+                {
+                    if (opt.SkipErrors)
+                    {
+                        continue;
+                    }
+                    throw new InvalidOperationException($"can not move directory into itself, source={source}, destination={destinationPath}");
+                }
+
+                if (finalDestDir.StartsWith(normalizedSrc + "/", StringComparison.Ordinal) ||
+                    (OperatingSystem.IsWindows() && !isCaseOnlyDirRename && finalDestDir.StartsWith(normalizedSrc + "/", StringComparison.OrdinalIgnoreCase)))
+                {
+                    if (opt.SkipErrors)
+                    {
+                        continue;
+                    }
+                    throw new InvalidOperationException($"can not move directory into itself, source={source}, destination={destinationPath}");
+                }
 
                 var grouped = dirEntries.GroupBy(e => e.Path, StringComparer.Ordinal);
                 var dirPlannedMoves = new List<PlannedMove>();
@@ -764,9 +871,48 @@ public sealed class GitIndexManager
                 foreach (var g in grouped)
                 {
                     var subPath = g.Key.Substring(prefix.Length);
-                    var targetFilePath = destDirPrefix + subPath;
+                    var targetFilePath = CombineRelative(finalDestDir, subPath);
+
+                    try
+                    {
+                        NormalizeAndValidateRelativePath(g.Key);
+                        NormalizeAndValidateRelativePath(targetFilePath);
+                    }
+                    catch
+                    {
+                        if (opt.SkipErrors)
+                        {
+                            hasErrorInDir = true;
+                            break;
+                        }
+                        throw;
+                    }
+
+                    // Reject if target has indexed descendants
+                    if (index.Entries.Any(e => e.Path.StartsWith(targetFilePath + "/", StringComparison.Ordinal)))
+                    {
+                        if (opt.SkipErrors)
+                        {
+                            hasErrorInDir = true;
+                            break;
+                        }
+                        throw new InvalidOperationException($"destination exists, source={g.Key}, destination={targetFilePath}");
+                    }
+
+                    // Reject if destination entry has unresolved conflict
+                    var targetEntries = index.Entries.Where(e => e.Path.Equals(targetFilePath, StringComparison.Ordinal)).ToList();
+                    if (targetEntries.Any(e => e.Stage != 0))
+                    {
+                        if (opt.SkipErrors)
+                        {
+                            hasErrorInDir = true;
+                            break;
+                        }
+                        throw new InvalidOperationException($"conflicted, source={g.Key}, destination={targetFilePath}");
+                    }
+
                     var fullTarget = Path.Combine(WorkingDirectory, targetFilePath);
-                    var targetExists = File.Exists(fullTarget) || Directory.Exists(fullTarget) || index.Entries.Any(e => e.Path.Equals(targetFilePath, StringComparison.Ordinal));
+                    var targetExists = File.Exists(fullTarget) || Directory.Exists(fullTarget) || targetEntries.Count > 0;
                     var isCaseOnly = OperatingSystem.IsWindows() && g.Key.Equals(targetFilePath, StringComparison.OrdinalIgnoreCase);
 
                     if (!isCaseOnly && targetExists && !opt.Force)
@@ -785,19 +931,52 @@ public sealed class GitIndexManager
                 if (!hasErrorInDir)
                 {
                     plannedFileMoves.AddRange(dirPlannedMoves);
+                    plannedDirMoves.Add(new PlannedDirMove(normalizedSrc, finalDestDir, isCaseOnlyDirRename));
                 }
             }
         }
 
-        var duplicate = plannedFileMoves.GroupBy(p => p.DestinationPath, StringComparer.Ordinal)
-            .FirstOrDefault(g => g.Count() > 1);
-        if (duplicate != null)
+        // Filter every duplicate-destination group
+        var duplicateGroups = plannedFileMoves.GroupBy(p => p.DestinationPath, StringComparer.Ordinal)
+            .Where(g => g.Count() > 1)
+            .ToList();
+        if (duplicateGroups.Count > 0)
         {
             if (!opt.SkipErrors)
             {
-                throw new InvalidOperationException($"destination exists, source={duplicate.Last().SourcePath}, destination={duplicate.Key}");
+                throw new InvalidOperationException($"destination exists, source={duplicateGroups[0].Last().SourcePath}, destination={duplicateGroups[0].Key}");
             }
-            plannedFileMoves.RemoveAll(p => p.DestinationPath.Equals(duplicate.Key, StringComparison.Ordinal));
+            foreach (var group in duplicateGroups)
+            {
+                plannedFileMoves.RemoveAll(p => p.DestinationPath.Equals(group.Key, StringComparison.Ordinal));
+            }
+        }
+
+        // Preflight destination types: File.Move cannot overwrite a directory with a file
+        var rootFull = Path.GetFullPath(WorkingDirectory);
+        foreach (var planned in plannedFileMoves)
+        {
+            var dstFull = Path.Combine(WorkingDirectory, planned.DestinationPath);
+            if (Directory.Exists(dstFull))
+            {
+                if (!opt.SkipErrors)
+                {
+                    throw new InvalidOperationException($"destination exists, source={planned.SourcePath}, destination={planned.DestinationPath}");
+                }
+            }
+
+            var parent = Path.GetDirectoryName(dstFull);
+            while (!string.IsNullOrEmpty(parent) && !parent.Equals(rootFull, StringComparison.OrdinalIgnoreCase))
+            {
+                if (File.Exists(parent))
+                {
+                    if (!opt.SkipErrors)
+                    {
+                        throw new InvalidOperationException($"cannot create directory '{parent}' because a file exists with that name");
+                    }
+                }
+                parent = Path.GetDirectoryName(parent);
+            }
         }
 
         if (opt.DryRun)
@@ -808,51 +987,106 @@ public sealed class GitIndexManager
             };
         }
 
-        var rootFull = Path.GetFullPath(WorkingDirectory);
-        var sourceDirectoriesToClean = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        // Execute filesystem directory moves first
+        var completedFilesystemMoves = new List<(string From, string To)>();
+        try
+        {
+            foreach (var dirMove in plannedDirMoves)
+            {
+                var srcDirFull = Path.Combine(WorkingDirectory, dirMove.SourceDir);
+                var dstDirFull = Path.Combine(WorkingDirectory, dirMove.DestinationDir);
 
+                if (Directory.Exists(srcDirFull))
+                {
+                    if (dirMove.IsCaseOnly && OperatingSystem.IsWindows())
+                    {
+                        var tempDir = srcDirFull + "_git_mv_temp_" + Guid.NewGuid().ToString("N");
+                        Directory.Move(srcDirFull, tempDir);
+                        Directory.Move(tempDir, dstDirFull);
+                        completedFilesystemMoves.Add((srcDirFull, dstDirFull));
+                    }
+                    else if (!Directory.Exists(dstDirFull))
+                    {
+                        var parentDst = Path.GetDirectoryName(dstDirFull);
+                        if (!string.IsNullOrEmpty(parentDst))
+                        {
+                            Directory.CreateDirectory(parentDst);
+                        }
+                        Directory.Move(srcDirFull, dstDirFull);
+                        completedFilesystemMoves.Add((srcDirFull, dstDirFull));
+                    }
+                    else
+                    {
+                        // Target directory already exists: move all items from src into dst
+                        MoveDirectoryContents(srcDirFull, dstDirFull, opt.Force);
+                    }
+                }
+            }
+
+            // Move any remaining individual files (whose parent directory wasn't moved as a whole)
+            foreach (var planned in plannedFileMoves)
+            {
+                var srcFull = Path.Combine(WorkingDirectory, planned.SourcePath);
+                var dstFull = Path.Combine(WorkingDirectory, planned.DestinationPath);
+
+                if (File.Exists(srcFull))
+                {
+                    var dstDir = Path.GetDirectoryName(dstFull);
+                    if (!string.IsNullOrEmpty(dstDir))
+                    {
+                        Directory.CreateDirectory(dstDir);
+                    }
+                    File.Move(srcFull, dstFull, overwrite: opt.Force);
+                    completedFilesystemMoves.Add((srcFull, dstFull));
+                }
+            }
+        }
+        catch
+        {
+            // Restore consistency if filesystem moves failed partway through
+            for (var i = completedFilesystemMoves.Count - 1; i >= 0; i--)
+            {
+                var (from, to) = completedFilesystemMoves[i];
+                try
+                {
+                    if (File.Exists(to))
+                    {
+                        File.Move(to, from, overwrite: true);
+                    }
+                    else if (Directory.Exists(to) && !Directory.Exists(from))
+                    {
+                        Directory.Move(to, from);
+                    }
+                }
+                catch { /* best-effort rollback */ }
+            }
+            throw;
+        }
+
+        // Update index entries
         foreach (var planned in plannedFileMoves)
         {
-            var srcFull = Path.Combine(WorkingDirectory, planned.SourcePath);
             var dstFull = Path.Combine(WorkingDirectory, planned.DestinationPath);
-            var dstDir = Path.GetDirectoryName(dstFull);
-            if (!string.IsNullOrEmpty(dstDir))
-            {
-                Directory.CreateDirectory(dstDir);
-            }
-
-            if (File.Exists(srcFull))
-            {
-                var srcDir = Path.GetDirectoryName(srcFull);
-                if (!string.IsNullOrEmpty(srcDir))
-                {
-                    sourceDirectoriesToClean.Add(srcDir);
-                }
-
-                File.Move(srcFull, dstFull, overwrite: opt.Force);
-            }
 
             index.Remove(planned.DestinationPath, stage: 0);
             index.Remove(planned.DestinationPath, stage: 1);
             index.Remove(planned.DestinationPath, stage: 2);
             index.Remove(planned.DestinationPath, stage: 3);
 
-            var dstFileInfo = new FileInfo(dstFull);
-            var computedHash = await ComputeFileBlobHashAsync(dstFull, cancellationToken).ConfigureAwait(false);
+            var fileOnDisk = File.Exists(dstFull);
+            FileInfo? dstFileInfo = fileOnDisk ? new FileInfo(dstFull) : null;
+            GitHash? computedHash = fileOnDisk
+                ? await ComputeFileBlobHashAsync(dstFull, cancellationToken).ConfigureAwait(false)
+                : null;
 
             foreach (var entry in planned.Entries)
             {
                 index.Remove(planned.SourcePath, stage: entry.Stage);
 
                 GitIndexEntry newEntry;
-                if (computedHash != entry.Hash)
+                if (!fileOnDisk || computedHash != entry.Hash)
                 {
-                    // File has unstaged modifications: keep the staged stat cache
-                    // so GetStatusAsync detects the working tree difference.
-                    var pathBytesLen = Encoding.UTF8.GetByteCount(planned.DestinationPath);
-                    var pathLen = (ushort)Math.Min(pathBytesLen, 0xFFF);
-                    var flags = (ushort)((entry.Stage & 0x3) << 12 | pathLen);
-
+                    // File absent or has unstaged modifications: preserve original staged stat cache
                     newEntry = new GitIndexEntry(
                         planned.DestinationPath,
                         entry.Hash,
@@ -866,34 +1100,41 @@ public sealed class GitIndexManager
                         ino: entry.Ino,
                         uid: entry.Uid,
                         gid: entry.Gid,
-                        flags: flags,
-                        extendedFlags: entry.ExtendedFlags);
+                        flags: 0);
                 }
                 else
                 {
                     // File is clean: refresh stat cache with dstFileInfo
                     newEntry = GitIndexEntry.FromFileInfo(
                         planned.DestinationPath,
-                        dstFileInfo,
+                        dstFileInfo!,
                         entry.Hash,
                         stage: entry.Stage,
                         preserveFileMode: entry.FileMode);
                 }
 
+                // Preserve upper flags (stage, assume-unchanged) and extended flags
+                var pathBytesLen = Encoding.UTF8.GetByteCount(planned.DestinationPath);
+                var pathLen = (ushort)Math.Min(pathBytesLen, 0x0FFF);
+                var upperFlags = (ushort)(entry.Flags & ~0x0FFF);
+                newEntry.Flags = (ushort)(upperFlags | pathLen);
+                newEntry.ExtendedFlags = entry.ExtendedFlags;
+
                 index.AddOrUpdate(newEntry);
             }
         }
 
-        foreach (var dir in sourceDirectoriesToClean)
+        // Clean up empty directories
+        foreach (var planned in plannedFileMoves)
         {
-            var current = dir;
-            while (!string.IsNullOrEmpty(current) && !current.Equals(rootFull, StringComparison.OrdinalIgnoreCase))
+            var srcDir = Path.GetDirectoryName(Path.Combine(WorkingDirectory, planned.SourcePath));
+            while (!string.IsNullOrEmpty(srcDir) && !srcDir.Equals(rootFull, StringComparison.OrdinalIgnoreCase))
             {
-                if (Directory.Exists(current) && !Directory.EnumerateFileSystemEntries(current).Any())
+                if (Directory.Exists(srcDir) && !Directory.EnumerateFileSystemEntries(srcDir).Any())
                 {
                     try
                     {
-                        Directory.Delete(current);
+                        Directory.Delete(srcDir);
                     }
                     catch (IOException)
                     {
@@ -904,7 +1145,7 @@ public sealed class GitIndexManager
                 {
                     break;
                 }
-                current = Path.GetDirectoryName(current);
+                srcDir = Path.GetDirectoryName(srcDir);
             }
         }
 
@@ -914,6 +1155,27 @@ public sealed class GitIndexManager
         {
             MovedItems = plannedFileMoves.Select(p => new GitMoveItem(p.SourcePath, p.DestinationPath)).ToList()
         };
+    }
+
+    private static void MoveDirectoryContents(string sourceDir, string targetDir, bool force)
+    {
+        Directory.CreateDirectory(targetDir);
+        foreach (var file in Directory.EnumerateFiles(sourceDir))
+        {
+            var fileName = Path.GetFileName(file);
+            var destFile = Path.Combine(targetDir, fileName);
+            File.Move(file, destFile, overwrite: force);
+        }
+        foreach (var subDir in Directory.EnumerateDirectories(sourceDir))
+        {
+            var dirName = Path.GetFileName(subDir);
+            var destSub = Path.Combine(targetDir, dirName);
+            MoveDirectoryContents(subDir, destSub, force);
+        }
+        if (!Directory.EnumerateFileSystemEntries(sourceDir).Any())
+        {
+            Directory.Delete(sourceDir);
+        }
     }
 
     internal string NormalizeAndValidateRelativePath(string relativePath)

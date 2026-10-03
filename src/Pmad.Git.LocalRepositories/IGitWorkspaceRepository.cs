@@ -331,6 +331,6 @@ public interface IGitWorkspaceRepository : IGitRepository, IDisposable
     Task<GitMoveResult> MoveAsync(
         IEnumerable<string> sourcePaths,
         string destinationPath,
-        GitMoveOptions? options = null,
+        GitMoveOptions options,
         CancellationToken cancellationToken = default);
 }

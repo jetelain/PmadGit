@@ -51,11 +51,34 @@ internal static class MvCommand
                         new GitMoveOptions { Force = true, SkipErrors = skip, DryRun = true },
                         ct).ConfigureAwait(false);
 
-                    var overwrittenFiles = new List<string>();
+                    var status = await ctx.Repository.GetStatusAsync(includeUntracked: true, cancellationToken: ct).ConfigureAwait(false);
+                    var statusLookup = status.Entries
+                        .Where(e => !e.IsClean)
+                        .ToDictionary(e => e.Path, StringComparer.Ordinal);
+
+                    var index = await GitIndex.ReadAsync(
+                        Path.Combine(ctx.Repository.GitDirectory, "index"),
+                        ctx.Repository.HashLengthBytes,
+                        ct).ConfigureAwait(false);
+                    var indexedPaths = new HashSet<string>(index.Entries.Select(e => e.Path), StringComparer.Ordinal);
+
+                    var overwrittenFiles = new HashSet<string>(StringComparer.Ordinal);
                     foreach (var item in plan.MovedItems)
                     {
+                        var isCaseOnlySelfRename = OperatingSystem.IsWindows() &&
+                            item.SourcePath.Equals(item.DestinationPath, StringComparison.OrdinalIgnoreCase);
+
+                        if (isCaseOnlySelfRename)
+                        {
+                            continue;
+                        }
+
                         var targetFull = Path.Combine(ctx.Repository.RootPath, item.DestinationPath);
-                        if (File.Exists(targetFull) && !item.SourcePath.Equals(item.DestinationPath, StringComparison.OrdinalIgnoreCase))
+                        var existsOnDisk = File.Exists(targetFull);
+                        var existsInIndex = indexedPaths.Contains(item.DestinationPath);
+                        var hasLocalStatusChanges = statusLookup.ContainsKey(item.DestinationPath);
+
+                        if (existsOnDisk || existsInIndex || hasLocalStatusChanges)
                         {
                             overwrittenFiles.Add(item.DestinationPath);
                         }
@@ -67,7 +90,7 @@ internal static class MvCommand
                             new DiscardChangesContext
                             {
                                 Operation = "mv --force",
-                                AffectedFiles = overwrittenFiles,
+                                AffectedFiles = [.. overwrittenFiles],
                             },
                             ctx.Approval.ApproveDiscardLocalChangesAsync,
                             ct).ConfigureAwait(false);
