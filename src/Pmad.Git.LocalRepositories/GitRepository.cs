@@ -1934,7 +1934,10 @@ public sealed class GitRepository : IGitRepository, IGitRepositoryCacheInvalidat
 
         foreach (var (name, leaf) in node.Leaves)
         {
-            entries.Add(new TreeEntryData(name, leaf.Mode, leaf.Hash));
+            if (!node.Directories.ContainsKey(name))
+            {
+                entries.Add(new TreeEntryData(name, leaf.Mode, leaf.Hash));
+            }
         }
 
         entries.Sort(CompareTreeEntries);

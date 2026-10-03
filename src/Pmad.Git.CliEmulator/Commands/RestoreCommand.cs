@@ -10,8 +10,8 @@ internal static class RestoreCommand
     public static Command Build(CommandContext ctx)
     {
         var cmd = new Command("restore") { Description = "Restore working tree files" };
-        var stagedOpt = new Option<bool>("--staged") { Description = "Restore the index (unstage)" };
-        var worktreeOpt = new Option<bool>("--worktree") { Description = "Restore the working tree (default)" };
+        var stagedOpt = new Option<bool>("-S", "--staged") { Description = "Restore the index (unstage)" };
+        var worktreeOpt = new Option<bool>("-W", "--worktree") { Description = "Restore the working tree (default)" };
         var sourceOpt = new Option<string?>("-s", "--source") { Description = "Restore from this tree-ish" };
         var oursOpt = new Option<bool>("--ours") { Description = "Restore our version for unmerged files" };
         var theirsOpt = new Option<bool>("--theirs") { Description = "Restore their version for unmerged files" };

@@ -279,6 +279,11 @@ public sealed class GitIndexManager
 
             if (Directory.Exists(fullPath))
             {
+                if (!string.IsNullOrEmpty(normalizedPath) && index.FindEntry(normalizedPath) != null)
+                {
+                    expandedPaths.Add(normalizedPath);
+                }
+
                 var ignoreMatcher = GitIgnoreMatcher.Load(WorkingDirectory);
                 var subFiles = new Dictionary<string, FileInfo>(StringComparer.Ordinal);
                 var dummyPrefixes = new HashSet<string>(StringComparer.Ordinal);

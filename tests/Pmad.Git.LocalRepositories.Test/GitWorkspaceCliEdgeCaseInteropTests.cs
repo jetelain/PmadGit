@@ -558,4 +558,244 @@ public sealed class GitWorkspaceCliEdgeCaseInteropTests
         var lsFilesAfter = testRepo.RunGit("ls-files -s script.sh");
         Assert.StartsWith("100755", lsFilesAfter);
     }
+
+    [Fact]
+    public async Task StageAsync_EmptyDirectory_DoesNotStageAnything_LikeGitCli()
+    {
+        using var testRepo = GitTestRepository.Create();
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+
+        var emptyDirPath = Path.Combine(testRepo.WorkingDirectory, "empty_dir");
+        Directory.CreateDirectory(emptyDirPath);
+
+        // In standard git, directories without files are not tracked in the index
+        await repo.StageAsync("empty_dir");
+
+        var nativeStatus = testRepo.RunGit("status --porcelain").Trim();
+        Assert.Empty(nativeStatus);
+
+        var managedStatus = await repo.GetStatusAsync();
+        Assert.True(managedStatus.IsClean);
+    }
+
+    [Fact]
+    public async Task StatusAsync_PartiallyStagedFiles_Reports_MM_AM_MD_AD_ConsistentWithGitCli()
+    {
+        using var testRepo = GitTestRepository.Create();
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+
+        // 1. MM: Committed, staged modification, then modified in working tree
+        var mmFile = Path.Combine(testRepo.WorkingDirectory, "mm.txt");
+        await File.WriteAllTextAsync(mmFile, "v1\n");
+        await repo.StageAsync("mm.txt");
+
+        // 3. MD: Committed, staged modification, then deleted in working tree
+        var mdFile = Path.Combine(testRepo.WorkingDirectory, "md.txt");
+        await File.WriteAllTextAsync(mdFile, "v1\n");
+        await repo.StageAsync("md.txt");
+
+        await repo.CommitAsync("Base commit", new GitCommitMetadata("Base commit", TestSignature));
+
+        // Modify and stage mm.txt
+        await File.WriteAllTextAsync(mmFile, "v2-staged\n");
+        await repo.StageAsync("mm.txt");
+        // Further modify mm.txt in working tree
+        await File.WriteAllTextAsync(mmFile, "v3-worktree\n");
+
+        // 2. AM: Newly added & staged, then modified in working tree
+        var amFile = Path.Combine(testRepo.WorkingDirectory, "am.txt");
+        await File.WriteAllTextAsync(amFile, "am-staged\n");
+        await repo.StageAsync("am.txt");
+        await File.WriteAllTextAsync(amFile, "am-worktree\n");
+
+        // Modify and stage md.txt, then delete from working tree
+        await File.WriteAllTextAsync(mdFile, "md-staged\n");
+        await repo.StageAsync("md.txt");
+        File.Delete(mdFile);
+
+        // 4. AD: Newly added & staged, then deleted in working tree
+        var adFile = Path.Combine(testRepo.WorkingDirectory, "ad.txt");
+        await File.WriteAllTextAsync(adFile, "ad-staged\n");
+        await repo.StageAsync("ad.txt");
+        File.Delete(adFile);
+
+        // Compare native git status --porcelain
+        var nativeStatus = testRepo.RunGit("status --porcelain");
+        Assert.Contains("MM mm.txt", nativeStatus);
+        Assert.Contains("AM am.txt", nativeStatus);
+        Assert.Contains("MD md.txt", nativeStatus);
+        Assert.Contains("AD ad.txt", nativeStatus);
+
+        // Managed status inspection
+        var managedStatus = await repo.GetStatusAsync();
+        var mmEntry = managedStatus.Entries.FirstOrDefault(e => e.Path == "mm.txt");
+        Assert.NotNull(mmEntry);
+        Assert.Equal(GitFileStatus.StagedModified, mmEntry.StagedStatus);
+        Assert.Equal(GitFileStatus.Modified, mmEntry.WorkingTreeStatus);
+
+        var amEntry = managedStatus.Entries.FirstOrDefault(e => e.Path == "am.txt");
+        Assert.NotNull(amEntry);
+        Assert.Equal(GitFileStatus.StagedNew, amEntry.StagedStatus);
+        Assert.Equal(GitFileStatus.Modified, amEntry.WorkingTreeStatus);
+
+        var mdEntry = managedStatus.Entries.FirstOrDefault(e => e.Path == "md.txt");
+        Assert.NotNull(mdEntry);
+        Assert.Equal(GitFileStatus.StagedModified, mdEntry.StagedStatus);
+        Assert.Equal(GitFileStatus.Deleted, mdEntry.WorkingTreeStatus);
+
+        var adEntry = managedStatus.Entries.FirstOrDefault(e => e.Path == "ad.txt");
+        Assert.NotNull(adEntry);
+        Assert.Equal(GitFileStatus.StagedNew, adEntry.StagedStatus);
+        Assert.Equal(GitFileStatus.Deleted, adEntry.WorkingTreeStatus);
+    }
+
+    [Fact]
+    public async Task StageAsync_ExplicitDeletedFile_StagesDeletion_ConsistentWithGitCli()
+    {
+        using var testRepo = GitTestRepository.Create();
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+
+        var toDelete = Path.Combine(testRepo.WorkingDirectory, "to_delete.txt");
+        await File.WriteAllTextAsync(toDelete, "initial\n");
+        await repo.StageAsync("to_delete.txt");
+        await repo.CommitAsync("Add file", new GitCommitMetadata("Add file", TestSignature));
+
+        // Delete from disk
+        File.Delete(toDelete);
+
+        // In standard git, 'git add to_delete.txt' stages the deletion
+        await repo.StageAsync("to_delete.txt");
+
+        var nativeStatus = testRepo.RunGit("status --porcelain");
+        Assert.Contains("D  to_delete.txt", nativeStatus);
+
+        var managedStatus = await repo.GetStatusAsync();
+        var entry = managedStatus.Entries.FirstOrDefault(e => e.Path == "to_delete.txt");
+        Assert.NotNull(entry);
+        Assert.Equal(GitFileStatus.StagedDeleted, entry.StagedStatus);
+    }
+
+    [Fact]
+    public async Task UnicodeFilenames_CommitAndFsck_MatchesNativeGitCli()
+    {
+        using var testRepo = GitTestRepository.Create();
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+
+        // Filenames with non-ASCII UTF-8 characters
+        var french = Path.Combine(testRepo.WorkingDirectory, "café.txt");
+        var japanese = Path.Combine(testRepo.WorkingDirectory, "日本語.txt");
+        var cyrillic = Path.Combine(testRepo.WorkingDirectory, "документ.txt");
+
+        await File.WriteAllTextAsync(french, "café content\n");
+        await File.WriteAllTextAsync(japanese, "日本語 content\n");
+        await File.WriteAllTextAsync(cyrillic, "cyrillic content\n");
+
+        await repo.StageAsync(["café.txt", "日本語.txt", "документ.txt"]);
+        var commit = await repo.CommitAsync("Commit unicode files", new GitCommitMetadata("Commit unicode files", TestSignature));
+        Assert.NotEqual(GitHash.Zero, commit);
+
+        // Native git fsck --full --strict verifies valid tree and object formatting
+        var fsck = testRepo.RunGit("fsck --full --strict");
+        Assert.DoesNotContain("error:", fsck, StringComparison.OrdinalIgnoreCase);
+
+        // Working tree should be clean
+        var status = testRepo.RunGit("status --porcelain").Trim();
+        Assert.Empty(status);
+    }
+
+    [Fact]
+    public async Task GitIgnore_DirectoryWildcard_IgnoresNestedDirectories_ConsistentWithGitCli()
+    {
+        using var testRepo = GitTestRepository.Create();
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+
+        // Wildcard directory rule in .gitignore
+        await File.WriteAllTextAsync(Path.Combine(testRepo.WorkingDirectory, ".gitignore"), "**/temp/\n");
+        await repo.StageAsync(".gitignore");
+        await repo.CommitAsync("Add gitignore", new GitCommitMetadata("Add gitignore", TestSignature));
+
+        // Create root temp and nested sub/temp
+        var rootTemp = Path.Combine(testRepo.WorkingDirectory, "temp");
+        Directory.CreateDirectory(rootTemp);
+        await File.WriteAllTextAsync(Path.Combine(rootTemp, "root.log"), "temp root");
+
+        var subTemp = Path.Combine(testRepo.WorkingDirectory, "sub", "temp");
+        Directory.CreateDirectory(subTemp);
+        await File.WriteAllTextAsync(Path.Combine(subTemp, "sub.log"), "temp sub");
+
+        var keepFile = Path.Combine(testRepo.WorkingDirectory, "temperature.txt");
+        await File.WriteAllTextAsync(keepFile, "keep");
+
+        // Native git status should ignore temp/root.log and sub/temp/sub.log, but show temperature.txt
+        var nativeStatus = testRepo.RunGit("status --porcelain -u");
+        Assert.Contains("?? temperature.txt", nativeStatus);
+        Assert.DoesNotContain("temp/root.log", nativeStatus);
+        Assert.DoesNotContain("sub/temp/sub.log", nativeStatus);
+
+        // Managed repo status should match
+        var managedStatus = await repo.GetStatusAsync();
+        Assert.Contains(managedStatus.Entries, e => e.Path == "temperature.txt" && e.WorkingTreeStatus == GitFileStatus.Untracked);
+        Assert.DoesNotContain(managedStatus.Entries, e => e.Path.Contains("root.log") || e.Path.Contains("sub.log"));
+    }
+
+    [Fact]
+    public async Task TreeTransition_FileReplacedByDirectoryWithSameName_CommitAndFsck_ConsistentWithGitCli()
+    {
+        using var testRepo = GitTestRepository.Create();
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+
+        // First commit: 'item' is a file
+        var itemFile = Path.Combine(testRepo.WorkingDirectory, "item");
+        await File.WriteAllTextAsync(itemFile, "item as file\n");
+        await repo.StageAsync("item");
+        await repo.CommitAsync("Item as file", new GitCommitMetadata("Item as file", TestSignature));
+
+        // Delete file 'item' and replace it with directory 'item' containing 'nested.txt'
+        File.Delete(itemFile);
+        var itemDir = Path.Combine(testRepo.WorkingDirectory, "item");
+        Directory.CreateDirectory(itemDir);
+        await File.WriteAllTextAsync(Path.Combine(itemDir, "nested.txt"), "item nested content\n");
+
+        await repo.StageAsync("item");
+        var commit = await repo.CommitAsync("Item as directory", new GitCommitMetadata("Item as directory", TestSignature));
+        Assert.NotEqual(GitHash.Zero, commit);
+
+        // Native git fsck must pass cleanly
+        var fsck = testRepo.RunGit("fsck --full --strict");
+        Assert.DoesNotContain("error:", fsck, StringComparison.OrdinalIgnoreCase);
+
+        var status = testRepo.RunGit("status --porcelain").Trim();
+        Assert.Empty(status);
+    }
+
+    [Fact]
+    public async Task TreeTransition_DirectoryReplacedByFileWithSameName_CommitAndFsck_ConsistentWithGitCli()
+    {
+        using var testRepo = GitTestRepository.Create();
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+
+        // First commit: 'item' is a directory containing 'nested.txt'
+        var itemDir = Path.Combine(testRepo.WorkingDirectory, "item");
+        Directory.CreateDirectory(itemDir);
+        await File.WriteAllTextAsync(Path.Combine(itemDir, "nested.txt"), "nested initial\n");
+        await repo.StageAsync("item");
+        await repo.CommitAsync("Item as directory", new GitCommitMetadata("Item as directory", TestSignature));
+
+        // Delete directory 'item' and replace it with a regular file 'item'
+        Directory.Delete(itemDir, recursive: true);
+        var itemFile = Path.Combine(testRepo.WorkingDirectory, "item");
+        await File.WriteAllTextAsync(itemFile, "item as file content\n");
+
+        await repo.StageAsync("item");
+        var commit = await repo.CommitAsync("Item as file", new GitCommitMetadata("Item as file", TestSignature));
+        Assert.NotEqual(GitHash.Zero, commit);
+
+        // Native git fsck must pass cleanly
+        var fsck = testRepo.RunGit("fsck --full --strict");
+        Assert.DoesNotContain("error:", fsck, StringComparison.OrdinalIgnoreCase);
+
+        var status = testRepo.RunGit("status --porcelain").Trim();
+        Assert.Empty(status);
+    }
 }
+

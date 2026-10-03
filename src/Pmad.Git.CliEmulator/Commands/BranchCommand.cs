@@ -10,11 +10,11 @@ internal static class BranchCommand
     public static Command Build(CommandContext ctx)
     {
         var cmd = new Command("branch") { Description = "List, create, or delete branches" };
-        var allOpt = new Option<bool>("-a") { Description = "List both local and remote-tracking branches" };
+        var allOpt = new Option<bool>("-a", "--all") { Description = "List both local and remote-tracking branches" };
         var verboseOpt = new Option<bool>("-v", "--verbose") { Description = "Show sha1 and commit subject" };
-        var deleteOpt = new Option<bool>("-d") { Description = "Delete branch (must be merged)" };
+        var deleteOpt = new Option<bool>("-d", "--delete") { Description = "Delete branch (must be merged)" };
         var forceDeleteOpt = new Option<bool>("-D") { Description = "Force delete branch" };
-        var moveOpt = new Option<bool>("-m") { Description = "Rename a branch" };
+        var moveOpt = new Option<bool>("-m", "-M", "--move") { Description = "Rename a branch" };
         var showCurrentOpt = new Option<bool>("--show-current") { Description = "Print the name of the current branch" };
         var nameArg = new Argument<string?>("name") { Description = "Branch name", Arity = ArgumentArity.ZeroOrOne };
         var newNameArg = new Argument<string?>("newname") { Description = "New branch name (rename/create start point)", Arity = ArgumentArity.ZeroOrOne };

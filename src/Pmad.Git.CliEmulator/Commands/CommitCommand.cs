@@ -14,11 +14,13 @@ internal static class CommitCommand
         var allOpt = new Option<bool>("-a", "--all") { Description = "Stage all tracked modified/deleted files before committing" };
         var amendOpt = new Option<bool>("--amend") { Description = "Amend the last commit" };
         var allowEmptyOpt = new Option<bool>("--allow-empty") { Description = "Allow recording an empty commit" };
+        var noEditOpt = new Option<bool>("--no-edit") { Description = "Use the selected commit message without editing" };
 
         cmd.Options.Add(messageOpt);
         cmd.Options.Add(allOpt);
         cmd.Options.Add(amendOpt);
         cmd.Options.Add(allowEmptyOpt);
+        cmd.Options.Add(noEditOpt);
 
         cmd.SetAction(async (ParseResult pr, CancellationToken ct) =>
         {
@@ -26,6 +28,7 @@ internal static class CommitCommand
             var all = pr.GetValue(allOpt);
             var amend = pr.GetValue(amendOpt);
             var allowEmpty = pr.GetValue(allowEmptyOpt);
+            var noEdit = pr.GetValue(noEditOpt);
 
             try
             {
@@ -77,9 +80,10 @@ internal static class CommitCommand
                             ct);
                     }
 
+                    var effectiveMessage = message ?? headCommit.Message;
                     var hash = await ctx.Repository.CommitAmendAsync(message, stageAll: false, cancellationToken: ct);
                     var currentBranch = await ctx.Repository.GetCurrentBranchNameAsync(ct) ?? "HEAD";
-                    await ctx.StdOut.WriteLineAsync($"[{currentBranch} (amend) {hash.ToString()[..7]}] {message ?? "(amended)"}");
+                    await ctx.StdOut.WriteLineAsync($"[{currentBranch} (amend) {hash.ToString()[..7]}] {effectiveMessage.Split('\n', 2)[0].Trim()}");
                     return 0;
                 }
                 else

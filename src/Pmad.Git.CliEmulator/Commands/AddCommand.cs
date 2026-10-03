@@ -66,7 +66,9 @@ internal static class AddCommand
                 }
                 if (paths.Length == 0)
                 {
-                    return ctx.WriteError("Nothing specified, nothing added. Use 'git add -A' to stage all.");
+                    await ctx.StdErr.WriteLineAsync("Nothing specified, nothing added.");
+                    await ctx.StdErr.WriteLineAsync("hint: Maybe you wanted to say 'git add .'?");
+                    return 0;
                 }
 
                 var index = await GitIndex.ReadAsync(ctx.Repository.IndexManager.IndexPath, ctx.Repository.HashLengthBytes, ct);

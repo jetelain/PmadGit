@@ -966,4 +966,229 @@ public class GitCliCompatibilityTests
         Assert.NotEqual(0, response.ExitCode);
         Assert.Contains("not found", response.StdErr + response.StdOut, StringComparison.OrdinalIgnoreCase);
     }
+
+    [Fact]
+    public async Task Add_NoArgs_ExitsWithZero_LikeStandardGit()
+    {
+        using var testRepo = GitTestRepository.Create();
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+        var emulator = new GitCliEmulator(repo);
+        var approval = new TestUserApproval();
+
+        // Standard git: 'git add' with no args exits with 0 and prints 'Nothing specified, nothing added.'
+        var response = await emulator.InvokeAsync(["add"], approval);
+
+        Assert.Equal(0, response.ExitCode);
+        Assert.Contains("Nothing specified, nothing added", response.StdErr + response.StdOut);
+    }
+
+    [Fact]
+    public async Task Branch_AllFlagLong_ListsBranches_LikeStandardGit()
+    {
+        using var testRepo = GitTestRepository.Create();
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+        var emulator = new GitCliEmulator(repo);
+        var approval = new TestUserApproval();
+
+        // Standard git: 'git branch --all' lists branches
+        var response = await emulator.InvokeAsync(["branch", "--all"], approval);
+
+        Assert.Equal(0, response.ExitCode);
+        Assert.Contains("master", response.StdOut);
+    }
+
+    [Fact]
+    public async Task Branch_DeleteFlagLong_DeletesBranch_LikeStandardGit()
+    {
+        using var testRepo = GitTestRepository.Create();
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+        var emulator = new GitCliEmulator(repo);
+        var approval = new TestUserApproval();
+
+        await emulator.InvokeAsync(["branch", "topic-to-delete"], approval);
+        Assert.Contains("topic-to-delete", (await emulator.InvokeAsync(["branch"], approval)).StdOut);
+
+        // Standard git: 'git branch --delete <name>' deletes merged branch
+        var response = await emulator.InvokeAsync(["branch", "--delete", "topic-to-delete"], approval);
+
+        Assert.Equal(0, response.ExitCode);
+        Assert.DoesNotContain("topic-to-delete", (await emulator.InvokeAsync(["branch"], approval)).StdOut);
+    }
+
+    [Fact]
+    public async Task Tag_DeleteFlagLong_DeletesTag_LikeStandardGit()
+    {
+        using var testRepo = GitTestRepository.Create();
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+        var emulator = new GitCliEmulator(repo);
+        var approval = new TestUserApproval();
+
+        await emulator.InvokeAsync(["tag", "v1.5.0"], approval);
+        Assert.Contains("v1.5.0", (await emulator.InvokeAsync(["tag", "-l"], approval)).StdOut);
+
+        // Standard git: 'git tag --delete <name>' deletes tag
+        var response = await emulator.InvokeAsync(["tag", "--delete", "v1.5.0"], approval);
+
+        Assert.Equal(0, response.ExitCode);
+        Assert.DoesNotContain("v1.5.0", (await emulator.InvokeAsync(["tag", "-l"], approval)).StdOut);
+    }
+
+    [Fact]
+    public async Task Tag_ExistingTagWithoutForce_FailsWithCode128_LikeStandardGit()
+    {
+        using var testRepo = GitTestRepository.Create();
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+        var emulator = new GitCliEmulator(repo);
+        var approval = new TestUserApproval();
+
+        await emulator.InvokeAsync(["tag", "v1.0.0"], approval);
+
+        // Standard git: 'git tag v1.0.0' on already existing tag exits 128 with fatal
+        var response = await emulator.InvokeAsync(["tag", "v1.0.0"], approval);
+
+        Assert.Equal(128, response.ExitCode);
+        Assert.Contains("already exists", response.StdErr, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task Tag_ForceFlag_OverwritesExistingTag_LikeStandardGit()
+    {
+        using var testRepo = GitTestRepository.Create();
+        testRepo.Commit("Commit 2", ("f2.txt", "2"));
+        var parentHash = testRepo.Head;
+        testRepo.Commit("Commit 3", ("f3.txt", "3"));
+        var headHash = testRepo.Head;
+
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+        var emulator = new GitCliEmulator(repo);
+        var approval = new TestUserApproval();
+
+        // Tag at parent
+        await emulator.InvokeAsync(["tag", "v2.0.0", "HEAD~1"], approval);
+        Assert.Equal(parentHash, (await repo.GetCommitAsync("v2.0.0")).Id);
+
+        // Standard git: 'git tag -f v2.0.0' or 'git tag --force v2.0.0' replaces tag
+        var response = await emulator.InvokeAsync(["tag", "-f", "v2.0.0"], approval);
+
+        Assert.Equal(0, response.ExitCode);
+        Assert.Equal(headHash, (await repo.GetCommitAsync("v2.0.0")).Id);
+    }
+
+    [Fact]
+    public async Task Commit_AllowEmpty_CreatesCommitWhenClean_LikeStandardGit()
+    {
+        using var testRepo = GitTestRepository.Create();
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+        var emulator = new GitCliEmulator(repo);
+        var approval = new TestUserApproval();
+
+        var initialHead = await repo.GetCommitAsync("HEAD");
+
+        // Standard git: 'git commit --allow-empty -m "empty commit"' creates commit pointing to same tree
+        var response = await emulator.InvokeAsync(["commit", "--allow-empty", "-m", "empty commit"], approval);
+
+        Assert.Equal(0, response.ExitCode);
+        var newHead = await repo.GetCommitAsync("HEAD");
+        Assert.NotEqual(initialHead.Id, newHead.Id);
+        Assert.Equal(initialHead.Tree, newHead.Tree);
+        Assert.Equal("empty commit", newHead.Message);
+    }
+
+    [Fact]
+    public async Task Commit_AmendNoEdit_PreservesMessageAndAmends_LikeStandardGit()
+    {
+        using var testRepo = GitTestRepository.Create();
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+        var emulator = new GitCliEmulator(repo);
+        var approval = new TestUserApproval();
+
+        var initialHead = await repo.GetCommitAsync("HEAD");
+
+        // Add a new file
+        await File.WriteAllTextAsync(Path.Combine(testRepo.WorkingDirectory, "amended_file.txt"), "content");
+        await emulator.InvokeAsync(["add", "amended_file.txt"], approval);
+
+        // Standard git: 'git commit --amend --no-edit' keeps original commit message
+        var response = await emulator.InvokeAsync(["commit", "--amend", "--no-edit"], approval);
+
+        Assert.Equal(0, response.ExitCode);
+        var newHead = await repo.GetCommitAsync("HEAD");
+        Assert.NotEqual(initialHead.Id, newHead.Id);
+        Assert.Equal(initialHead.Message.Trim(), newHead.Message.Trim());
+
+        var status = await emulator.InvokeAsync(["status", "--porcelain"], approval);
+        Assert.Empty(status.StdOut.Trim());
+    }
+
+    [Fact]
+    public async Task Restore_StagedShorthandS_UnstagesFile_LikeStandardGit()
+    {
+        using var testRepo = GitTestRepository.Create();
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+        var emulator = new GitCliEmulator(repo);
+        var approval = new TestUserApproval();
+
+        var newFile = Path.Combine(testRepo.WorkingDirectory, "restore_test.txt");
+        await File.WriteAllTextAsync(newFile, "content");
+        await emulator.InvokeAsync(["add", "restore_test.txt"], approval);
+
+        var stagedStatus = await emulator.InvokeAsync(["status", "--porcelain"], approval);
+        Assert.Contains("A  restore_test.txt", stagedStatus.StdOut);
+
+        // Standard git: 'git restore -S <file>' unstages the file
+        var response = await emulator.InvokeAsync(["restore", "-S", "restore_test.txt"], approval);
+
+        Assert.Equal(0, response.ExitCode);
+        var unstagedStatus = await emulator.InvokeAsync(["status", "--porcelain"], approval);
+        Assert.Contains("?? restore_test.txt", unstagedStatus.StdOut);
+        Assert.DoesNotContain("A  restore_test.txt", unstagedStatus.StdOut);
+    }
+
+    [Fact]
+    public async Task Status_Porcelain_DualState_MM_AM_MD_AD_LikeStandardGit()
+    {
+        using var testRepo = GitTestRepository.Create();
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+        var emulator = new GitCliEmulator(repo);
+        var approval = new TestUserApproval();
+
+        // MM: committed -> staged mod -> worktree mod
+        var mmFile = Path.Combine(testRepo.WorkingDirectory, "mm.txt");
+        await File.WriteAllTextAsync(mmFile, "v1\n");
+        await emulator.InvokeAsync(["add", "mm.txt"], approval);
+
+        // MD: committed -> staged mod -> worktree deleted
+        var mdFile = Path.Combine(testRepo.WorkingDirectory, "md.txt");
+        await File.WriteAllTextAsync(mdFile, "v1\n");
+        await emulator.InvokeAsync(["add", "md.txt"], approval);
+
+        await emulator.InvokeAsync(["commit", "-m", "Base commit"], approval);
+
+        await File.WriteAllTextAsync(mmFile, "v2-staged\n");
+        await emulator.InvokeAsync(["add", "mm.txt"], approval);
+        await File.WriteAllTextAsync(mmFile, "v3-worktree\n");
+
+        var amFile = Path.Combine(testRepo.WorkingDirectory, "am.txt");
+        await File.WriteAllTextAsync(amFile, "am-staged\n");
+        await emulator.InvokeAsync(["add", "am.txt"], approval);
+        await File.WriteAllTextAsync(amFile, "am-worktree\n");
+
+        await File.WriteAllTextAsync(mdFile, "md-staged\n");
+        await emulator.InvokeAsync(["add", "md.txt"], approval);
+        File.Delete(mdFile);
+
+        var adFile = Path.Combine(testRepo.WorkingDirectory, "ad.txt");
+        await File.WriteAllTextAsync(adFile, "ad-staged\n");
+        await emulator.InvokeAsync(["add", "ad.txt"], approval);
+        File.Delete(adFile);
+
+        // In standard git: 'git status --porcelain' outputs MM, AM, MD, AD
+        var status = await emulator.InvokeAsync(["status", "--porcelain"], approval);
+
+        Assert.Equal(0, status.ExitCode);
+        Assert.Contains("MM mm.txt", status.StdOut);
+        Assert.Contains("AM am.txt", status.StdOut);
+        Assert.Contains("MD md.txt", status.StdOut);
+        Assert.Contains("AD ad.txt", status.StdOut);
+    }
 }
