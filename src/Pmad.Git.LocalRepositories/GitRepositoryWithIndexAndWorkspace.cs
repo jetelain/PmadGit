@@ -355,6 +355,18 @@ public sealed class GitRepositoryWithIndexAndWorkspace : IGitWorkspaceRepository
         _indexManager.RestoreAllAsync(removeUntracked, cancellationToken);
 
     /// <inheritdoc />
+    public Task MoveAsync(string sourcePath, string destinationPath, bool force = false, CancellationToken cancellationToken = default) =>
+        _indexManager.MoveAsync(sourcePath, destinationPath, force, cancellationToken);
+
+    /// <inheritdoc />
+    public Task MoveAsync(IEnumerable<string> sourcePaths, string destinationDirectory, bool force = false, CancellationToken cancellationToken = default) =>
+        _indexManager.MoveAsync(sourcePaths, destinationDirectory, force, cancellationToken);
+
+    /// <inheritdoc />
+    public Task<GitMoveResult> MoveAsync(IEnumerable<string> sourcePaths, string destinationPath, GitMoveOptions? options = null, CancellationToken cancellationToken = default) =>
+        _indexManager.MoveAsync(sourcePaths, destinationPath, options, cancellationToken);
+
+    /// <inheritdoc />
     public async Task<string> GetUnstagedDiffAsync(string? path = null, CancellationToken cancellationToken = default)
     {
         var index = await GitIndex.ReadAsync(_indexManager.IndexPath, HashLengthBytes, cancellationToken).ConfigureAwait(false);
