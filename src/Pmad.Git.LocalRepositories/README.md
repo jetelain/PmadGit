@@ -114,6 +114,7 @@ await workspaceRepo.ResetAsync(baseCommitHash, GitResetMode.Hard);
 - `UnstageAsync(path)` / `UnstageAllAsync()` restores index entries from HEAD while preserving working-tree changes.
 - `RestoreFileAsync(path)` / `RestoreAllAsync()` discards working-tree changes by restoring files from the index.
 - Full `.gitignore` and `.git/info/exclude` rule evaluation via `GitIgnoreMatcher` (supports wildcards, leading/trailing slashes, directory anchors, and negation rules `!`).
+- **No Line-Ending Normalization (`core.autocrlf`)**: The library intentionally does not implement `core.autocrlf`, `core.eol`, or line-ending conversion. Staged files are written to the object store bit-for-bit to remain as lightweight, fast, and zero-copy as possible. Applications are assumed to work exclusively with Unix line separators (`\n`).
 
 ### 100% Managed Binary Git Index (`DIRC` v2)
 `GitIndex` and `GitIndexEntry` provide a complete pure-C# implementation of the canonical Git binary index format:

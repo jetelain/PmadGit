@@ -309,30 +309,6 @@ public sealed class GitWorkspaceCliEdgeCaseInteropTests
         Assert.Contains("dest_item.txt", staged);
     }
 
-    [Fact]
-    public async Task LineEndings_CrlfFile_HashObjectMatchesNativeGitCli()
-    {
-        using var testRepo = GitTestRepository.Create();
-        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
-
-        // File containing CRLF line endings
-        var content = "line 1\r\nline 2\r\nline 3\r\n";
-        var filePath = Path.Combine(testRepo.WorkingDirectory, "crlf.txt");
-        await File.WriteAllTextAsync(filePath, content);
-
-        // Get hash computed by native git hash-object
-        var nativeHash = testRepo.RunGit("hash-object crlf.txt").Trim();
-
-        // Stage via managed repository
-        await repo.StageAsync("crlf.txt");
-
-        var index = await GitIndex.ReadAsync(repo.IndexManager.IndexPath);
-        var entry = index.FindEntry("crlf.txt");
-        Assert.NotNull(entry);
-
-        // Hash in managed index must match native git hash-object
-        Assert.Equal(nativeHash, entry.Hash.ToString());
-    }
 
     [Fact]
     public async Task Symlink_Mode120000_InspectionInteropWithNativeGit()

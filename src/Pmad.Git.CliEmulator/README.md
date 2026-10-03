@@ -13,6 +13,7 @@ Managed Git CLI emulator for AI agents on top of `Pmad.Git.LocalRepositories` an
 - **Approval gates**: Every destructive or network operation calls `IUserApproval` with rich context objects (affected branch, commit history to lose, overwritten files, remote URL, etc.).
 - **Exit codes and stream separation**: Returns `GitCliResponse` with `ExitCode`, `StdOut`, and `StdErr`.
 - **Exit code 130 on denial / cancellation**: Denying an approval returns exit code 130 with a descriptive error message.
+- **No line-ending normalization**: `core.autocrlf` and line-ending conversions are out of scope; staged files are written bit-for-bit, assuming Unix line separators (`\n`).
 
 ## Usage
 
