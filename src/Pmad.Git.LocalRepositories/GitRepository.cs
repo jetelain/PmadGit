@@ -1420,19 +1420,67 @@ public sealed class GitRepository : IGitRepository, IGitRepositoryCacheInvalidat
             }
         }
 
-        var data = await _objectStore.ReadObjectAsync(hash, cancellationToken).ConfigureAwait(false);
-        if (data.Type != GitObjectType.Commit)
+        var currentHash = hash;
+        var data = await _objectStore.ReadObjectAsync(currentHash, cancellationToken).ConfigureAwait(false);
+        while (data.Type == GitObjectType.Tag)
         {
-            throw new InvalidOperationException($"Object {hash} is not a commit");
+            var target = ParseTagTarget(data.Content);
+            if (!target.HasValue)
+            {
+                throw new InvalidOperationException($"Object {currentHash} is an invalid tag object");
+            }
+            currentHash = target.Value;
+            lock (_commitLock)
+            {
+                if (_commitCache.TryGetValue(currentHash, out var cached))
+                {
+                    return cached;
+                }
+            }
+            data = await _objectStore.ReadObjectAsync(currentHash, cancellationToken).ConfigureAwait(false);
         }
 
-        var commit = GitCommit.Parse(hash, data.Content);
+        if (data.Type != GitObjectType.Commit)
+        {
+            throw new InvalidOperationException($"Object {currentHash} is not a commit");
+        }
+
+        var commit = GitCommit.Parse(currentHash, data.Content);
         lock (_commitLock)
         {
-            _commitCache[hash] = commit;
+            _commitCache[currentHash] = commit;
+            if (currentHash != hash)
+            {
+                _commitCache[hash] = commit;
+            }
         }
 
         return commit;
+    }
+
+    private static GitHash? ParseTagTarget(byte[] payload)
+    {
+        var span = payload.AsSpan();
+        var newline = span.IndexOf((byte)'\n');
+        while (newline >= 0)
+        {
+            var line = span.Slice(0, newline);
+            var spaceIndex = line.IndexOf((byte)' ');
+            if (spaceIndex > 0)
+            {
+                var key = Encoding.ASCII.GetString(line[..spaceIndex]);
+                if (key.Equals("object", StringComparison.Ordinal))
+                {
+                    var value = Encoding.ASCII.GetString(line[(spaceIndex + 1)..]);
+                    return GitHash.TryParse(value, out var hash) ? hash : null;
+                }
+            }
+
+            span = span[(newline + 1)..];
+            newline = span.IndexOf((byte)'\n');
+        }
+
+        return null;
     }
 
     private async Task<GitTree> GetTreeAsync(GitHash hash, CancellationToken cancellationToken)
@@ -1511,6 +1559,36 @@ public sealed class GitRepository : IGitRepository, IGitRepositoryCacheInvalidat
         if (GitHash.TryParse(reference, out var hash))
         {
             return hash;
+        }
+
+        if (reference.Equals("@{u}", StringComparison.OrdinalIgnoreCase) ||
+            reference.Equals("@{upstream}", StringComparison.OrdinalIgnoreCase) ||
+            reference.Equals("HEAD@{u}", StringComparison.OrdinalIgnoreCase) ||
+            reference.Equals("HEAD@{upstream}", StringComparison.OrdinalIgnoreCase))
+        {
+            var branch = await GetCurrentBranchNameAsync(cancellationToken).ConfigureAwait(false);
+            if (string.IsNullOrEmpty(branch))
+            {
+                throw new InvalidOperationException("HEAD does not point to a branch.");
+            }
+            var tracking = await GetTrackingStatusAsync(branch, cancellationToken).ConfigureAwait(false);
+            if (!tracking.HasUpstream || string.IsNullOrEmpty(tracking.UpstreamBranch))
+            {
+                throw new InvalidOperationException($"No upstream configured for branch '{branch}'.");
+            }
+            return await ResolveBaseReferenceAsync(tracking.UpstreamBranch, cancellationToken).ConfigureAwait(false);
+        }
+
+        var uIndex = reference.IndexOf("@{", StringComparison.Ordinal);
+        if (uIndex > 0 && (reference.EndsWith("@{u}", StringComparison.OrdinalIgnoreCase) || reference.EndsWith("@{upstream}", StringComparison.OrdinalIgnoreCase)))
+        {
+            var branch = reference[..uIndex];
+            var tracking = await GetTrackingStatusAsync(branch, cancellationToken).ConfigureAwait(false);
+            if (!tracking.HasUpstream || string.IsNullOrEmpty(tracking.UpstreamBranch))
+            {
+                throw new InvalidOperationException($"No upstream configured for branch '{branch}'.");
+            }
+            return await ResolveBaseReferenceAsync(tracking.UpstreamBranch, cancellationToken).ConfigureAwait(false);
         }
 
         var candidates = new[]
@@ -1856,7 +1934,10 @@ public sealed class GitRepository : IGitRepository, IGitRepositoryCacheInvalidat
 
         foreach (var (name, leaf) in node.Leaves)
         {
-            entries.Add(new TreeEntryData(name, leaf.Mode, leaf.Hash));
+            if (!node.Directories.ContainsKey(name))
+            {
+                entries.Add(new TreeEntryData(name, leaf.Mode, leaf.Hash));
+            }
         }
 
         entries.Sort(CompareTreeEntries);

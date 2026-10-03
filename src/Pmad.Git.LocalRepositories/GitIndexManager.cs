@@ -173,21 +173,22 @@ public sealed class GitIndexManager
                 else
                 {
                     var currentMode = GitIndexEntry.GetFileMode(fileInfo!);
+                    var hasStatCache = normalIndexEntry.FileSize > 0 || normalIndexEntry.MtimeSeconds > 0;
                     if (currentMode != normalIndexEntry.FileMode)
                     {
                         // Executable mode changed in working tree
                         workTreeStatus = GitFileStatus.Modified;
                     }
-                    else if (fileInfo!.Length != normalIndexEntry.FileSize)
+                    else if (hasStatCache && fileInfo!.Length != normalIndexEntry.FileSize)
                     {
                         workTreeStatus = GitFileStatus.Modified;
                     }
                     else
                     {
-                        var mtimeUtc = fileInfo.LastWriteTimeUtc;
+                        var mtimeUtc = fileInfo!.LastWriteTimeUtc;
                         var mtimeSec = (uint)Math.Max(0, new DateTimeOffset(mtimeUtc).ToUnixTimeSeconds());
                         var mtimeNano = (uint)((mtimeUtc.Ticks % TimeSpan.TicksPerSecond) * 100);
-                        if (mtimeSec == normalIndexEntry.MtimeSeconds && mtimeNano == normalIndexEntry.MtimeNanoseconds)
+                        if (hasStatCache && mtimeSec == normalIndexEntry.MtimeSeconds && mtimeNano == normalIndexEntry.MtimeNanoseconds)
                         {
                             // Stat cache matches: content and mode are unmodified
                             workTreeStatus = GitFileStatus.Clean;
@@ -195,8 +196,8 @@ public sealed class GitIndexManager
                         }
                         else
                         {
-                            // Timestamp changed: verify content hash
-                            var computedHash = await ComputeFileBlobHashAsync(fileInfo.FullName, cancellationToken).ConfigureAwait(false);
+                            // Timestamp changed or stat cache uninitialized: verify content hash
+                            var computedHash = await ComputeFileBlobHashAsync(fileInfo!.FullName, cancellationToken).ConfigureAwait(false);
                             workTreeHash = computedHash;
                             workTreeStatus = (computedHash == normalIndexEntry.Hash && currentMode == normalIndexEntry.FileMode)
                                 ? GitFileStatus.Clean
@@ -267,7 +268,63 @@ public sealed class GitIndexManager
     {
         var index = await GitIndex.ReadAsync(IndexPath, _repository.HashLengthBytes, cancellationToken).ConfigureAwait(false);
 
+        var expandedPaths = new List<string>();
         foreach (var path in pathsList)
+        {
+            var fullPath = Path.Combine(WorkingDirectory, path);
+            var normalizedPath = path.Replace('\\', '/').Trim('/');
+            var dirPrefix = string.IsNullOrEmpty(normalizedPath) ? "" : normalizedPath + "/";
+
+            if (Directory.Exists(fullPath))
+            {
+                if (!string.IsNullOrEmpty(normalizedPath) && index.FindEntry(normalizedPath) != null)
+                {
+                    expandedPaths.Add(normalizedPath);
+                }
+
+                var ignoreMatcher = GitIgnoreMatcher.Load(WorkingDirectory);
+                var subFiles = new Dictionary<string, FileInfo>(StringComparer.Ordinal);
+                var dummyPrefixes = new HashSet<string>(StringComparer.Ordinal);
+                var dummyTracked = new HashSet<string>(StringComparer.Ordinal);
+                ScanWorkingDirectory(new DirectoryInfo(fullPath), normalizedPath, ignoreMatcher, dummyPrefixes, dummyTracked, subFiles);
+
+                foreach (var fileRel in subFiles.Keys.OrderBy(k => k, StringComparer.Ordinal))
+                {
+                    expandedPaths.Add(fileRel);
+                }
+
+                foreach (var entry in index.Entries)
+                {
+                    if (entry.Path.StartsWith(dirPrefix, StringComparison.Ordinal) && !File.Exists(Path.Combine(WorkingDirectory, entry.Path)))
+                    {
+                        expandedPaths.Add(entry.Path);
+                    }
+                }
+            }
+            else if (!File.Exists(fullPath))
+            {
+                var matchingEntries = index.Entries
+                    .Where(e => e.Path.StartsWith(dirPrefix, StringComparison.Ordinal))
+                    .Select(e => e.Path)
+                    .Distinct(StringComparer.Ordinal)
+                    .ToList();
+
+                if (matchingEntries.Count > 0)
+                {
+                    expandedPaths.AddRange(matchingEntries);
+                }
+                else
+                {
+                    expandedPaths.Add(path);
+                }
+            }
+            else
+            {
+                expandedPaths.Add(path);
+            }
+        }
+
+        foreach (var path in expandedPaths)
         {
             cancellationToken.ThrowIfCancellationRequested();
             var fullPath = Path.Combine(WorkingDirectory, path);
@@ -276,6 +333,7 @@ public sealed class GitIndexManager
             {
                 var fileInfo = new FileInfo(fullPath);
                 GitHash blobHash;
+
                 var options = new FileStreamOptions
                 {
                     Mode = FileMode.Open,
@@ -377,7 +435,24 @@ public sealed class GitIndexManager
                 ? await GetTreeFilesAsync(source, cancellationToken).ConfigureAwait(false)
                 : await GetHeadFilesAsync(cancellationToken).ConfigureAwait(false);
 
+            var expandedPaths = new List<string>();
             foreach (var path in pathsList)
+            {
+                var dirPrefix = path.EndsWith('/') ? path : path + "/";
+                var matchingFromIndex = index.Entries.Where(e => e.Path.StartsWith(dirPrefix, StringComparison.Ordinal)).Select(e => e.Path);
+                var matchingFromSource = sourceFiles.Keys.Where(k => k.StartsWith(dirPrefix, StringComparison.Ordinal));
+                var allMatching = matchingFromIndex.Concat(matchingFromSource).Distinct(StringComparer.Ordinal).ToList();
+                if (allMatching.Count > 0)
+                {
+                    expandedPaths.AddRange(allMatching);
+                }
+                else
+                {
+                    expandedPaths.Add(path);
+                }
+            }
+
+            foreach (var path in expandedPaths)
             {
                 cancellationToken.ThrowIfCancellationRequested();
 
@@ -2101,6 +2176,7 @@ public sealed class GitIndexManager
     private async Task<GitHash> ComputeFileBlobHashAsync(string fullPath, CancellationToken cancellationToken)
     {
         var fileInfo = new FileInfo(fullPath);
+
         var algorithmName = GitHashHelper.GetAlgorithmName(_repository.HashLengthBytes);
         using var hashAlgo = IncrementalHash.CreateHash(algorithmName);
 
@@ -2126,4 +2202,5 @@ public sealed class GitIndexManager
         var hashBytes = hashAlgo.GetHashAndReset();
         return GitHash.FromBytes(hashBytes);
     }
+
 }

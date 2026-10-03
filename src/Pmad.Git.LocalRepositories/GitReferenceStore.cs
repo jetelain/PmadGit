@@ -625,7 +625,8 @@ internal sealed class GitReferenceStore : IGitReferenceStore
             if (modified)
             {
                 var tempPath = Path.Combine(_gitDirectory, $"packed-refs.{Guid.NewGuid():N}.tmp");
-                await File.WriteAllLinesAsync(tempPath, updatedLines, cancellationToken).ConfigureAwait(false);
+                var content = string.Join("\n", updatedLines) + (updatedLines.Count > 0 ? "\n" : "");
+                await File.WriteAllTextAsync(tempPath, content, cancellationToken).ConfigureAwait(false);
                 File.Move(tempPath, packedRefsPath, overwrite: true);
             }
         }

@@ -116,6 +116,16 @@ internal static class SwitchCommand
                 return ctx.WriteError(isDetach ? "Missing commit to detach to." : "Missing branch name.");
             }
 
+            if (!isCreate && (branchOrCommit == "-" || branchOrCommit == "@{-1}"))
+            {
+                var prev = await ReflogHelper.GetPreviousBranchAsync(ctx.Repository.GitDirectory, ct).ConfigureAwait(false);
+                if (string.IsNullOrEmpty(prev))
+                {
+                    return ctx.WriteError("fatal: invalid reference: -");
+                }
+                branchOrCommit = prev;
+            }
+
             try
             {
                 if (isDetach)
@@ -329,6 +339,8 @@ internal static class SwitchCommand
                         }
                     }
                 }
+
+                await ReflogHelper.RecordCheckoutAsync(ctx.Repository.GitDirectory, currentBranch, targetBranch, ct).ConfigureAwait(false);
 
                 await ctx.Repository.CheckoutBranchAsync(
                     targetBranch,

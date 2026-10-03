@@ -126,7 +126,7 @@ public sealed class GitCliEmulator : IGitCliEmulator, IDisposable, IAsyncDisposa
         int exitCode;
         try
         {
-            var parseResult = rootCommand.Parse(NormalizeArgs(args));
+            var parseResult = rootCommand.Parse(NormalizeArgs(args), new ParserConfiguration { ResponseFileTokenReplacer = null });
             exitCode = await parseResult.InvokeAsync(invocationConfig, cancellationToken)
                 .ConfigureAwait(false);
         }
@@ -196,6 +196,11 @@ public sealed class GitCliEmulator : IGitCliEmulator, IDisposable, IAsyncDisposa
 
     internal static string[] NormalizeArgs(string[] args)
     {
+        if (args.Length > 0 && string.Equals(args[0], "git", StringComparison.OrdinalIgnoreCase))
+        {
+            args = args.Skip(1).ToArray();
+        }
+
         if (args.Length == 0)
         {
             return args;

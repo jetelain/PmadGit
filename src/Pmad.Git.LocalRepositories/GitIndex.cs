@@ -61,14 +61,12 @@ public sealed class GitIndex
             throw new ArgumentNullException(nameof(entry));
         }
 
-        for (var i = 0; i < Entries.Count; i++)
-        {
-            if (Entries[i].Path.Equals(entry.Path, StringComparison.Ordinal) && Entries[i].Stage == entry.Stage)
-            {
-                Entries[i] = entry;
-                return;
-            }
-        }
+        var entryPrefix = entry.Path + "/";
+        Entries.RemoveAll(e =>
+            (e.Path.Equals(entry.Path, StringComparison.Ordinal) && e.Stage == entry.Stage) ||
+            entry.Path.StartsWith(e.Path + "/", StringComparison.Ordinal) ||
+            e.Path.StartsWith(entryPrefix, StringComparison.Ordinal));
+
         Entries.Add(entry);
     }
 

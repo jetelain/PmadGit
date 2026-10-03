@@ -25,6 +25,7 @@ It is split into six focused packages:
 - **Workspace Commits & Resets**: Create commits from the index (`CommitAsync`), amend commits (`CommitAmendAsync`), perform `Soft`, `Mixed`, or `Hard` resets (`ResetAsync`), linear squash ranges (`SquashRangeAsync`), and commit reverts (`RevertAsync`).
 - **SHA-1 and SHA-256 Support**: Full support for both standard 160-bit SHA-1 and modern 256-bit SHA-256 repositories.
 - **Synchronization State Machine**: `GitRepositorySynchronizer` coordinates debounced push-on-change with periodic pull, exposing a state machine to safely detect, pause, and cooperatively resolve merge conflicts.
+- **Bit-Identical Content Storage (No `autocrlf`)**: Line-ending normalization (`core.autocrlf`, `core.eol`) is intentionally out of scope to keep the library lightweight and fast. Targeted applications are assumed to work exclusively with Unix line separators (`\n`), and file content is stored bit-for-bit without conversion.
 
 ### Pure Managed Remote Client (`Pmad.Git.RemoteClient`)
 - **Managed Smart HTTP Client**: Clone, fetch, pull, and push against remote repositories (GitHub, Azure DevOps, GitLab, Pmad.Git.HttpServer) without native Git or LibGit2Sharp.
