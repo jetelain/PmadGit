@@ -568,7 +568,7 @@ public sealed class GitIndexManager
         }
     }
 
-    private sealed record PlannedMove(string SourcePath, string DestinationPath, List<GitIndexEntry> Entries);
+    private sealed record PlannedMove(string SourcePath, string DestinationPath, List<GitIndexEntry> Entries, bool IsCaseOnly);
     private sealed record PlannedDirMove(string SourceDir, string DestinationDir, bool IsCaseOnly);
 
     /// <summary>
@@ -628,6 +628,8 @@ public sealed class GitIndexManager
         CancellationToken cancellationToken)
     {
         var index = await GitIndex.ReadAsync(IndexPath, _repository.HashLengthBytes, cancellationToken).ConfigureAwait(false);
+        var isCaseInsensitiveFs = OperatingSystem.IsWindows() || OperatingSystem.IsMacOS();
+        var destHasTrailingSlash = destinationPath.EndsWith('/') || destinationPath.EndsWith('\\');
 
         string normalizedDest;
         bool destIsDir;
@@ -645,6 +647,11 @@ public sealed class GitIndexManager
             {
                 destIsDir = true;
             }
+        }
+
+        if (destHasTrailingSlash && !destIsDir)
+        {
+            throw new InvalidOperationException($"destination '{destinationPath}' is not a directory");
         }
 
         if (sourcesList.Count > 1 && !destIsDir)
@@ -684,7 +691,7 @@ public sealed class GitIndexManager
 
             if (!srcIsFile && !srcIsDir)
             {
-                if (index.FindEntry(normalizedSrc) != null)
+                if (index.Entries.Any(e => e.Path.Equals(normalizedSrc, StringComparison.Ordinal)))
                 {
                     srcIsFile = true;
                 }
@@ -794,7 +801,7 @@ public sealed class GitIndexManager
                 var fullDestFilePath = Path.Combine(WorkingDirectory, destFilePath);
                 var destExistsOnDisk = File.Exists(fullDestFilePath) || Directory.Exists(fullDestFilePath);
                 var destExistsInIndex = destEntries.Count > 0;
-                var isCaseOnlyRename = OperatingSystem.IsWindows() && normalizedSrc.Equals(destFilePath, StringComparison.OrdinalIgnoreCase);
+                var isCaseOnlyRename = isCaseInsensitiveFs && normalizedSrc.Equals(destFilePath, StringComparison.OrdinalIgnoreCase);
 
                 if (!isCaseOnlyRename && (destExistsOnDisk || destExistsInIndex) && !opt.Force)
                 {
@@ -805,7 +812,7 @@ public sealed class GitIndexManager
                     throw new InvalidOperationException($"destination exists, source={source}, destination={destFilePath}");
                 }
 
-                plannedFileMoves.Add(new PlannedMove(normalizedSrc, destFilePath, fileEntries));
+                plannedFileMoves.Add(new PlannedMove(normalizedSrc, destFilePath, fileEntries, isCaseOnlyRename));
             }
             else // srcIsDir
             {
@@ -829,7 +836,7 @@ public sealed class GitIndexManager
                     throw new InvalidOperationException($"conflicted, source={source}, destination={destinationPath}");
                 }
 
-                var isCaseOnlyDirRename = OperatingSystem.IsWindows() &&
+                var isCaseOnlyDirRename = isCaseInsensitiveFs &&
                     normalizedSrc.Equals(normalizedDest, StringComparison.OrdinalIgnoreCase) &&
                     !normalizedSrc.Equals(normalizedDest, StringComparison.Ordinal);
 
@@ -855,7 +862,7 @@ public sealed class GitIndexManager
                 }
 
                 if (finalDestDir.StartsWith(normalizedSrc + "/", StringComparison.Ordinal) ||
-                    (OperatingSystem.IsWindows() && !isCaseOnlyDirRename && finalDestDir.StartsWith(normalizedSrc + "/", StringComparison.OrdinalIgnoreCase)))
+                    (isCaseInsensitiveFs && !isCaseOnlyDirRename && finalDestDir.StartsWith(normalizedSrc + "/", StringComparison.OrdinalIgnoreCase)))
                 {
                     if (opt.SkipErrors)
                     {
@@ -913,7 +920,7 @@ public sealed class GitIndexManager
 
                     var fullTarget = Path.Combine(WorkingDirectory, targetFilePath);
                     var targetExists = File.Exists(fullTarget) || Directory.Exists(fullTarget) || targetEntries.Count > 0;
-                    var isCaseOnly = OperatingSystem.IsWindows() && g.Key.Equals(targetFilePath, StringComparison.OrdinalIgnoreCase);
+                    var isCaseOnly = isCaseInsensitiveFs && g.Key.Equals(targetFilePath, StringComparison.OrdinalIgnoreCase);
 
                     if (!isCaseOnly && targetExists && !opt.Force)
                     {
@@ -925,7 +932,7 @@ public sealed class GitIndexManager
                         throw new InvalidOperationException($"destination exists, source={g.Key}, destination={targetFilePath}");
                     }
 
-                    dirPlannedMoves.Add(new PlannedMove(g.Key, targetFilePath, g.ToList()));
+                    dirPlannedMoves.Add(new PlannedMove(g.Key, targetFilePath, g.ToList(), isCaseOnly));
                 }
 
                 if (!hasErrorInDir)
@@ -954,6 +961,7 @@ public sealed class GitIndexManager
 
         // Preflight destination types: File.Move cannot overwrite a directory with a file
         var rootFull = Path.GetFullPath(WorkingDirectory);
+        var invalidPlannedMoves = new HashSet<PlannedMove>();
         foreach (var planned in plannedFileMoves)
         {
             var dstFull = Path.Combine(WorkingDirectory, planned.DestinationPath);
@@ -963,6 +971,8 @@ public sealed class GitIndexManager
                 {
                     throw new InvalidOperationException($"destination exists, source={planned.SourcePath}, destination={planned.DestinationPath}");
                 }
+                invalidPlannedMoves.Add(planned);
+                continue;
             }
 
             var parent = Path.GetDirectoryName(dstFull);
@@ -974,9 +984,16 @@ public sealed class GitIndexManager
                     {
                         throw new InvalidOperationException($"cannot create directory '{parent}' because a file exists with that name");
                     }
+                    invalidPlannedMoves.Add(planned);
+                    break;
                 }
                 parent = Path.GetDirectoryName(parent);
             }
+        }
+
+        if (invalidPlannedMoves.Count > 0)
+        {
+            plannedFileMoves.RemoveAll(invalidPlannedMoves.Contains);
         }
 
         if (opt.DryRun)
@@ -998,7 +1015,7 @@ public sealed class GitIndexManager
 
                 if (Directory.Exists(srcDirFull))
                 {
-                    if (dirMove.IsCaseOnly && OperatingSystem.IsWindows())
+                    if (dirMove.IsCaseOnly && isCaseInsensitiveFs)
                     {
                         var tempDir = srcDirFull + "_git_mv_temp_" + Guid.NewGuid().ToString("N");
                         Directory.Move(srcDirFull, tempDir);
@@ -1036,8 +1053,18 @@ public sealed class GitIndexManager
                     {
                         Directory.CreateDirectory(dstDir);
                     }
-                    File.Move(srcFull, dstFull, overwrite: opt.Force);
-                    completedFilesystemMoves.Add((srcFull, dstFull));
+                    if (planned.IsCaseOnly && isCaseInsensitiveFs)
+                    {
+                        var tempFile = srcFull + "_git_mv_temp_" + Guid.NewGuid().ToString("N");
+                        File.Move(srcFull, tempFile);
+                        File.Move(tempFile, dstFull);
+                        completedFilesystemMoves.Add((srcFull, dstFull));
+                    }
+                    else
+                    {
+                        File.Move(srcFull, dstFull, overwrite: opt.Force);
+                        completedFilesystemMoves.Add((srcFull, dstFull));
+                    }
                 }
             }
         }
@@ -1051,11 +1078,29 @@ public sealed class GitIndexManager
                 {
                     if (File.Exists(to))
                     {
-                        File.Move(to, from, overwrite: true);
+                        if (isCaseInsensitiveFs && from.Equals(to, StringComparison.OrdinalIgnoreCase) && !from.Equals(to, StringComparison.Ordinal))
+                        {
+                            var tempFile = to + "_git_mv_temp_" + Guid.NewGuid().ToString("N");
+                            File.Move(to, tempFile);
+                            File.Move(tempFile, from);
+                        }
+                        else
+                        {
+                            File.Move(to, from, overwrite: true);
+                        }
                     }
                     else if (Directory.Exists(to) && !Directory.Exists(from))
                     {
-                        Directory.Move(to, from);
+                        if (isCaseInsensitiveFs && from.Equals(to, StringComparison.OrdinalIgnoreCase) && !from.Equals(to, StringComparison.Ordinal))
+                        {
+                            var tempDir = to + "_git_mv_temp_" + Guid.NewGuid().ToString("N");
+                            Directory.Move(to, tempDir);
+                            Directory.Move(tempDir, from);
+                        }
+                        else
+                        {
+                            Directory.Move(to, from);
+                        }
                     }
                 }
                 catch { /* best-effort rollback */ }
@@ -1136,7 +1181,7 @@ public sealed class GitIndexManager
                     {
                         Directory.Delete(srcDir);
                     }
-                    catch (IOException)
+                    catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
                     {
                         break;
                     }

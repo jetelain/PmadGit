@@ -57,7 +57,7 @@ internal static class MvCommand
                         .ToDictionary(e => e.Path, StringComparer.Ordinal);
 
                     var index = await GitIndex.ReadAsync(
-                        Path.Combine(ctx.Repository.GitDirectory, "index"),
+                        ctx.Repository.IndexManager.IndexPath,
                         ctx.Repository.HashLengthBytes,
                         ct).ConfigureAwait(false);
                     var indexedPaths = new HashSet<string>(index.Entries.Select(e => e.Path), StringComparer.Ordinal);
@@ -65,7 +65,7 @@ internal static class MvCommand
                     var overwrittenFiles = new HashSet<string>(StringComparer.Ordinal);
                     foreach (var item in plan.MovedItems)
                     {
-                        var isCaseOnlySelfRename = OperatingSystem.IsWindows() &&
+                        var isCaseOnlySelfRename = (OperatingSystem.IsWindows() || OperatingSystem.IsMacOS()) &&
                             item.SourcePath.Equals(item.DestinationPath, StringComparison.OrdinalIgnoreCase);
 
                         if (isCaseOnlySelfRename)

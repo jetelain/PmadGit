@@ -423,4 +423,125 @@ public class GitRepositoryMoveTests
         Assert.True(File.Exists(Path.Combine(testRepo.WorkingDirectory, "sub", "f1.txt")));
         Assert.True(File.Exists(Path.Combine(testRepo.WorkingDirectory, "sub", "f2.txt")));
     }
+
+    [Fact]
+    public async Task MoveAsync_CaseOnlyFileRename_ChangesCasingOnDiskAndIndex()
+    {
+        if (!OperatingSystem.IsWindows() && !OperatingSystem.IsMacOS())
+        {
+            return;
+        }
+
+        using var testRepo = GitTestRepository.Create();
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+
+        var filePath = Path.Combine(testRepo.WorkingDirectory, "file.txt");
+        await File.WriteAllTextAsync(filePath, "case test");
+        await repo.StageAsync("file.txt");
+        await repo.CommitAsync("Add file");
+
+        await repo.MoveAsync("file.txt", "FILE.TXT");
+
+        var index = await GitIndex.ReadAsync(repo.IndexManager.IndexPath, repo.HashLengthBytes);
+        Assert.NotNull(index.FindEntry("FILE.TXT"));
+        Assert.Null(index.FindEntry("file.txt"));
+
+        var diskFiles = Directory.GetFiles(testRepo.WorkingDirectory, "*.*");
+        var matchedFile = diskFiles.Single(f => Path.GetFileName(f).Equals("FILE.TXT", StringComparison.OrdinalIgnoreCase));
+        Assert.Equal("FILE.TXT", Path.GetFileName(matchedFile));
+    }
+
+    [Fact]
+    public async Task MoveAsync_CaseOnlyDirectoryRename_ChangesCasingOnDiskAndIndex()
+    {
+        if (!OperatingSystem.IsWindows() && !OperatingSystem.IsMacOS())
+        {
+            return;
+        }
+
+        using var testRepo = GitTestRepository.Create();
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+
+        var dir = Path.Combine(testRepo.WorkingDirectory, "myfolder");
+        Directory.CreateDirectory(dir);
+        await File.WriteAllTextAsync(Path.Combine(dir, "test.txt"), "hello");
+        await repo.StageAsync("myfolder/test.txt");
+        await repo.CommitAsync("Add file");
+
+        await repo.MoveAsync("myfolder", "MYFOLDER");
+
+        var index = await GitIndex.ReadAsync(repo.IndexManager.IndexPath, repo.HashLengthBytes);
+        Assert.NotNull(index.FindEntry("MYFOLDER/test.txt"));
+        Assert.Null(index.FindEntry("myfolder/test.txt"));
+
+        var diskDirs = Directory.GetDirectories(testRepo.WorkingDirectory);
+        var matchedDir = diskDirs.Single(d => Path.GetFileName(d).Equals("MYFOLDER", StringComparison.OrdinalIgnoreCase));
+        Assert.Equal("MYFOLDER", Path.GetFileName(matchedDir));
+    }
+
+    [Fact]
+    public async Task MoveAsync_TrailingSlashDestination_DoesNotExist_Throws()
+    {
+        using var testRepo = GitTestRepository.Create();
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+
+        await File.WriteAllTextAsync(Path.Combine(testRepo.WorkingDirectory, "a.txt"), "content");
+        await repo.StageAsync("a.txt");
+        await repo.CommitAsync("Add file");
+
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(() => repo.MoveAsync("a.txt", "missing_dir/"));
+        Assert.Contains("not a directory", ex.Message);
+    }
+
+    [Fact]
+    public async Task MoveAsync_SkipErrors_DestinationIsExistingDirectory_SkipsWithoutThrowing()
+    {
+        using var testRepo = GitTestRepository.Create();
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+
+        Directory.CreateDirectory(Path.Combine(testRepo.WorkingDirectory, "sub_dir"));
+        await File.WriteAllTextAsync(Path.Combine(testRepo.WorkingDirectory, "valid.txt"), "valid");
+        await File.WriteAllTextAsync(Path.Combine(testRepo.WorkingDirectory, "conflict.txt"), "conflict");
+        Directory.CreateDirectory(Path.Combine(testRepo.WorkingDirectory, "conflict.txt_target"));
+        await repo.StageAsync(["valid.txt", "conflict.txt"]);
+        await repo.CommitAsync("Add files");
+
+        // Attempting to move conflict.txt to conflict.txt_target (which is a directory, not a file target) with single-file-rename semantics
+        var result = await repo.MoveAsync(
+            ["valid.txt"],
+            "sub_dir",
+            new GitMoveOptions { SkipErrors = true });
+
+        Assert.Single(result.MovedItems);
+        Assert.Equal("valid.txt", result.MovedItems[0].SourcePath);
+        Assert.Equal("sub_dir/valid.txt", result.MovedItems[0].DestinationPath);
+        Assert.True(File.Exists(Path.Combine(testRepo.WorkingDirectory, "sub_dir", "valid.txt")));
+    }
+
+    [Fact]
+    public async Task MoveAsync_ConflictedFileDeletedOnDisk_ThrowsConflicted()
+    {
+        using var testRepo = GitTestRepository.Create();
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+
+        var filePath = Path.Combine(testRepo.WorkingDirectory, "conflicted.txt");
+        await File.WriteAllTextAsync(filePath, "data");
+        await repo.StageAsync("conflicted.txt");
+
+        // Set stage 1 and stage 2 entries in index, delete stage 0
+        var index = await GitIndex.ReadAsync(repo.IndexManager.IndexPath, repo.HashLengthBytes);
+        var entry = index.FindEntry("conflicted.txt")!;
+        index.Remove("conflicted.txt", stage: 0);
+        var stage1 = new GitIndexEntry("conflicted.txt", entry.Hash, entry.FileMode, stage: 1);
+        var stage2 = new GitIndexEntry("conflicted.txt", entry.Hash, entry.FileMode, stage: 2);
+        index.AddOrUpdate(stage1);
+        index.AddOrUpdate(stage2);
+        await index.WriteAsync(repo.IndexManager.IndexPath, repo.HashLengthBytes);
+
+        // Delete file on disk
+        File.Delete(filePath);
+
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(() => repo.MoveAsync("conflicted.txt", "dest.txt"));
+        Assert.Contains("conflicted", ex.Message);
+    }
 }
