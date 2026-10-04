@@ -346,6 +346,6 @@ public sealed class GitIgnoreMatcher
         }
 
         sb.Append('$');
-        return new Regex(sb.ToString(), RegexOptions.CultureInvariant);
+        return new Regex(sb.ToString(), RegexOptions.CultureInvariant, TimeSpan.FromSeconds(1));
     }
 }

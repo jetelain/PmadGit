@@ -270,7 +270,7 @@ public sealed class GitConfigFile
         try
         {
             await File.WriteAllTextAsync(tempPath, content, new UTF8Encoding(false), cancellationToken).ConfigureAwait(false);
-            File.Move(tempPath, filePath, overwrite: true);
+            await MoveWithRetryAsync(tempPath, filePath, cancellationToken).ConfigureAwait(false);
         }
         finally
         {
@@ -283,6 +283,22 @@ public sealed class GitConfigFile
                 catch
                 {
                 }
+            }
+        }
+    }
+
+    private static async Task MoveWithRetryAsync(string source, string destination, CancellationToken cancellationToken)
+    {
+        for (var attempt = 0; attempt < 5; attempt++)
+        {
+            try
+            {
+                File.Move(source, destination, overwrite: true);
+                return;
+            }
+            catch (Exception ex) when (attempt < 4 && (ex is IOException or UnauthorizedAccessException))
+            {
+                await Task.Delay(15 * (attempt + 1), cancellationToken).ConfigureAwait(false);
             }
         }
     }

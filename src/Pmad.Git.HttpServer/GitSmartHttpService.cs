@@ -1,5 +1,6 @@
 using System.Text;
 using Microsoft.AspNetCore.Http;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
 using Microsoft.Extensions.Primitives;
 using Pmad.Git.Protocol;
@@ -133,6 +134,15 @@ internal sealed class GitSmartHttpService
             return;
         }
 
+        foreach (var want in request.Wants)
+        {
+            if (!await ObjectExistsAsync(repository, want, cancellationToken).ConfigureAwait(false))
+            {
+                await WritePlainErrorAsync(context, StatusCodes.Status400BadRequest, $"Object {want.Value} not found", cancellationToken).ConfigureAwait(false);
+                return;
+            }
+        }
+
         var commonHaves = new List<GitHash>();
         foreach (var have in request.Haves)
         {
@@ -239,9 +249,26 @@ internal sealed class GitSmartHttpService
             unpackStatus = "unpack ok";
         }
 
-        // Acquire locks for all affected references to prevent concurrent modifications
-        // Locks are acquired in sorted order to prevent deadlocks
-        var referencePaths = updates.Select(u => NormalizeReferencePath(u.Name)).ToList();
+        // Validate and filter reference paths upfront to report protocol errors instead of crashing
+        var validUpdates = new List<(RefUpdate update, string normalizedPath)>();
+        var invalidUpdates = new Dictionary<RefUpdate, string>();
+
+        foreach (var update in updates)
+        {
+            var normalized = NormalizeReferencePath(update.Name);
+            try
+            {
+                GitReferenceStore.NormalizeAbsoluteReferencePath(normalized);
+                validUpdates.Add((update, normalized));
+            }
+            catch (Exception ex)
+            {
+                invalidUpdates[update] = SanitizeMessage(ex.Message);
+            }
+        }
+
+        // Acquire locks for all valid affected references in sorted order to prevent deadlocks
+        var referencePaths = validUpdates.Select(v => v.normalizedPath).ToList();
         List<RefStatus> refStatuses;
         using (var locks = await repository.ReferenceStore.AcquireMultipleReferenceLocksAsync(referencePaths, cancellationToken).ConfigureAwait(false))
         {
@@ -249,8 +276,15 @@ internal sealed class GitSmartHttpService
             refStatuses = new List<RefStatus>(updates.Count);
             foreach (var update in updates)
             {
-                var status = await ApplyReferenceUpdateInternalAsync(locks, refSnapshot, update, cancellationToken).ConfigureAwait(false);
-                refStatuses.Add(status);
+                if (invalidUpdates.TryGetValue(update, out var errorMsg))
+                {
+                    refStatuses.Add(RefStatus.Error(update.Name, errorMsg));
+                }
+                else
+                {
+                    var status = await ApplyReferenceUpdateInternalAsync(locks, refSnapshot, update, cancellationToken).ConfigureAwait(false);
+                    refStatuses.Add(status);
+                }
             }
 
             await WriteReceivePackStatusAsync(context, unpackStatus, refStatuses, capabilities.Contains("report-status"), cancellationToken).ConfigureAwait(false);
@@ -282,20 +316,34 @@ internal sealed class GitSmartHttpService
                 {
                     detachedContext.Request.Headers[header.Key] = header.Value;
                 }
-                detachedContext.RequestServices = context.RequestServices;
                 detachedContext.TraceIdentifier = context.TraceIdentifier;
                 detachedContext.Request.Path = context.Request.Path;
                 detachedContext.Request.Method = context.Request.Method;
                 detachedContext.Request.Scheme = context.Request.Scheme;
                 detachedContext.Request.Host = context.Request.Host;
+
                 var callback = _options.OnReceivePackCompleted;
+                var scopeFactory = context.RequestServices?.GetService<IServiceScopeFactory>();
 
                 // Execute callback in background without awaiting (fire and forget)
                 _ = Task.Run(async () =>
                 {
                     try
                     {
-                        await callback(detachedContext, repositoryName, successfulUpdates).ConfigureAwait(false);
+                        if (scopeFactory != null)
+                        {
+                            await using var asyncScope = scopeFactory.CreateAsyncScope();
+                            detachedContext.RequestServices = asyncScope.ServiceProvider;
+                            await callback(detachedContext, repositoryName, successfulUpdates).ConfigureAwait(false);
+                        }
+                        else
+                        {
+                            if (context.RequestServices != null)
+                            {
+                                detachedContext.RequestServices = context.RequestServices;
+                            }
+                            await callback(detachedContext, repositoryName, successfulUpdates).ConfigureAwait(false);
+                        }
                     }
                     catch
                     {

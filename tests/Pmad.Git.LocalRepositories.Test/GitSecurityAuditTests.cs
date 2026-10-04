@@ -30,6 +30,51 @@ public sealed class GitSecurityAuditTests
         Assert.Contains("forbidden", ex.Message, StringComparison.OrdinalIgnoreCase);
     }
 
+    [Fact]
+    public void NormalizeAndValidateRelativePath_RejectsSymlinkTargetingGitDirectory()
+    {
+        using var testRepo = GitTestRepository.Create();
+        var repo = GitRepository.Open(testRepo.WorkingDirectory);
+        var manager = repo.IndexManager!;
+
+        var linkPath = Path.Combine(testRepo.WorkingDirectory, "gitlink");
+        var gitDir = Path.Combine(testRepo.WorkingDirectory, ".git");
+
+        if (TryCreateDirectoryLink(linkPath, gitDir))
+        {
+            var ex = Assert.Throws<ArgumentException>(() => manager.NormalizeAndValidateRelativePath("gitlink/config"));
+            Assert.Contains("symlink", ex.Message, StringComparison.OrdinalIgnoreCase);
+        }
+    }
+
+    private static bool TryCreateDirectoryLink(string linkPath, string targetPath)
+    {
+        try
+        {
+            if (OperatingSystem.IsWindows())
+            {
+                var process = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+                {
+                    FileName = "cmd.exe",
+                    Arguments = $"/c mklink /J \"{linkPath}\" \"{targetPath}\"",
+                    CreateNoWindow = true,
+                    UseShellExecute = false
+                });
+                process?.WaitForExit();
+                return Directory.Exists(linkPath);
+            }
+            else
+            {
+                Directory.CreateSymbolicLink(linkPath, targetPath);
+                return true;
+            }
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
     [Theory]
     [InlineData("../outside_file")]
     [InlineData("../../windows/win.ini")]

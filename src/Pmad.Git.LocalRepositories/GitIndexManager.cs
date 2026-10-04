@@ -570,9 +570,17 @@ public sealed class GitIndexManager
                 Directory.CreateDirectory(dir);
             }
 
-            if (File.Exists(fullPath))
+            if (File.Exists(fullPath) || Directory.Exists(fullPath))
             {
-                File.SetAttributes(fullPath, FileAttributes.Normal);
+                var attr = File.GetAttributes(fullPath);
+                if ((attr & FileAttributes.ReparsePoint) != 0)
+                {
+                    File.Delete(fullPath);
+                }
+                else
+                {
+                    File.SetAttributes(fullPath, FileAttributes.Normal);
+                }
             }
 
             await using var objectStream = await _repository.ObjectStore.ReadObjectStreamAsync(targetHash.Value, cancellationToken).ConfigureAwait(false);
@@ -610,10 +618,15 @@ public sealed class GitIndexManager
                 }
             }
         }
-        else if (File.Exists(fullPath))
+        else if (source != null && File.Exists(fullPath))
         {
-            // Untracked file: discard removes it
+            // When restoring from an explicit source tree where the file did not exist,
+            // remove it to reflect the source tree state.
             File.Delete(fullPath);
+        }
+        else if (source == null)
+        {
+            throw new InvalidOperationException($"Path '{relativePath}' is not tracked in the index or HEAD.");
         }
     }
 
@@ -2036,6 +2049,17 @@ public sealed class GitIndexManager
                             !targetFull.Equals(repoRootTrimmed, StringComparison.OrdinalIgnoreCase))
                         {
                             throw new ArgumentException($"Path traverses a symlink escaping the working directory: '{relativePath}'", nameof(relativePath));
+                        }
+
+                        var gitDirFull = Path.GetFullPath(_repository.GitDirectory);
+                        var gitDirTrimmed = gitDirFull.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+                        if (targetFull.Equals(gitDirTrimmed, StringComparison.OrdinalIgnoreCase) ||
+                            targetFull.StartsWith(gitDirTrimmed + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase) ||
+                            targetFull.Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
+                                      .Any(s => string.Equals(s.TrimEnd(' ', '.'), ".git", StringComparison.OrdinalIgnoreCase) ||
+                                                string.Equals(s.TrimEnd(' ', '.'), "git~1", StringComparison.OrdinalIgnoreCase)))
+                        {
+                            throw new ArgumentException($"Path traverses a symlink targeting the Git administrative directory: '{relativePath}'", nameof(relativePath));
                         }
                     }
                     else if (i < segments.Length - 1)

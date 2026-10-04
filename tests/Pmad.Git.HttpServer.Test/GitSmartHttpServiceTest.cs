@@ -1,5 +1,6 @@
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
 using Pmad.Git.HttpServer;
 using Pmad.Git.LocalRepositories;
@@ -288,6 +289,27 @@ public sealed class GitSmartHttpServiceTest : IDisposable
         var service = CreateService();
         var context = CreateHttpContext("/test-repo.git/git-upload-pack", repository: "test-repo");
         context.Request.Body = new MemoryStream(); // Empty body
+
+        // Act
+        await service.HandleUploadPackAsync(context);
+
+        // Assert
+        Assert.Equal(StatusCodes.Status400BadRequest, context.Response.StatusCode);
+    }
+
+    [Fact]
+    public async Task HandleUploadPackAsync_WithNonExistentWantHash_Returns400BadRequest()
+    {
+        // Arrange
+        var service = CreateService();
+        var context = CreateHttpContext("/test-repo.git/git-upload-pack", repository: "test-repo");
+
+        var stream = new MemoryStream();
+        await PktLineWriter.WriteStringAsync(stream, "want 1111111111111111111111111111111111111111\n", CancellationToken.None);
+        await PktLineWriter.WriteFlushAsync(stream, CancellationToken.None);
+        await PktLineWriter.WriteStringAsync(stream, "done\n", CancellationToken.None);
+        stream.Position = 0;
+        context.Request.Body = stream;
 
         // Act
         await service.HandleUploadPackAsync(context);
@@ -1135,6 +1157,40 @@ public sealed class GitSmartHttpServiceTest : IDisposable
     }
 
     [Fact]
+    public async Task HandleReceivePackAsync_WithTraversingRefName_ReturnsNgReportStatusWithout500()
+    {
+        var repositoryService = new GitRepositoryService();
+        var repo = repositoryService.GetRepositoryByPath(_testRepoPath);
+        var service = CreateService();
+        var context = CreateHttpContext("/test-repo.git/git-receive-pack", repository: "test-repo");
+
+        var zeroHash = new string('0', 40);
+        var newHash = new string('1', 40);
+        var stream = new MemoryStream();
+        await PktLineWriter.WriteStringAsync(stream, $"{zeroHash} {newHash} refs/heads/../../escape\0report-status\n", CancellationToken.None);
+        await PktLineWriter.WriteFlushAsync(stream, CancellationToken.None);
+        await new GitPackBuilder().WriteAsync(repo, Array.Empty<GitHash>(), stream, CancellationToken.None);
+        stream.Position = 0;
+        context.Request.Body = stream;
+
+        // Act
+        await service.HandleReceivePackAsync(context);
+
+        // Assert: Protocol status report with ng instead of HTTP 500
+        Assert.Equal(StatusCodes.Status200OK, context.Response.StatusCode);
+        context.Response.Body.Position = 0;
+
+        var reader = new PktLineReader(context.Response.Body);
+        var unpackPacket = await reader.ReadAsync(CancellationToken.None);
+        Assert.NotNull(unpackPacket);
+        Assert.Equal("unpack ok\n", unpackPacket.Value.AsString());
+
+        var statusPacket = await reader.ReadAsync(CancellationToken.None);
+        Assert.NotNull(statusPacket);
+        Assert.StartsWith("ng refs/heads/../../escape", statusPacket.Value.AsString(), StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task HandleReceivePackAsync_WhenOldValueMismatches_ReturnsNgNonFastForward()
     {
         var repositoryService = new GitRepositoryService();
@@ -1400,6 +1456,57 @@ public sealed class GitSmartHttpServiceTest : IDisposable
         Assert.NotNull(capturedRefs);
         Assert.Single(capturedRefs);
         Assert.Equal("refs/heads/main", capturedRefs[0]);
+    }
+
+    [Fact]
+    public async Task HandleReceivePackAsync_WithScopedServiceInCallback_CreatesAsyncScopeAndResolvesScopedService()
+    {
+        var services = new ServiceCollection();
+        services.AddScoped<TestScopedMarker>();
+        var serviceProvider = services.BuildServiceProvider();
+
+        TestScopedMarker? resolvedInCallback = null;
+        var tcs = new TaskCompletionSource<bool>();
+
+        var options = Options.Create(new GitSmartHttpOptions
+        {
+            RepositoryRoot = _serverRepoRoot,
+            EnableReceivePack = true,
+            AuthorizeAsync = (_, _, _, _) => ValueTask.FromResult(true),
+            OnReceivePackCompleted = (ctx, repo, refs) =>
+            {
+                resolvedInCallback = ctx.RequestServices?.GetRequiredService<TestScopedMarker>();
+                tcs.SetResult(true);
+                return ValueTask.CompletedTask;
+            }
+        });
+        var repositoryService = new GitRepositoryService();
+        var service = new GitSmartHttpService(options, repositoryService);
+
+        var context = CreateHttpContext("/test-repo.git/git-receive-pack", repository: "test-repo");
+        context.RequestServices = serviceProvider;
+
+        var repo = repositoryService.GetRepositoryByPath(_testRepoPath);
+        var zeroHash = new string('0', repo.HashLengthBytes * 2);
+        var commitData = Encoding.UTF8.GetBytes("tree 4b825dc642cb6eb9a060e54bf8d69288fbee4904\nauthor Test <t@t.com> 0 +0000\ncommitter Test <t@t.com> 0 +0000\n\nInitial\n");
+        var commitHash = await repo.ObjectStore.WriteObjectAsync(GitObjectType.Commit, commitData, CancellationToken.None);
+        await repo.ReferenceStore.CreateReferenceAsync("refs/heads/scoped-branch", commitHash, overwrite: true, CancellationToken.None);
+
+        var stream = new MemoryStream();
+        await PktLineWriter.WriteStringAsync(stream, $"{commitHash.Value} {zeroHash} refs/heads/scoped-branch\0report-status delete-refs\n", CancellationToken.None);
+        await PktLineWriter.WriteFlushAsync(stream, CancellationToken.None);
+        stream.Position = 0;
+        context.Request.Body = stream;
+
+        await service.HandleReceivePackAsync(context);
+
+        await tcs.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.NotNull(resolvedInCallback);
+    }
+
+    private sealed class TestScopedMarker
+    {
     }
 
     #endregion
