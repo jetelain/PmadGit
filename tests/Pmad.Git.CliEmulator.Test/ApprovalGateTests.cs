@@ -389,4 +389,70 @@ public class ApprovalGateTests
         Assert.Equal(130, response.ExitCode);
         Assert.Contains("denied", response.StdErr);
     }
+
+    [Fact]
+    public async Task Checkout_Ours_WhenDenied_ReturnsExitCode130()
+    {
+        using var testRepo = GitTestRepository.Create();
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+        var emulator = new GitCliEmulator(repo);
+        var approval = new TestUserApproval
+        {
+            DiscardLocalChangesResult = ApprovalResult.Denied
+        };
+
+        var response = await emulator.InvokeAsync(["checkout", "--ours", "README.md"], approval);
+
+        Assert.Equal(130, response.ExitCode);
+        Assert.Contains("denied", response.StdErr);
+        Assert.Single(approval.DiscardLocalChangesCalls);
+        Assert.Equal("checkout --ours", approval.DiscardLocalChangesCalls[0].Operation);
+    }
+
+    [Fact]
+    public async Task Restore_Theirs_WhenDenied_ReturnsExitCode130()
+    {
+        using var testRepo = GitTestRepository.Create();
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+        var emulator = new GitCliEmulator(repo);
+        var approval = new TestUserApproval
+        {
+            DiscardLocalChangesResult = ApprovalResult.Denied
+        };
+
+        var response = await emulator.InvokeAsync(["restore", "--theirs", "README.md"], approval);
+
+        Assert.Equal(130, response.ExitCode);
+        Assert.Contains("denied", response.StdErr);
+        Assert.Single(approval.DiscardLocalChangesCalls);
+        Assert.Equal("restore --theirs", approval.DiscardLocalChangesCalls[0].Operation);
+    }
+
+    [Fact]
+    public async Task Checkout_Ours_PathTraversal_ReturnsError()
+    {
+        using var testRepo = GitTestRepository.Create();
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+        var emulator = new GitCliEmulator(repo);
+        var approval = new TestUserApproval();
+
+        var response = await emulator.InvokeAsync(["checkout", "--ours", "../outside.txt"], approval);
+
+        Assert.NotEqual(0, response.ExitCode);
+        Assert.Contains("Path traversal is not allowed", response.StdErr);
+    }
+
+    [Fact]
+    public async Task Restore_Ours_PathTraversal_ReturnsError()
+    {
+        using var testRepo = GitTestRepository.Create();
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+        var emulator = new GitCliEmulator(repo);
+        var approval = new TestUserApproval();
+
+        var response = await emulator.InvokeAsync(["restore", "--ours", "../outside.txt"], approval);
+
+        Assert.NotEqual(0, response.ExitCode);
+        Assert.Contains("Path traversal is not allowed", response.StdErr);
+    }
 }

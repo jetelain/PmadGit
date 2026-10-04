@@ -373,41 +373,59 @@ public sealed class GitHttpConnection : IDisposable
 
             var commandsPayloadBytes = commandsPayload.ToArray();
 
-            using var response = await SendWithRedirectsAsync(
-                (uri, sameOrigin) =>
-                {
-                    var req = new HttpRequestMessage(HttpMethod.Post, uri);
-                    ApplyRequestHeaders(req, remoteUrl, includeCredentials: sameOrigin);
-                    req.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/x-git-receive-pack-result"));
+            Stream? effectivePackStream = packDataStream;
+            FileStream? tempSpoolStream = null;
+            if (packDataStream != null && !packDataStream.CanSeek)
+            {
+                var tempPath = Path.Combine(Path.GetTempPath(), $"pmad_git_push_{Guid.NewGuid():N}.tmp");
+                tempSpoolStream = new FileStream(tempPath, FileMode.Create, FileAccess.ReadWrite, FileShare.None, 65536, FileOptions.DeleteOnClose);
+                await packDataStream.CopyToAsync(tempSpoolStream, effectiveToken).ConfigureAwait(false);
+                tempSpoolStream.Seek(0, SeekOrigin.Begin);
+                effectivePackStream = tempSpoolStream;
+            }
 
-                    var commandsStream = new MemoryStream(commandsPayloadBytes);
-                    Stream requestStream;
-                    if (packDataStream != null)
+            try
+            {
+                using var response = await SendWithRedirectsAsync(
+                    (uri, sameOrigin) =>
                     {
-                        if (packDataStream.CanSeek)
+                        var req = new HttpRequestMessage(HttpMethod.Post, uri);
+                        ApplyRequestHeaders(req, remoteUrl, includeCredentials: sameOrigin);
+                        req.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/x-git-receive-pack-result"));
+
+                        var commandsStream = new MemoryStream(commandsPayloadBytes);
+                        Stream requestStream;
+                        if (effectivePackStream != null)
                         {
-                            packDataStream.Seek(0, SeekOrigin.Begin);
+                            effectivePackStream.Seek(0, SeekOrigin.Begin);
+                            requestStream = new ConcatenatedStream(commandsStream, effectivePackStream, leaveSecondOpen: true);
                         }
-                        requestStream = new ConcatenatedStream(commandsStream, packDataStream, leaveSecondOpen: true);
-                    }
-                    else
-                    {
-                        requestStream = commandsStream;
-                    }
+                        else
+                        {
+                            requestStream = commandsStream;
+                        }
 
-                    req.Content = new StreamContent(requestStream);
-                    req.Content.Headers.ContentType = new MediaTypeHeaderValue("application/x-git-receive-pack-request");
-                    return req;
-                },
-                requestUri,
-                HttpCompletionOption.ResponseHeadersRead,
-                effectiveToken).ConfigureAwait(false);
+                        req.Content = new StreamContent(requestStream);
+                        req.Content.Headers.ContentType = new MediaTypeHeaderValue("application/x-git-receive-pack-request");
+                        return req;
+                    },
+                    requestUri,
+                    HttpCompletionOption.ResponseHeadersRead,
+                    effectiveToken).ConfigureAwait(false);
 
-            EnsureSuccessStatusCode(response);
-            ValidateContentType(response, "application/x-git-receive-pack-result");
+                EnsureSuccessStatusCode(response);
+                ValidateContentType(response, "application/x-git-receive-pack-result");
 
-            await using var responseStream = await response.Content.ReadAsStreamAsync(effectiveToken).ConfigureAwait(false);
-            await ParseReceivePackStatusAsync(responseStream, commands, effectiveToken).ConfigureAwait(false);
+                await using var responseStream = await response.Content.ReadAsStreamAsync(effectiveToken).ConfigureAwait(false);
+                await ParseReceivePackStatusAsync(responseStream, commands, effectiveToken).ConfigureAwait(false);
+            }
+            finally
+            {
+                if (tempSpoolStream != null)
+                {
+                    await tempSpoolStream.DisposeAsync().ConfigureAwait(false);
+                }
+            }
         }
         catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
         {

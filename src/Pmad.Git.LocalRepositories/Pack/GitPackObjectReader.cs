@@ -36,22 +36,22 @@ internal static class GitPackObjectReader
             throw new ArgumentException("Stream must support seeking", nameof(stream));
         }
 
-        var (kind, _) = await ReadTypeAndSizeAsync(stream, cancellationToken).ConfigureAwait(false);
+        var (kind, expectedSize) = await ReadTypeAndSizeAsync(stream, cancellationToken).ConfigureAwait(false);
 
         return kind switch
         {
             1 => new GitObjectData(
                 GitObjectType.Commit,
-                await ReadZLibAsync(stream, cancellationToken).ConfigureAwait(false)),
+                await ReadZLibAsync(stream, expectedSize, cancellationToken).ConfigureAwait(false)),
             2 => new GitObjectData(
                 GitObjectType.Tree,
-                await ReadZLibAsync(stream, cancellationToken).ConfigureAwait(false)),
+                await ReadZLibAsync(stream, expectedSize, cancellationToken).ConfigureAwait(false)),
             3 => new GitObjectData(
                 GitObjectType.Blob,
-                await ReadZLibAsync(stream, cancellationToken).ConfigureAwait(false)),
+                await ReadZLibAsync(stream, expectedSize, cancellationToken).ConfigureAwait(false)),
             4 => new GitObjectData(
                 GitObjectType.Tag,
-                await ReadZLibAsync(stream, cancellationToken).ConfigureAwait(false)),
+                await ReadZLibAsync(stream, expectedSize, cancellationToken).ConfigureAwait(false)),
             6 => await ReadOfsDeltaAsync(stream, currentOffset, resolveByHash, resolveByOffset, cancellationToken, depth).ConfigureAwait(false),
             7 => await ReadRefDeltaAsync(stream, hashLengthBytes, resolveByHash, cancellationToken, depth).ConfigureAwait(false),
             _ => throw new NotSupportedException($"Unsupported pack object kind {kind}")
@@ -157,9 +157,9 @@ internal static class GitPackObjectReader
             throw new InvalidDataException("Delta base size mismatch");
         }
 
-        if (resultSize > int.MaxValue)
+        if (resultSize < 0 || resultSize > 1024L * 1024 * 1024 || resultSize > int.MaxValue)
         {
-            throw new InvalidDataException("Delta result size is too large");
+            throw new InvalidDataException($"Delta result size {resultSize} is invalid or exceeds maximum allowed size");
         }
 
         var result = new byte[(int)resultSize];
@@ -288,9 +288,22 @@ internal static class GitPackObjectReader
     /// The stream must support seeking because this method rewinds the stream to the position
     /// immediately after the compressed data, compensating for any extra bytes read by the inflater.
     /// </remarks>
-    internal static async Task<byte[]> ReadZLibAsync(Stream sourceStream, CancellationToken cancellationToken)
+    internal static Task<byte[]> ReadZLibAsync(Stream sourceStream, CancellationToken cancellationToken)
+        => ReadZLibAsync(sourceStream, null, cancellationToken);
+
+    internal static async Task<byte[]> ReadZLibAsync(Stream sourceStream, long? expectedSize, CancellationToken cancellationToken)
     {
-        using var buffer = new MemoryStream();
+        const long maxObjectSize = 1024L * 1024 * 1024; // 1 GB maximum
+        if (expectedSize.HasValue && (expectedSize.Value < 0 || expectedSize.Value > maxObjectSize))
+        {
+            throw new InvalidDataException($"Object size {expectedSize.Value} exceeds maximum allowed limit");
+        }
+
+        var initialCapacity = expectedSize.HasValue && expectedSize.Value <= int.MaxValue && expectedSize.Value >= 0
+            ? (int)expectedSize.Value
+            : 0;
+
+        using var buffer = new MemoryStream(initialCapacity);
 
         var inflater = new Inflater(noHeader: false);
 
@@ -315,6 +328,10 @@ internal static class GitPackObjectReader
 
                 if (outputBytes > 0)
                 {
+                    if (buffer.Length + outputBytes > maxObjectSize)
+                    {
+                        throw new InvalidDataException($"Decompressed object size exceeds maximum allowed size of {maxObjectSize} bytes");
+                    }
                     buffer.Write(outputBuffer, 0, outputBytes);
                 }
                 else if (!inflater.IsNeedingInput && !inflater.IsFinished)
@@ -328,6 +345,11 @@ internal static class GitPackObjectReader
                 {
                     // Move the source stream back to the position right after the compressed data
                     sourceStream.Seek(-inflater.RemainingInput, SeekOrigin.Current);
+
+                    if (expectedSize.HasValue && buffer.Length != expectedSize.Value)
+                    {
+                        throw new InvalidDataException($"Decompressed object length mismatch. Expected {expectedSize.Value}, got {buffer.Length}");
+                    }
 
                     return buffer.ToArray();
                 }
@@ -373,16 +395,28 @@ internal static class GitPackObjectReader
     {
         long result = 0;
         var shift = 0;
+        var completed = false;
         while (cursor < data.Length)
         {
+            if (shift > 63)
+            {
+                throw new InvalidDataException("Variable length integer exceeds maximum 64-bit size");
+            }
+
             var b = data[cursor++];
             result |= (long)(b & 0x7F) << shift;
             if ((b & 0x80) == 0)
             {
+                completed = true;
                 break;
             }
 
             shift += 7;
+        }
+
+        if (!completed)
+        {
+            throw new InvalidDataException("Truncated variable length integer payload");
         }
 
         return result;

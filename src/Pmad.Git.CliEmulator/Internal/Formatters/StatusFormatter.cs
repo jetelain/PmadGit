@@ -129,8 +129,46 @@ internal static class StatusFormatter
         CancellationToken ct)
     {
         var status = await repo.GetStatusAsync(includeUntracked: true, cancellationToken: ct).ConfigureAwait(false);
-        foreach (var e in status.Entries.Where(e => !e.IsClean).OrderBy(e => e.Path, StringComparer.Ordinal))
+        var entries = status.Entries.Where(e => !e.IsClean).ToList();
+
+        // Staged renames detection: pair StagedDeleted and StagedNew with matching blob hashes
+        var renames = new Dictionary<string, (GitStatusEntry Deleted, GitStatusEntry Added)>(StringComparer.Ordinal);
+        var matchedDeleted = new HashSet<string>(StringComparer.Ordinal);
+        var matchedAdded = new HashSet<string>(StringComparer.Ordinal);
+
+        var stagedDeleted = entries.Where(e => e.StagedStatus == GitFileStatus.StagedDeleted && e.HeadHash.HasValue).ToList();
+        var stagedNew = entries.Where(e => e.StagedStatus == GitFileStatus.StagedNew && e.IndexHash.HasValue).ToList();
+
+        foreach (var added in stagedNew)
         {
+            var match = stagedDeleted.FirstOrDefault(d => !matchedDeleted.Contains(d.Path) && d.HeadHash!.Value.Equals(added.IndexHash!.Value));
+            if (match != null)
+            {
+                renames[added.Path] = (match, added);
+                matchedDeleted.Add(match.Path);
+                matchedAdded.Add(added.Path);
+            }
+        }
+
+        foreach (var e in entries.OrderBy(e => e.Path, StringComparer.Ordinal))
+        {
+            if (matchedDeleted.Contains(e.Path))
+            {
+                continue;
+            }
+
+            if (renames.TryGetValue(e.Path, out var renamePair))
+            {
+                var worktreeCode = renamePair.Added.WorkingTreeStatus switch
+                {
+                    GitFileStatus.Modified => 'M',
+                    GitFileStatus.Deleted => 'D',
+                    _ => ' '
+                };
+                await writer.WriteLineAsync($"R{worktreeCode} {renamePair.Deleted.Path} -> {renamePair.Added.Path}").ConfigureAwait(false);
+                continue;
+            }
+
             if (e.IsConflicted)
             {
                 await writer.WriteLineAsync($"UU {e.Path}").ConfigureAwait(false);
@@ -143,18 +181,18 @@ internal static class StatusFormatter
                 GitFileStatus.StagedDeleted => 'D',
                 _ => ' '
             };
-            char worktreeCode = e.WorkingTreeStatus switch
+            char worktreeCodeChar = e.WorkingTreeStatus switch
             {
                 GitFileStatus.Modified => 'M',
                 GitFileStatus.Deleted => 'D',
                 GitFileStatus.Untracked => '?',
                 _ => ' '
             };
-            if (worktreeCode == '?')
+            if (worktreeCodeChar == '?')
             {
                 stagedCode = '?';
             }
-            await writer.WriteLineAsync($"{stagedCode}{worktreeCode} {e.Path}").ConfigureAwait(false);
+            await writer.WriteLineAsync($"{stagedCode}{worktreeCodeChar} {e.Path}").ConfigureAwait(false);
         }
     }
 }

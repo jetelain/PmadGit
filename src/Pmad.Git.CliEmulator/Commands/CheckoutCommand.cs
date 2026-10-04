@@ -18,6 +18,8 @@ internal static class CheckoutCommand
         var forceOpt = new Option<bool>("-f", "--force") { Description = "Proceed even if the index or the working tree differs from HEAD" };
         var orphanOpt = new Option<string?>("--orphan") { Description = "Create a new orphan branch" };
 
+        var oursOpt = new Option<bool>("--ours") { Description = "Checkout our version for unmerged files" };
+        var theirsOpt = new Option<bool>("--theirs") { Description = "Checkout their version for unmerged files" };
         var argsArg = new Argument<string[]>("args") { Description = "Branch, commit, or file paths", Arity = ArgumentArity.ZeroOrMore };
 
         cmd.Options.Add(bOpt);
@@ -25,6 +27,8 @@ internal static class CheckoutCommand
         cmd.Options.Add(detachOpt);
         cmd.Options.Add(forceOpt);
         cmd.Options.Add(orphanOpt);
+        cmd.Options.Add(oursOpt);
+        cmd.Options.Add(theirsOpt);
 
         cmd.Arguments.Add(argsArg);
 
@@ -38,9 +42,56 @@ internal static class CheckoutCommand
             var isCreate = isForceCreate || !string.IsNullOrEmpty(regularCreateBranchName);
             var createBranchName = forceBranchName ?? regularCreateBranchName;
             var orphanBranch = pr.GetValue(orphanOpt);
+            var isOurs = pr.GetValue(oursOpt);
+            var isTheirs = pr.GetValue(theirsOpt);
             var rawArgs = pr.GetValue(argsArg) ?? [];
 
             var hasDoubleDash = pr.Tokens.Any(t => t.Value == "--");
+
+            // Case 0: Conflict checkout (--ours / --theirs)
+            if (isOurs || isTheirs)
+            {
+                var targetStage = isOurs ? 2 : 3;
+                var paths = rawArgs;
+                if (hasDoubleDash)
+                {
+                    var (_, p) = ParseDoubleDashFileRestore(pr);
+                    paths = p.ToArray();
+                }
+                if (paths.Length == 0)
+                {
+                    return ctx.WriteError("No path specified to checkout.");
+                }
+
+                await ApprovalHelper.RequireAsync(
+                    new DiscardChangesContext
+                    {
+                        Operation = isOurs ? "checkout --ours" : "checkout --theirs",
+                        AffectedFiles = paths,
+                    },
+                    ctx.Approval.ApproveDiscardLocalChangesAsync,
+                    ct).ConfigureAwait(false);
+
+                var index = await GitIndex.ReadAsync(ctx.Repository.IndexManager.IndexPath, ctx.Repository.HashLengthBytes, ct).ConfigureAwait(false);
+                foreach (var path in paths)
+                {
+                    var normalizedPath = ctx.Repository.IndexManager.NormalizeAndValidateRelativePath(path);
+                    var entry = index.FindEntry(normalizedPath, stage: targetStage);
+                    if (entry == null)
+                    {
+                        return ctx.WriteError($"path '{path}' does not have {(isOurs ? "our" : "their")} version");
+                    }
+                    var obj = await ctx.Repository.ObjectStore.ReadObjectAsync(entry.Hash, ct).ConfigureAwait(false);
+                    var fullPath = Path.Combine(ctx.Repository.RootPath, normalizedPath.Replace('/', Path.DirectorySeparatorChar));
+                    var dir = Path.GetDirectoryName(fullPath);
+                    if (!string.IsNullOrEmpty(dir))
+                    {
+                        Directory.CreateDirectory(dir);
+                    }
+                    await File.WriteAllBytesAsync(fullPath, obj.Content, ct).ConfigureAwait(false);
+                }
+                return 0;
+            }
 
             // Case 1: File restoration mode
             if (!isCreate && string.IsNullOrEmpty(orphanBranch) && !isDetach)
@@ -414,6 +465,16 @@ internal static class CheckoutCommand
             return ctx.WriteError(isDetach ? "Missing commit to detach to." : "Missing branch name or paths to checkout.");
         }
 
+        if (!isCreate && (branchOrCommit == "-" || branchOrCommit == "@{-1}"))
+        {
+            var prev = await ReflogHelper.GetPreviousBranchAsync(ctx.Repository.GitDirectory, ct).ConfigureAwait(false);
+            if (string.IsNullOrEmpty(prev))
+            {
+                return ctx.WriteError("fatal: invalid reference: -");
+            }
+            branchOrCommit = prev;
+        }
+
         try
         {
             var targetBranch = branchOrCommit;
@@ -630,6 +691,8 @@ internal static class CheckoutCommand
                     }
                 }
             }
+
+            await ReflogHelper.RecordCheckoutAsync(ctx.Repository.GitDirectory, currentBranch, targetBranch, ct).ConfigureAwait(false);
 
             await ctx.Repository.CheckoutBranchAsync(
                 targetBranch,

@@ -1638,9 +1638,17 @@ public sealed class GitRepositoryWithIndexAndWorkspace : IGitWorkspaceRepository
         {
             Directory.CreateDirectory(dir);
         }
-        if (File.Exists(fullPath))
+        if (File.Exists(fullPath) || Directory.Exists(fullPath))
         {
-            File.SetAttributes(fullPath, FileAttributes.Normal);
+            var attr = File.GetAttributes(fullPath);
+            if ((attr & FileAttributes.ReparsePoint) != 0)
+            {
+                File.Delete(fullPath);
+            }
+            else
+            {
+                File.SetAttributes(fullPath, FileAttributes.Normal);
+            }
         }
 
         var obj = await ObjectStore.ReadObjectAsync(leaf.Hash, cancellationToken).ConfigureAwait(false);
@@ -1675,9 +1683,17 @@ public sealed class GitRepositoryWithIndexAndWorkspace : IGitWorkspaceRepository
         {
             Directory.CreateDirectory(dir);
         }
-        if (File.Exists(fullPath))
+        if (File.Exists(fullPath) || Directory.Exists(fullPath))
         {
-            File.SetAttributes(fullPath, FileAttributes.Normal);
+            var attr = File.GetAttributes(fullPath);
+            if ((attr & FileAttributes.ReparsePoint) != 0)
+            {
+                File.Delete(fullPath);
+            }
+            else
+            {
+                File.SetAttributes(fullPath, FileAttributes.Normal);
+            }
         }
 
         await File.WriteAllBytesAsync(fullPath, content, cancellationToken).ConfigureAwait(false);
@@ -1882,9 +1898,17 @@ public sealed class GitRepositoryWithIndexAndWorkspace : IGitWorkspaceRepository
                 {
                     Directory.CreateDirectory(dir);
                 }
-                if (File.Exists(fullPath))
+                if (File.Exists(fullPath) || Directory.Exists(fullPath))
                 {
-                    File.SetAttributes(fullPath, FileAttributes.Normal);
+                    var attr = File.GetAttributes(fullPath);
+                    if ((attr & FileAttributes.ReparsePoint) != 0)
+                    {
+                        File.Delete(fullPath);
+                    }
+                    else
+                    {
+                        File.SetAttributes(fullPath, FileAttributes.Normal);
+                    }
                 }
 
                 var fileStreamOptions = new FileStreamOptions

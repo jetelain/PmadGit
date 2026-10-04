@@ -134,7 +134,17 @@ internal sealed class GitRepositorySynchronizerService : IGitRepositorySynchroni
 
         if (previous != null)
         {
-            _ = previous.DisposeAsync();
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    await previous.DisposeAsync().ConfigureAwait(false);
+                }
+                catch
+                {
+                    // Ignore disposal errors on replaced synchronizer
+                }
+            });
         }
 
         return synchronizer;
@@ -150,7 +160,17 @@ internal sealed class GitRepositorySynchronizerService : IGitRepositorySynchroni
         var normalizedPath = GitRepositoryService.NormalizePath(repositoryPath);
         if (_synchronizers.TryRemove(normalizedPath, out var synchronizer))
         {
-            _ = synchronizer.DisposeAsync();
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    await synchronizer.DisposeAsync().ConfigureAwait(false);
+                }
+                catch
+                {
+                    // Ignore disposal errors on invalidated synchronizer
+                }
+            });
         }
     }
 

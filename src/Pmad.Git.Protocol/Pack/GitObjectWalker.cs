@@ -109,8 +109,17 @@ public sealed class GitObjectWalker
                 continue;
             }
 
+            GitObjectData data;
+            try
+            {
+                data = await _repository.ObjectStore.ReadObjectAsync(current, cancellationToken).ConfigureAwait(false);
+            }
+            catch (FileNotFoundException)
+            {
+                continue;
+            }
+
             ordered.Add(current);
-            var data = await _repository.ObjectStore.ReadObjectAsync(current, cancellationToken).ConfigureAwait(false);
             switch (data.Type)
             {
                 case GitObjectType.Commit:

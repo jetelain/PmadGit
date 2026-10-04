@@ -265,4 +265,19 @@ public class GitCliRepositoryTrackingTests
         var rangeDiff = await git.GetDiffAsync("HEAD~1", "HEAD");
         Assert.Contains("+line 1", rangeDiff);
     }
+
+    [Fact]
+    public async Task GetTrackingStatusAsync_WhenHeadDetached_ReturnsNoUpstreamWithoutThrowing()
+    {
+        using var repo = GitCliTestRepository.Create();
+        var git = new GitCliRepository(repo.WorkingDirectory);
+
+        // Detach HEAD to current commit
+        repo.RunGit("checkout --detach HEAD");
+
+        // When HEAD is detached, GetTrackingStatusAsync should return HasUpstream = false without throwing ArgumentException
+        var status = await git.GetTrackingStatusAsync();
+
+        Assert.False(status.HasUpstream);
+    }
 }

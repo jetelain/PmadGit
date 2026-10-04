@@ -173,21 +173,22 @@ public sealed class GitIndexManager
                 else
                 {
                     var currentMode = GitIndexEntry.GetFileMode(fileInfo!);
+                    var hasStatCache = normalIndexEntry.FileSize > 0 || normalIndexEntry.MtimeSeconds > 0;
                     if (currentMode != normalIndexEntry.FileMode)
                     {
                         // Executable mode changed in working tree
                         workTreeStatus = GitFileStatus.Modified;
                     }
-                    else if (fileInfo!.Length != normalIndexEntry.FileSize)
+                    else if (hasStatCache && fileInfo!.Length != normalIndexEntry.FileSize)
                     {
                         workTreeStatus = GitFileStatus.Modified;
                     }
                     else
                     {
-                        var mtimeUtc = fileInfo.LastWriteTimeUtc;
+                        var mtimeUtc = fileInfo!.LastWriteTimeUtc;
                         var mtimeSec = (uint)Math.Max(0, new DateTimeOffset(mtimeUtc).ToUnixTimeSeconds());
                         var mtimeNano = (uint)((mtimeUtc.Ticks % TimeSpan.TicksPerSecond) * 100);
-                        if (mtimeSec == normalIndexEntry.MtimeSeconds && mtimeNano == normalIndexEntry.MtimeNanoseconds)
+                        if (hasStatCache && mtimeSec == normalIndexEntry.MtimeSeconds && mtimeNano == normalIndexEntry.MtimeNanoseconds)
                         {
                             // Stat cache matches: content and mode are unmodified
                             workTreeStatus = GitFileStatus.Clean;
@@ -195,8 +196,8 @@ public sealed class GitIndexManager
                         }
                         else
                         {
-                            // Timestamp changed: verify content hash
-                            var computedHash = await ComputeFileBlobHashAsync(fileInfo.FullName, cancellationToken).ConfigureAwait(false);
+                            // Timestamp changed or stat cache uninitialized: verify content hash
+                            var computedHash = await ComputeFileBlobHashAsync(fileInfo!.FullName, cancellationToken).ConfigureAwait(false);
                             workTreeHash = computedHash;
                             workTreeStatus = (computedHash == normalIndexEntry.Hash && currentMode == normalIndexEntry.FileMode)
                                 ? GitFileStatus.Clean
@@ -267,7 +268,63 @@ public sealed class GitIndexManager
     {
         var index = await GitIndex.ReadAsync(IndexPath, _repository.HashLengthBytes, cancellationToken).ConfigureAwait(false);
 
+        var expandedPaths = new List<string>();
         foreach (var path in pathsList)
+        {
+            var fullPath = Path.Combine(WorkingDirectory, path);
+            var normalizedPath = path.Replace('\\', '/').Trim('/');
+            var dirPrefix = string.IsNullOrEmpty(normalizedPath) ? "" : normalizedPath + "/";
+
+            if (Directory.Exists(fullPath))
+            {
+                if (!string.IsNullOrEmpty(normalizedPath) && index.FindEntry(normalizedPath) != null)
+                {
+                    expandedPaths.Add(normalizedPath);
+                }
+
+                var ignoreMatcher = GitIgnoreMatcher.Load(WorkingDirectory);
+                var subFiles = new Dictionary<string, FileInfo>(StringComparer.Ordinal);
+                var dummyPrefixes = new HashSet<string>(StringComparer.Ordinal);
+                var dummyTracked = new HashSet<string>(StringComparer.Ordinal);
+                ScanWorkingDirectory(new DirectoryInfo(fullPath), normalizedPath, ignoreMatcher, dummyPrefixes, dummyTracked, subFiles);
+
+                foreach (var fileRel in subFiles.Keys.OrderBy(k => k, StringComparer.Ordinal))
+                {
+                    expandedPaths.Add(fileRel);
+                }
+
+                foreach (var entry in index.Entries)
+                {
+                    if (entry.Path.StartsWith(dirPrefix, StringComparison.Ordinal) && !File.Exists(Path.Combine(WorkingDirectory, entry.Path)))
+                    {
+                        expandedPaths.Add(entry.Path);
+                    }
+                }
+            }
+            else if (!File.Exists(fullPath))
+            {
+                var matchingEntries = index.Entries
+                    .Where(e => e.Path.StartsWith(dirPrefix, StringComparison.Ordinal))
+                    .Select(e => e.Path)
+                    .Distinct(StringComparer.Ordinal)
+                    .ToList();
+
+                if (matchingEntries.Count > 0)
+                {
+                    expandedPaths.AddRange(matchingEntries);
+                }
+                else
+                {
+                    expandedPaths.Add(path);
+                }
+            }
+            else
+            {
+                expandedPaths.Add(path);
+            }
+        }
+
+        foreach (var path in expandedPaths)
         {
             cancellationToken.ThrowIfCancellationRequested();
             var fullPath = Path.Combine(WorkingDirectory, path);
@@ -276,6 +333,7 @@ public sealed class GitIndexManager
             {
                 var fileInfo = new FileInfo(fullPath);
                 GitHash blobHash;
+
                 var options = new FileStreamOptions
                 {
                     Mode = FileMode.Open,
@@ -377,7 +435,24 @@ public sealed class GitIndexManager
                 ? await GetTreeFilesAsync(source, cancellationToken).ConfigureAwait(false)
                 : await GetHeadFilesAsync(cancellationToken).ConfigureAwait(false);
 
+            var expandedPaths = new List<string>();
             foreach (var path in pathsList)
+            {
+                var dirPrefix = path.EndsWith('/') ? path : path + "/";
+                var matchingFromIndex = index.Entries.Where(e => e.Path.StartsWith(dirPrefix, StringComparison.Ordinal)).Select(e => e.Path);
+                var matchingFromSource = sourceFiles.Keys.Where(k => k.StartsWith(dirPrefix, StringComparison.Ordinal));
+                var allMatching = matchingFromIndex.Concat(matchingFromSource).Distinct(StringComparer.Ordinal).ToList();
+                if (allMatching.Count > 0)
+                {
+                    expandedPaths.AddRange(allMatching);
+                }
+                else
+                {
+                    expandedPaths.Add(path);
+                }
+            }
+
+            foreach (var path in expandedPaths)
             {
                 cancellationToken.ThrowIfCancellationRequested();
 
@@ -495,9 +570,17 @@ public sealed class GitIndexManager
                 Directory.CreateDirectory(dir);
             }
 
-            if (File.Exists(fullPath))
+            if (File.Exists(fullPath) || Directory.Exists(fullPath))
             {
-                File.SetAttributes(fullPath, FileAttributes.Normal);
+                var attr = File.GetAttributes(fullPath);
+                if ((attr & FileAttributes.ReparsePoint) != 0)
+                {
+                    File.Delete(fullPath);
+                }
+                else
+                {
+                    File.SetAttributes(fullPath, FileAttributes.Normal);
+                }
             }
 
             await using var objectStream = await _repository.ObjectStore.ReadObjectStreamAsync(targetHash.Value, cancellationToken).ConfigureAwait(false);
@@ -535,10 +618,15 @@ public sealed class GitIndexManager
                 }
             }
         }
-        else if (File.Exists(fullPath))
+        else if (source != null && File.Exists(fullPath))
         {
-            // Untracked file: discard removes it
+            // When restoring from an explicit source tree where the file did not exist,
+            // remove it to reflect the source tree state.
             File.Delete(fullPath);
+        }
+        else if (source == null)
+        {
+            throw new InvalidOperationException($"Path '{relativePath}' is not tracked in the index or HEAD.");
         }
     }
 
@@ -1919,6 +2007,14 @@ public sealed class GitIndexManager
             {
                 throw new ArgumentException($"Path traversal is not allowed: '{relativePath}'", nameof(relativePath));
             }
+
+            var trimmedSegment = segment.TrimEnd(' ', '.');
+            if (string.Equals(trimmedSegment, ".git", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(trimmedSegment, "git~1", StringComparison.OrdinalIgnoreCase) ||
+                segment.Contains(':'))
+            {
+                throw new ArgumentException($"Access to Git administrative directory or alternate data stream is forbidden: '{relativePath}'", nameof(relativePath));
+            }
         }
 
         var fullPath = Path.GetFullPath(Path.Combine(WorkingDirectory, normalized));
@@ -1953,6 +2049,17 @@ public sealed class GitIndexManager
                             !targetFull.Equals(repoRootTrimmed, StringComparison.OrdinalIgnoreCase))
                         {
                             throw new ArgumentException($"Path traverses a symlink escaping the working directory: '{relativePath}'", nameof(relativePath));
+                        }
+
+                        var gitDirFull = Path.GetFullPath(_repository.GitDirectory);
+                        var gitDirTrimmed = gitDirFull.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+                        if (targetFull.Equals(gitDirTrimmed, StringComparison.OrdinalIgnoreCase) ||
+                            targetFull.StartsWith(gitDirTrimmed + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase) ||
+                            targetFull.Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
+                                      .Any(s => string.Equals(s.TrimEnd(' ', '.'), ".git", StringComparison.OrdinalIgnoreCase) ||
+                                                string.Equals(s.TrimEnd(' ', '.'), "git~1", StringComparison.OrdinalIgnoreCase)))
+                        {
+                            throw new ArgumentException($"Path traverses a symlink targeting the Git administrative directory: '{relativePath}'", nameof(relativePath));
                         }
                     }
                     else if (i < segments.Length - 1)
@@ -2101,6 +2208,7 @@ public sealed class GitIndexManager
     private async Task<GitHash> ComputeFileBlobHashAsync(string fullPath, CancellationToken cancellationToken)
     {
         var fileInfo = new FileInfo(fullPath);
+
         var algorithmName = GitHashHelper.GetAlgorithmName(_repository.HashLengthBytes);
         using var hashAlgo = IncrementalHash.CreateHash(algorithmName);
 
@@ -2126,4 +2234,5 @@ public sealed class GitIndexManager
         var hashBytes = hashAlgo.GetHashAndReset();
         return GitHash.FromBytes(hashBytes);
     }
+
 }

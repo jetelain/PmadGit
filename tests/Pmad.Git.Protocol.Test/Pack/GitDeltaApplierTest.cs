@@ -492,4 +492,51 @@ public sealed class GitDeltaApplierTest
             GitDeltaApplier.Apply(baseObject, delta));
         Assert.Contains("truncated", exception.Message, StringComparison.OrdinalIgnoreCase);
     }
+
+    [Fact]
+    public void Apply_WithTruncatedVariableLength_ThrowsInvalidDataException()
+    {
+        var baseContent = "Hello"u8.ToArray();
+        var baseObject = new GitObjectData(GitObjectType.Blob, baseContent);
+
+        // 0x85 indicates more bytes for base size, but stream ends
+        var delta = new byte[] { 0x85 };
+
+        var exception = Assert.Throws<InvalidDataException>(() =>
+            GitDeltaApplier.Apply(baseObject, delta));
+        Assert.Contains("truncated", exception.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Apply_WithExcessiveVariableLengthShift_ThrowsInvalidDataException()
+    {
+        var baseContent = "Hello"u8.ToArray();
+        var baseObject = new GitObjectData(GitObjectType.Blob, baseContent);
+
+        // 10 bytes with 0x80 bit set causes shift to exceed 63
+        var delta = new byte[] { 0x85, 0x85, 0x85, 0x85, 0x85, 0x85, 0x85, 0x85, 0x85, 0x85, 0x01 };
+
+        var exception = Assert.Throws<InvalidDataException>(() =>
+            GitDeltaApplier.Apply(baseObject, delta));
+        Assert.Contains("maximum 64-bit size", exception.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Apply_WithResultSizeExceedingLimit_ThrowsInvalidDataException()
+    {
+        var baseContent = "Hello"u8.ToArray();
+        var baseObject = new GitObjectData(GitObjectType.Blob, baseContent);
+
+        // Base size = 5 (0x05)
+        // Result size = 2 GB (0x80, 0x80, 0x80, 0x80, 0x08 -> 0x80000000 = 2147483648 > 1GB limit)
+        var delta = new byte[]
+        {
+            0x05,
+            0x80, 0x80, 0x80, 0x80, 0x08
+        };
+
+        var exception = Assert.Throws<InvalidDataException>(() =>
+            GitDeltaApplier.Apply(baseObject, delta));
+        Assert.Contains("maximum allowed size", exception.Message, StringComparison.OrdinalIgnoreCase);
+    }
 }

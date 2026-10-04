@@ -264,8 +264,43 @@ public sealed class GitConfigFile
             Directory.CreateDirectory(dir);
         }
 
+        var tempDirectory = dir ?? Path.GetTempPath();
+        var tempPath = Path.Combine(tempDirectory, $"{Path.GetFileName(filePath)}.{Guid.NewGuid():N}.tmp");
         var content = Serialize();
-        await File.WriteAllTextAsync(filePath, content, new UTF8Encoding(false), cancellationToken).ConfigureAwait(false);
+        try
+        {
+            await File.WriteAllTextAsync(tempPath, content, new UTF8Encoding(false), cancellationToken).ConfigureAwait(false);
+            await MoveWithRetryAsync(tempPath, filePath, cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            if (File.Exists(tempPath))
+            {
+                try
+                {
+                    File.Delete(tempPath);
+                }
+                catch
+                {
+                }
+            }
+        }
+    }
+
+    private static async Task MoveWithRetryAsync(string source, string destination, CancellationToken cancellationToken)
+    {
+        for (var attempt = 0; attempt < 5; attempt++)
+        {
+            try
+            {
+                File.Move(source, destination, overwrite: true);
+                return;
+            }
+            catch (Exception ex) when (attempt < 4 && (ex is IOException or UnauthorizedAccessException))
+            {
+                await Task.Delay(15 * (attempt + 1), cancellationToken).ConfigureAwait(false);
+            }
+        }
     }
 
     /// <summary>

@@ -268,6 +268,24 @@ public sealed class GitIndexManagerTests
     }
 
     [Fact]
+    public async Task RestoreFileAsync_WithoutSource_UntrackedFile_ThrowsInvalidOperationException_AndDoesNotDeleteFile()
+    {
+        using var testRepo = GitTestRepository.Create();
+        testRepo.Commit("Initial", ("file.txt", "version-1"));
+
+        var repo = GitRepository.Open(testRepo.WorkingDirectory);
+        var manager = repo.IndexManager!;
+
+        var untrackedPath = Path.Combine(testRepo.WorkingDirectory, "untracked.txt");
+        await File.WriteAllTextAsync(untrackedPath, "precious user data");
+
+        // Without source, restoring an untracked file should throw and NOT delete the file
+        await Assert.ThrowsAsync<InvalidOperationException>(() => manager.RestoreFileAsync("untracked.txt"));
+        Assert.True(File.Exists(untrackedPath));
+        Assert.Equal("precious user data", await File.ReadAllTextAsync(untrackedPath));
+    }
+
+    [Fact]
     public async Task RestoreIndexAsync_WithoutSource_ResetsIndexEntryToHead()
     {
         using var testRepo = GitTestRepository.Create();

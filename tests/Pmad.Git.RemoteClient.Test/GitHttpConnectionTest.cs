@@ -1116,4 +1116,84 @@ public sealed class GitHttpConnectionTest
 
         Assert.Contains("Server returned redirect 301 for POST request", ex.Message);
     }
+
+    private sealed class NonSeekableMemoryStream : Stream
+    {
+        private readonly MemoryStream _inner;
+        public NonSeekableMemoryStream(byte[] data) => _inner = new MemoryStream(data);
+        public override bool CanRead => true;
+        public override bool CanSeek => false;
+        public override bool CanWrite => false;
+        public override long Length => throw new NotSupportedException();
+        public override long Position { get => _inner.Position; set => throw new NotSupportedException(); }
+        public override void Flush() { }
+        public override int Read(byte[] buffer, int offset, int count) => _inner.Read(buffer, offset, count);
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+        public override void SetLength(long value) => throw new NotSupportedException();
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+        protected override void Dispose(bool disposing) { if (disposing) _inner.Dispose(); base.Dispose(disposing); }
+    }
+
+    [Fact]
+    public async Task ReceivePackAsync_WithNonSeekableStreamAndRedirect307_ReplaysPayloadSuccessfully()
+    {
+        var requestCount = 0;
+        byte[]? receivedOnSecondAttempt = null;
+
+        var handler = new MockHttpMessageHandler
+        {
+            Handler = async req =>
+            {
+                requestCount++;
+                if (requestCount == 1)
+                {
+                    var redirect = new HttpResponseMessage(HttpStatusCode.TemporaryRedirect);
+                    redirect.Headers.Location = new Uri("https://server.com/repo2.git/git-receive-pack");
+                    return redirect;
+                }
+
+                receivedOnSecondAttempt = await req.Content!.ReadAsByteArrayAsync();
+
+                var body = new MemoryStream();
+                await PktLineWriter.WriteStringAsync(body, "unpack ok\n", CancellationToken.None);
+                await PktLineWriter.WriteStringAsync(body, "ok refs/heads/main\n", CancellationToken.None);
+                await PktLineWriter.WriteFlushAsync(body, CancellationToken.None);
+                body.Seek(0, SeekOrigin.Begin);
+
+                var response = new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new StreamContent(body)
+                };
+                response.Content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/x-git-receive-pack-result");
+                return response;
+            }
+        };
+
+        var httpClient = new HttpClient(handler);
+        using var connection = new GitHttpConnection(new GitRemoteClientOptions { HttpClient = httpClient });
+
+        var ad = new GitRemoteAdvertisement(
+            new Dictionary<string, GitHash>(),
+            new HashSet<string> { "report-status" },
+            new Dictionary<string, string>(),
+            null,
+            null,
+            GitObjectFormat.Sha1,
+            "test");
+
+        var cmd = new GitRefUpdateCommand(null, new GitHash("1111111111111111111111111111111111111111"), "refs/heads/main");
+        var packBytes = "PACK_PAYLOAD_TEST"u8.ToArray();
+        using var nonSeekableStream = new NonSeekableMemoryStream(packBytes);
+
+        await connection.ReceivePackAsync(
+            new Uri("https://server.com/repo.git"),
+            new[] { cmd },
+            nonSeekableStream,
+            ad,
+            20);
+
+        Assert.Equal(2, requestCount);
+        Assert.NotNull(receivedOnSecondAttempt);
+        Assert.Contains("PACK_PAYLOAD_TEST", Encoding.UTF8.GetString(receivedOnSecondAttempt));
+    }
 }
