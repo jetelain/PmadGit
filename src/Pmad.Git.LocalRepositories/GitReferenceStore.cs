@@ -76,7 +76,33 @@ internal sealed class GitReferenceStore : IGitReferenceStore
             return hash;
         }
 
-        var filePath = Path.Combine(_gitDirectory, normalized.Replace('/', Path.DirectorySeparatorChar));
+        if (Path.IsPathRooted(normalized))
+        {
+            return null;
+        }
+
+        var segments = normalized.Split('/');
+        foreach (var segment in segments)
+        {
+            if (segment == "." || segment == "..")
+            {
+                return null;
+            }
+        }
+
+        var fullGitDir = Path.GetFullPath(_gitDirectory);
+        if (!fullGitDir.EndsWith(Path.DirectorySeparatorChar.ToString(), StringComparison.Ordinal) &&
+            !fullGitDir.EndsWith(Path.AltDirectorySeparatorChar.ToString(), StringComparison.Ordinal))
+        {
+            fullGitDir += Path.DirectorySeparatorChar;
+        }
+
+        var filePath = Path.GetFullPath(Path.Combine(_gitDirectory, normalized.Replace('/', Path.DirectorySeparatorChar)));
+        if (!filePath.StartsWith(fullGitDir, StringComparison.OrdinalIgnoreCase) && !filePath.Equals(fullGitDir.TrimEnd(Path.DirectorySeparatorChar), StringComparison.OrdinalIgnoreCase))
+        {
+            return null;
+        }
+
         if (File.Exists(filePath))
         {
             var content = (await File.ReadAllTextAsync(filePath, cancellationToken).ConfigureAwait(false)).Trim();

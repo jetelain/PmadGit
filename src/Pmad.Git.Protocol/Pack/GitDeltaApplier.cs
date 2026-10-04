@@ -10,6 +10,11 @@ namespace Pmad.Git.Protocol.Pack;
 public static class GitDeltaApplier
 {
     /// <summary>
+    /// Maximum allowed delta result size (1 GB).
+    /// </summary>
+    public const long MaxDeltaResultSize = 1024L * 1024 * 1024;
+
+    /// <summary>
     /// Applies a delta byte sequence to the specified base object.
     /// </summary>
     /// <param name="baseObject">The base Git object.</param>
@@ -32,9 +37,9 @@ public static class GitDeltaApplier
             throw new InvalidDataException("Delta base size mismatch");
         }
 
-        if (resultSize > int.MaxValue)
+        if (resultSize < 0 || resultSize > MaxDeltaResultSize || resultSize > int.MaxValue)
         {
-            throw new InvalidDataException("Delta result size is too large");
+            throw new InvalidDataException($"Delta result size {resultSize} is invalid or exceeds maximum allowed size");
         }
 
         var result = new byte[(int)resultSize];
@@ -133,16 +138,28 @@ public static class GitDeltaApplier
     {
         long result = 0;
         var shift = 0;
+        var completed = false;
         while (cursor < data.Length)
         {
+            if (shift > 63)
+            {
+                throw new InvalidDataException("Variable length integer exceeds maximum 64-bit size");
+            }
+
             var b = data[cursor++];
             result |= (long)(b & 0x7F) << shift;
             if ((b & 0x80) == 0)
             {
+                completed = true;
                 break;
             }
 
             shift += 7;
+        }
+
+        if (!completed)
+        {
+            throw new InvalidDataException("Truncated variable length integer payload");
         }
 
         return result;

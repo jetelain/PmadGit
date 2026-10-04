@@ -61,8 +61,11 @@ public sealed class GitPackReader
 
         var initialCapacity = (int)Math.Min(objectCount, 65536u);
         var created = new List<GitHash>(initialCapacity);
+        const int maxCacheEntries = 1024;
         var offsetCache = new Dictionary<long, GitObjectData>();
         var hashCache = new Dictionary<string, GitObjectData>(StringComparer.Ordinal);
+        var offsetToHash = new Dictionary<long, GitHash>();
+        var cacheQueue = new Queue<(long offset, string hash)>();
 
         for (var i = 0u; i < objectCount; i++)
         {
@@ -85,19 +88,33 @@ public sealed class GitPackReader
                 },
                 async (offset, ct) =>
                 {
-                    // Resolve by offset from cache
-                    if (!offsetCache.TryGetValue(offset, out var obj))
+                    // Resolve by offset from cache, or fallback to object store via offsetToHash
+                    if (offsetCache.TryGetValue(offset, out var obj))
                     {
-                        throw new InvalidDataException("ofs-delta references unknown base object");
+                        return obj;
                     }
-                    return obj;
+                    if (offsetToHash.TryGetValue(offset, out var hash))
+                    {
+                        return await repository.ObjectStore.ReadObjectAsync(hash, ct).ConfigureAwait(false);
+                    }
+                    throw new InvalidDataException("ofs-delta references unknown base object");
                 },
                 cancellationToken).ConfigureAwait(false);
 
             var storedHash = await repository.ObjectStore.WriteObjectAsync(materialized.Type, materialized.Content, cancellationToken).ConfigureAwait(false);
             created.Add(storedHash);
+
+            offsetToHash[objectOffset] = storedHash;
             offsetCache[objectOffset] = materialized;
             hashCache[storedHash.Value] = materialized;
+            cacheQueue.Enqueue((objectOffset, storedHash.Value));
+
+            if (cacheQueue.Count > maxCacheEntries)
+            {
+                var (oldOffset, oldHash) = cacheQueue.Dequeue();
+                offsetCache.Remove(oldOffset);
+                hashCache.Remove(oldHash);
+            }
         }
 
         // Refresh object caches so subsequently written objects are visible; this is not itself

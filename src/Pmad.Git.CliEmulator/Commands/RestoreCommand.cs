@@ -41,16 +41,27 @@ internal static class RestoreCommand
             if (isOurs || isTheirs)
             {
                 var targetStage = isOurs ? 2 : 3;
+
+                await ApprovalHelper.RequireAsync(
+                    new DiscardChangesContext
+                    {
+                        Operation = isOurs ? "restore --ours" : "restore --theirs",
+                        AffectedFiles = paths,
+                    },
+                    ctx.Approval.ApproveDiscardLocalChangesAsync,
+                    ct).ConfigureAwait(false);
+
                 var index = await GitIndex.ReadAsync(ctx.Repository.IndexManager.IndexPath, ctx.Repository.HashLengthBytes, ct).ConfigureAwait(false);
                 foreach (var path in paths)
                 {
-                    var entry = index.FindEntry(path, stage: targetStage);
+                    var normalizedPath = ctx.Repository.IndexManager.NormalizeAndValidateRelativePath(path);
+                    var entry = index.FindEntry(normalizedPath, stage: targetStage);
                     if (entry == null)
                     {
                         return ctx.WriteError($"path '{path}' does not have {(isOurs ? "our" : "their")} version");
                     }
                     var obj = await ctx.Repository.ObjectStore.ReadObjectAsync(entry.Hash, ct).ConfigureAwait(false);
-                    var fullPath = Path.Combine(ctx.Repository.RootPath, path);
+                    var fullPath = Path.Combine(ctx.Repository.RootPath, normalizedPath.Replace('/', Path.DirectorySeparatorChar));
                     var dir = Path.GetDirectoryName(fullPath);
                     if (!string.IsNullOrEmpty(dir))
                     {

@@ -1994,6 +1994,14 @@ public sealed class GitIndexManager
             {
                 throw new ArgumentException($"Path traversal is not allowed: '{relativePath}'", nameof(relativePath));
             }
+
+            var trimmedSegment = segment.TrimEnd(' ', '.');
+            if (string.Equals(trimmedSegment, ".git", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(trimmedSegment, "git~1", StringComparison.OrdinalIgnoreCase) ||
+                segment.Contains(':'))
+            {
+                throw new ArgumentException($"Access to Git administrative directory or alternate data stream is forbidden: '{relativePath}'", nameof(relativePath));
+            }
         }
 
         var fullPath = Path.GetFullPath(Path.Combine(WorkingDirectory, normalized));
