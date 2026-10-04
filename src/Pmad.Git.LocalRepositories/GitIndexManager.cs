@@ -679,13 +679,13 @@ public sealed class GitIndexManager
         public override IReadOnlyList<PlannedMove> FileMoves => Moves;
     }
 
-    private interface IJournalAction
+    internal interface IJournalAction
     {
         void Rollback();
         void Commit();
     }
 
-    private sealed class FilesystemJournal : IDisposable
+    internal sealed class FilesystemJournal : IDisposable
     {
         private readonly List<IJournalAction> _actions = new();
         private bool _committed;
@@ -779,7 +779,7 @@ public sealed class GitIndexManager
         }
     }
 
-    private sealed class MoveFileAction(string source, string destination, bool force) : IJournalAction
+    internal sealed class MoveFileAction(string source, string destination, bool force) : IJournalAction
     {
         private string? _backupPath;
 
@@ -818,7 +818,7 @@ public sealed class GitIndexManager
         }
     }
 
-    private sealed class MoveCaseOnlyFileAction(string source, string destination) : IJournalAction
+    internal sealed class MoveCaseOnlyFileAction(string source, string destination) : IJournalAction
     {
         private string? _tempPath;
 
@@ -848,7 +848,7 @@ public sealed class GitIndexManager
         public void Commit() { }
     }
 
-    private sealed class MoveDirectoryAction(string source, string destination) : IJournalAction
+    internal sealed class MoveDirectoryAction(string source, string destination) : IJournalAction
     {
         public void Execute()
         {
@@ -866,7 +866,7 @@ public sealed class GitIndexManager
         public void Commit() { }
     }
 
-    private sealed class MoveCaseOnlyDirectoryAction(string source, string destination) : IJournalAction
+    internal sealed class MoveCaseOnlyDirectoryAction(string source, string destination) : IJournalAction
     {
         private string? _tempPath;
 
@@ -896,7 +896,7 @@ public sealed class GitIndexManager
         public void Commit() { }
     }
 
-    private sealed class MoveDirectoryLinkAction(string source, string destination, bool force) : IJournalAction
+    internal sealed class MoveDirectoryLinkAction(string source, string destination, bool force) : IJournalAction
     {
         private string? _backupPath;
 
@@ -956,7 +956,7 @@ public sealed class GitIndexManager
         }
     }
 
-    private sealed class EnsureDirectoryAction(string path) : IJournalAction
+    internal sealed class EnsureDirectoryAction(string path) : IJournalAction
     {
         private bool _created;
 
@@ -980,7 +980,7 @@ public sealed class GitIndexManager
         public void Commit() { }
     }
 
-    private sealed class DeleteEmptyDirectoryAction(string path) : IJournalAction
+    internal sealed class DeleteEmptyDirectoryAction(string path) : IJournalAction
     {
         public void Execute()
         {

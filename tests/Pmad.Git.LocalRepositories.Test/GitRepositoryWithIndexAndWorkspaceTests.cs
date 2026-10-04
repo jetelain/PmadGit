@@ -678,6 +678,122 @@ public sealed class GitRepositoryWithIndexAndWorkspaceTests
         await Assert.ThrowsAsync<InvalidOperationException>(() =>
             repo.CheckoutBranchAsync("master", createBranch: true, force: true, overwriteBranch: false));
     }
+
+    [Fact]
+    public async Task CheckoutCommitAsync_SwitchesToCommit_DetachesHead()
+    {
+        using var testRepo = GitTestRepository.Create();
+        testRepo.Commit("First commit", ("file1.txt", "v1"));
+        var firstCommit = testRepo.Head.ToString();
+
+        testRepo.Commit("Second commit", ("file2.txt", "v2"));
+        var secondCommit = testRepo.Head.ToString();
+
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+        Assert.False(await repo.IsHeadDetachedAsync());
+
+        // Checkout first commit directly
+        await repo.CheckoutCommitAsync(firstCommit);
+
+        Assert.True(await repo.IsHeadDetachedAsync());
+        Assert.True(File.Exists(Path.Combine(testRepo.WorkingDirectory, "file1.txt")));
+        Assert.False(File.Exists(Path.Combine(testRepo.WorkingDirectory, "file2.txt")));
+
+        // Checkout same commit again - should succeed as no-op
+        await repo.CheckoutCommitAsync(firstCommit);
+        Assert.True(await repo.IsHeadDetachedAsync());
+    }
+
+    [Fact]
+    public async Task CheckoutCommitAsync_WithDirtyWorkingTree_ThrowsInvalidOperationException()
+    {
+        using var testRepo = GitTestRepository.Create();
+        testRepo.Commit("Commit 1", ("file1.txt", "v1"));
+        var c1 = testRepo.Head.ToString();
+        testRepo.Commit("Commit 2", ("file1.txt", "v2"));
+
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+        await File.WriteAllTextAsync(Path.Combine(testRepo.WorkingDirectory, "file1.txt"), "dirty");
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => repo.CheckoutCommitAsync(c1));
+
+        // With force: true, checkout should succeed
+        await repo.CheckoutCommitAsync(c1, force: true);
+        Assert.Equal("v1", await File.ReadAllTextAsync(Path.Combine(testRepo.WorkingDirectory, "file1.txt")));
+    }
+
+    [Fact]
+    public async Task CheckoutCommitAsync_InvalidCommitIsh_ThrowsArgumentException()
+    {
+        using var testRepo = GitTestRepository.Create();
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+
+        await Assert.ThrowsAsync<ArgumentException>(() => repo.CheckoutCommitAsync(""));
+    }
+
+    [Fact]
+    public async Task CheckoutOrphanBranchAsync_Empty_ClearsIndexAndWorkspace()
+    {
+        using var testRepo = GitTestRepository.Create();
+        testRepo.Commit("Initial", ("file1.txt", "content1"), ("file2.txt", "content2"));
+
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+        await repo.CheckoutOrphanBranchAsync("empty-orphan", empty: true);
+
+        Assert.Equal("empty-orphan", await repo.GetCurrentBranchNameAsync(allowUnborn: true));
+        Assert.False(File.Exists(Path.Combine(testRepo.WorkingDirectory, "file1.txt")));
+        Assert.False(File.Exists(Path.Combine(testRepo.WorkingDirectory, "file2.txt")));
+
+        var index = await GitIndex.ReadAsync(repo.IndexManager.IndexPath, repo.HashLengthBytes);
+        Assert.Empty(index.Entries);
+    }
+
+    [Fact]
+    public async Task CheckoutOrphanBranchAsync_WithStartPoint_PreservesSpecifiedCommitFiles()
+    {
+        using var testRepo = GitTestRepository.Create();
+        testRepo.Commit("Commit 1", ("file1.txt", "v1"));
+        var c1 = testRepo.Head.ToString();
+        testRepo.Commit("Commit 2", ("file2.txt", "v2"));
+
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+        await repo.CheckoutOrphanBranchAsync("orphan-from-c1", empty: false, startPoint: c1);
+
+        Assert.Equal("orphan-from-c1", await repo.GetCurrentBranchNameAsync(allowUnborn: true));
+        Assert.True(File.Exists(Path.Combine(testRepo.WorkingDirectory, "file1.txt")));
+        Assert.False(File.Exists(Path.Combine(testRepo.WorkingDirectory, "file2.txt")));
+    }
+
+    [Fact]
+    public async Task CheckoutOrphanBranchAsync_InvalidBranchName_ThrowsArgumentException()
+    {
+        using var testRepo = GitTestRepository.Create();
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+
+        await Assert.ThrowsAsync<ArgumentException>(() => repo.CheckoutOrphanBranchAsync(""));
+    }
+
+    [Fact]
+    public async Task CheckoutOrphanBranchAsync_AlreadyExistingBranch_ThrowsInvalidOperationException()
+    {
+        using var testRepo = GitTestRepository.Create();
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => repo.CheckoutOrphanBranchAsync("master"));
+    }
+
+    [Fact]
+    public async Task CheckoutOrphanBranchAsync_DirtyWorkingTree_ThrowsInvalidOperationException()
+    {
+        using var testRepo = GitTestRepository.Create();
+        testRepo.Commit("Commit 1", ("file1.txt", "v1"));
+        var c1 = testRepo.Head.ToString();
+
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+        await File.WriteAllTextAsync(Path.Combine(testRepo.WorkingDirectory, "file1.txt"), "dirty");
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => repo.CheckoutOrphanBranchAsync("orphan2", startPoint: c1));
+    }
 }
 
 
