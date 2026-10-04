@@ -9,8 +9,9 @@ internal static class StatusFormatter
         TextWriter writer,
         CancellationToken ct)
     {
-        var branch = await repo.GetCurrentBranchNameAsync(ct).ConfigureAwait(false);
+        var branch = await repo.GetCurrentBranchNameAsync(allowUnborn: true, ct).ConfigureAwait(false);
         var isDetached = await repo.IsHeadDetachedAsync(ct).ConfigureAwait(false);
+        var headHash = await repo.ReferenceStore.TryResolveReferenceAsync("HEAD", ct).ConfigureAwait(false);
 
         if (isDetached)
         {
@@ -19,34 +20,45 @@ internal static class StatusFormatter
         }
         else
         {
-            await writer.WriteLineAsync($"On branch {branch}");
+            await writer.WriteLineAsync($"On branch {branch ?? "main"}");
 
-            // Tracking status
-            try
+            if (!headHash.HasValue)
             {
-                var tracking = await repo.GetTrackingStatusAsync(branch, ct).ConfigureAwait(false);
-                if (tracking.HasUpstream)
+                await writer.WriteLineAsync().ConfigureAwait(false);
+                await writer.WriteLineAsync("No commits yet").ConfigureAwait(false);
+            }
+            else
+            {
+                // Tracking status
+                try
                 {
-                    if (tracking.IsSynchronized)
+                    if (branch != null)
                     {
-                        await writer.WriteLineAsync($"Your branch is up to date with '{tracking.UpstreamBranch}'.");
-                    }
-                    else if (tracking.AheadCount > 0 && tracking.BehindCount == 0)
-                    {
-                        await writer.WriteLineAsync($"Your branch is ahead of '{tracking.UpstreamBranch}' by {tracking.AheadCount} commit{(tracking.AheadCount == 1 ? "" : "s")}.");
-                    }
-                    else if (tracking.BehindCount > 0 && tracking.AheadCount == 0)
-                    {
-                        await writer.WriteLineAsync($"Your branch is behind '{tracking.UpstreamBranch}' by {tracking.BehindCount} commit{(tracking.BehindCount == 1 ? "" : "s")}, and can be fast-forwarded.");
-                    }
-                    else if (tracking.AheadCount > 0 && tracking.BehindCount > 0)
-                    {
-                        await writer.WriteLineAsync($"Your branch and '{tracking.UpstreamBranch}' have diverged,");
-                        await writer.WriteLineAsync($"and have {tracking.AheadCount} and {tracking.BehindCount} different commits each, respectively.");
+                        var tracking = await repo.GetTrackingStatusAsync(branch, ct).ConfigureAwait(false);
+                        if (tracking.HasUpstream)
+                        {
+                            if (tracking.IsSynchronized)
+                            {
+                                await writer.WriteLineAsync($"Your branch is up to date with '{tracking.UpstreamBranch}'.");
+                            }
+                            else if (tracking.AheadCount > 0 && tracking.BehindCount == 0)
+                            {
+                                await writer.WriteLineAsync($"Your branch is ahead of '{tracking.UpstreamBranch}' by {tracking.AheadCount} commit{(tracking.AheadCount == 1 ? "" : "s")}.");
+                            }
+                            else if (tracking.BehindCount > 0 && tracking.AheadCount == 0)
+                            {
+                                await writer.WriteLineAsync($"Your branch is behind '{tracking.UpstreamBranch}' by {tracking.BehindCount} commit{(tracking.BehindCount == 1 ? "" : "s")}, and can be fast-forwarded.");
+                            }
+                            else if (tracking.AheadCount > 0 && tracking.BehindCount > 0)
+                            {
+                                await writer.WriteLineAsync($"Your branch and '{tracking.UpstreamBranch}' have diverged,");
+                                await writer.WriteLineAsync($"and have {tracking.AheadCount} and {tracking.BehindCount} different commits each, respectively.");
+                            }
+                        }
                     }
                 }
+                catch (Exception ex) when (ex is not OperationCanceledException) { /* tracking info is best-effort */ }
             }
-            catch (Exception ex) when (ex is not OperationCanceledException) { /* tracking info is best-effort */ }
         }
 
         await writer.WriteLineAsync().ConfigureAwait(false);
@@ -119,7 +131,18 @@ internal static class StatusFormatter
 
         if (status.IsClean && !mergeInProgress)
         {
-            await writer.WriteLineAsync("nothing to commit, working tree clean").ConfigureAwait(false);
+            if (!headHash.HasValue)
+            {
+                await writer.WriteLineAsync("nothing to commit (create/copy files and use \"git add\" to track)").ConfigureAwait(false);
+            }
+            else
+            {
+                await writer.WriteLineAsync("nothing to commit, working tree clean").ConfigureAwait(false);
+            }
+        }
+        else if (!headHash.HasValue && status.StagedEntries.Count == 0 && status.UntrackedEntries.Count > 0)
+        {
+            await writer.WriteLineAsync("nothing added to commit but untracked files present (use \"git add\" to track)").ConfigureAwait(false);
         }
     }
 

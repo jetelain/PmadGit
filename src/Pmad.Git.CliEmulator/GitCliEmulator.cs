@@ -207,25 +207,48 @@ public sealed class GitCliEmulator : IGitCliEmulator, IDisposable, IAsyncDisposa
         }
 
         var isLog = false;
+        var isCommit = false;
         var list = new List<string>(args.Length);
 
         for (var i = 0; i < args.Length; i++)
         {
             var arg = args[i];
-            if (!isLog)
+            if (!isLog && !isCommit)
             {
                 if (arg == "log")
                 {
                     isLog = true;
                 }
+                else if (arg == "commit")
+                {
+                    isCommit = true;
+                }
                 list.Add(arg);
             }
-            else
+            else if (isLog)
             {
                 if (arg.Length > 1 && arg[0] == '-' && int.TryParse(arg.AsSpan(1), out var count) && count >= 0)
                 {
                     list.Add("-n");
                     list.Add(arg[1..]);
+                }
+                else
+                {
+                    list.Add(arg);
+                }
+            }
+            else if (isCommit)
+            {
+                if (arg == "-am")
+                {
+                    list.Add("-a");
+                    list.Add("-m");
+                }
+                else if (arg.StartsWith("-am", StringComparison.Ordinal) && arg.Length > 3)
+                {
+                    list.Add("-a");
+                    list.Add("-m");
+                    list.Add(arg[3..]);
                 }
                 else
                 {

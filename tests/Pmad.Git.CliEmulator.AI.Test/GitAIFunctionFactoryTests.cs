@@ -145,6 +145,22 @@ public class GitAIFunctionFactoryTests
         Assert.Equal("(success, no output)", getResult.Trim());
     }
 
+    [Fact]
+    public async Task CreateFromString_WithCommandParameterAlias_Succeeds()
+    {
+        using var testRepo = GitTestRepository.Create();
+        using var emulator = GitCliEmulator.Open(testRepo.WorkingDirectory);
+        var fn = GitAIFunctionFactory.CreateFromString(emulator);
+
+        var argsList = new AIFunctionArguments
+        {
+            ["command"] = "status"
+        };
+        var result = (await fn.InvokeAsync(argsList))?.ToString() ?? string.Empty;
+
+        Assert.Contains("nothing to commit", result);
+    }
+
     // ── Extension methods ──────────────────────────────────────────────────
 
     [Fact]
