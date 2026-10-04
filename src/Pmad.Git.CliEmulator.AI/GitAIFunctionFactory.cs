@@ -56,12 +56,10 @@ public static class GitAIFunctionFactory
         var approval = userApproval ?? DenyApproval.Instance;
 
         return AIFunctionFactory.Create(
-            async ([Description("Space-separated git command and arguments, e.g. \"status\", \"commit -m 'Initial commit'\", \"log --oneline -10\"")] string? commandLine = null,
-                   [Description("Alias for commandLine. Space-separated git command and arguments, e.g. \"status\", \"commit -m 'Initial commit'\"")] string? command = null,
-                   CancellationToken cancellationToken = default) =>
+            async ([Description("Space-separated git command and arguments, e.g. \"status\", \"commit -m 'Initial commit'\", \"log --oneline -10\"")] string command,
+                   CancellationToken cancellationToken) =>
             {
-                var cmd = !string.IsNullOrWhiteSpace(commandLine) ? commandLine : (command ?? string.Empty);
-                var args = ParseCommandLine(cmd);
+                var args = ParseCommandLine(command);
                 var response = await emulator.InvokeAsync(args, approval, cancellationToken).ConfigureAwait(false);
                 return FormatResponse(response);
             },
