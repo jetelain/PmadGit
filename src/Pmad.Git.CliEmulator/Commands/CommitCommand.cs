@@ -12,22 +12,20 @@ internal static class CommitCommand
         var cmd = new Command("commit") { Description = "Record changes to the repository" };
         var messageOpt = new Option<string?>("-m", "--message") { Description = "Commit message" };
         var allOpt = new Option<bool>("-a", "--all") { Description = "Stage all tracked modified/deleted files before committing" };
-        var allMessageOpt = new Option<string?>("-am") { Description = "Stage all tracked modified/deleted files and commit with message" };
         var amendOpt = new Option<bool>("--amend") { Description = "Amend the last commit" };
         var allowEmptyOpt = new Option<bool>("--allow-empty") { Description = "Allow recording an empty commit" };
         var noEditOpt = new Option<bool>("--no-edit") { Description = "Use the selected commit message without editing" };
 
         cmd.Options.Add(messageOpt);
         cmd.Options.Add(allOpt);
-        cmd.Options.Add(allMessageOpt);
         cmd.Options.Add(amendOpt);
         cmd.Options.Add(allowEmptyOpt);
         cmd.Options.Add(noEditOpt);
 
         cmd.SetAction(async (ParseResult pr, CancellationToken ct) =>
         {
-            var message = pr.GetValue(messageOpt) ?? pr.GetValue(allMessageOpt);
-            var all = pr.GetValue(allOpt) || pr.GetValue(allMessageOpt) != null;
+            var message = pr.GetValue(messageOpt);
+            var all = pr.GetValue(allOpt);
             var amend = pr.GetValue(amendOpt);
             var allowEmpty = pr.GetValue(allowEmptyOpt);
             var noEdit = pr.GetValue(noEditOpt);
