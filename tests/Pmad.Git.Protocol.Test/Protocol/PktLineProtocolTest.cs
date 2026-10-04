@@ -220,4 +220,127 @@ public sealed class PktLineProtocolTest
         Assert.NotNull(flush);
         Assert.True(flush.Value.IsFlush);
     }
+
+    [Fact]
+    public void PktLineReader_NullStream_ThrowsArgumentNullException()
+    {
+        Assert.Throws<ArgumentNullException>(() => new PktLineReader(null!));
+    }
+
+    [Fact]
+    public void PktLineReader_SyncRead_ReadsPacketsAndControlFrames()
+    {
+        // 0009test\n000000010002
+        var data = "0009test\n000000010002";
+        var stream = new MemoryStream(Encoding.UTF8.GetBytes(data));
+        var reader = new PktLineReader(stream);
+
+        var p1 = reader.Read();
+        Assert.NotNull(p1);
+        Assert.Equal("test\n", p1.Value.AsString());
+        Assert.False(p1.Value.IsEmpty);
+
+        var flush = reader.Read();
+        Assert.NotNull(flush);
+        Assert.True(flush.Value.IsFlush);
+        Assert.True(flush.Value.IsEmpty);
+
+        var delim = reader.Read();
+        Assert.NotNull(delim);
+        Assert.True(delim.Value.IsDelimiter);
+
+        var end = reader.Read();
+        Assert.NotNull(end);
+        Assert.True(end.Value.IsResponseEnd);
+
+        var eof = reader.Read();
+        Assert.Null(eof);
+    }
+
+    [Fact]
+    public void PktLineReader_SyncRead_TruncatedHeader_ThrowsInvalidDataException()
+    {
+        var stream = new MemoryStream(Encoding.UTF8.GetBytes("00"));
+        var reader = new PktLineReader(stream);
+
+        Assert.Throws<InvalidDataException>(() => reader.Read());
+    }
+
+    [Fact]
+    public async Task PktLineReader_AsyncRead_TruncatedHeader_ThrowsInvalidDataException()
+    {
+        var stream = new MemoryStream(Encoding.UTF8.GetBytes("00"));
+        var reader = new PktLineReader(stream);
+
+        await Assert.ThrowsAsync<InvalidDataException>(() => reader.ReadAsync(CancellationToken.None));
+    }
+
+    [Fact]
+    public void PktLineReader_SyncRead_InvalidHex_ThrowsInvalidDataException()
+    {
+        var stream = new MemoryStream(Encoding.UTF8.GetBytes("000z"));
+        var reader = new PktLineReader(stream);
+
+        var ex = Assert.Throws<InvalidDataException>(() => reader.Read());
+        Assert.Contains("non-hex", ex.Message);
+    }
+
+    [Fact]
+    public void PktLineReader_SyncRead_InvalidLength3_ThrowsInvalidDataException()
+    {
+        var stream = new MemoryStream(Encoding.UTF8.GetBytes("0003"));
+        var reader = new PktLineReader(stream);
+
+        Assert.Throws<InvalidDataException>(() => reader.Read());
+    }
+
+    [Fact]
+    public void PktLineReader_SyncRead_ExceedingLength_ThrowsInvalidDataException()
+    {
+        var stream = new MemoryStream(Encoding.UTF8.GetBytes("ffff" + new string('a', 10)));
+        var reader = new PktLineReader(stream);
+
+        Assert.Throws<InvalidDataException>(() => reader.Read());
+    }
+
+    [Fact]
+    public void PktLineReader_SyncRead_TruncatedPayload_ThrowsEndOfStreamException()
+    {
+        // 000a = 10 bytes (4 header + 6 payload), but only 2 payload bytes provided
+        var stream = new MemoryStream(Encoding.UTF8.GetBytes("000a12"));
+        var reader = new PktLineReader(stream);
+
+        Assert.Throws<EndOfStreamException>(() => reader.Read());
+    }
+
+    [Fact]
+    public async Task PktLineReader_AsyncRead_TruncatedPayload_ThrowsEndOfStreamException()
+    {
+        var stream = new MemoryStream(Encoding.UTF8.GetBytes("000a12"));
+        var reader = new PktLineReader(stream);
+
+        await Assert.ThrowsAsync<EndOfStreamException>(() => reader.ReadAsync(CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task PktLineReader_AsyncRead_EmptyStream_ReturnsNull()
+    {
+        var stream = new MemoryStream([]);
+        var reader = new PktLineReader(stream);
+
+        var result = await reader.ReadAsync(CancellationToken.None);
+        Assert.Null(result);
+    }
+
+    [Fact]
+    public void PktLine_RecordProperties()
+    {
+        var pkt = new PktLine(Encoding.UTF8.GetBytes("hello"), IsFlush: false, IsDelimiter: false, IsResponseEnd: false);
+        Assert.False(pkt.IsEmpty);
+        Assert.Equal("hello", pkt.AsString());
+        Assert.False(pkt.IsFlush);
+        Assert.False(pkt.IsDelimiter);
+        Assert.False(pkt.IsResponseEnd);
+    }
 }
+

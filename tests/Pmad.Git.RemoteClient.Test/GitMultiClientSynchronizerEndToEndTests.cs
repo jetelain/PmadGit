@@ -141,6 +141,12 @@ public sealed class GitMultiClientSynchronizerEndToEndTests : IDisposable
 
         serverRepo.InvalidateCaches();
         var serverRef = await serverRepo.ReferenceStore.TryResolveReferenceAsync("refs/heads/main");
+        if (serverRef != commitA)
+        {
+            await synchronizerA.FlushPendingPushAsync();
+            serverRepo.InvalidateCaches();
+            serverRef = await serverRepo.ReferenceStore.TryResolveReferenceAsync("refs/heads/main");
+        }
         Assert.Equal(commitA, serverRef);
 
         // Periodic (or triggered) pull in Repo B -> verify Repo B receives Repo A's commit

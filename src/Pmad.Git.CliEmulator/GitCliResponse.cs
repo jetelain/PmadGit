@@ -16,12 +16,4 @@ public sealed class GitCliResponse
 
     /// <summary>Gets a value indicating whether the command succeeded (exit code 0).</summary>
     public bool IsSuccess => ExitCode == 0;
-
-    /// <summary>Creates a successful response with optional stdout.</summary>
-    public static GitCliResponse Success(string stdout = "") =>
-        new() { ExitCode = 0, StdOut = stdout };
-
-    /// <summary>Creates an error response.</summary>
-    public static GitCliResponse Error(string stderr, int exitCode = 1) =>
-        new() { ExitCode = exitCode, StdErr = stderr };
 }

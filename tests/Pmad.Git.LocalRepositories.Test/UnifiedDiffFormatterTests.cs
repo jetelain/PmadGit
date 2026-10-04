@@ -276,5 +276,55 @@ public class UnifiedDiffFormatterTests
         Assert.Contains("-line2", diffText);
         Assert.Contains("+line2\r", diffText);
     }
+
+    [Fact]
+    public void DiffLine_ToString_ReturnsText()
+    {
+        var line = new UnifiedDiffFormatter.DiffLine("content-test", true);
+        Assert.Equal("content-test", line.Text);
+        Assert.True(line.HasNewline);
+        Assert.Equal("content-test", line.ToString());
+    }
+
+    [Fact]
+    public void SplitLines_NullOrEmpty_ReturnsEmpty()
+    {
+        var (linesNull, hasNlNull) = UnifiedDiffFormatter.SplitLines(null);
+        Assert.Empty(linesNull);
+        Assert.True(hasNlNull);
+
+        var (linesEmpty, hasNlEmpty) = UnifiedDiffFormatter.SplitLines([]);
+        Assert.Empty(linesEmpty);
+        Assert.True(hasNlEmpty);
+    }
+
+    [Fact]
+    public void CreateHunks_NullChanges_ThrowsArgumentNullException()
+    {
+        Assert.Throws<ArgumentNullException>(() => UnifiedDiffFormatter.CreateHunks(null!));
+    }
+
+    [Fact]
+    public void FormatFileDiff_ModeChange_OutputsModeInfo()
+    {
+        var content = Encoding.UTF8.GetBytes("sample\n");
+        var hash = GitHashHelper.ComputeBlobHash(content);
+
+        var (diffText, ins, del) = UnifiedDiffFormatter.FormatFileDiff(
+            oldPath: "file.sh",
+            newPath: "file.sh",
+            oldHash: hash,
+            newHash: hash,
+            oldContent: content,
+            newContent: content,
+            oldMode: "100644",
+            newMode: "100755");
+
+        Assert.Contains("old mode 100644", diffText);
+        Assert.Contains("new mode 100755", diffText);
+        Assert.Equal(0, ins);
+        Assert.Equal(0, del);
+    }
 }
+
 

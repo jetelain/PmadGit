@@ -56,6 +56,25 @@ public class ReadOnlyCommandsTests
     }
 
     [Fact]
+    public async Task Log_FullFormat_OutputsAuthorAndDate()
+    {
+        using var testRepo = GitTestRepository.Create();
+        testRepo.Commit("Second commit\n\nCommit details line", ("file2.txt", "content2"));
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+        var emulator = new GitCliEmulator(repo);
+        var approval = new TestUserApproval();
+
+        var response = await emulator.InvokeAsync(["log"], approval);
+
+        Assert.Equal(0, response.ExitCode);
+        Assert.Contains("commit ", response.StdOut);
+        Assert.Contains("Author: Test User <test@example.com>", response.StdOut);
+        Assert.Contains("Date:", response.StdOut);
+        Assert.Contains("Second commit", response.StdOut);
+        Assert.Contains("Commit details line", response.StdOut);
+    }
+
+    [Fact]
     public async Task Log_MaxCount_LimitsCommits()
     {
         using var testRepo = GitTestRepository.Create();
