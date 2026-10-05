@@ -48,6 +48,48 @@ public class CommitCommandTests
     }
 
     [Fact]
+    public async Task Commit_AmFlag_StagesTrackedModificationsAndCommits()
+    {
+        using var testRepo = GitTestRepository.Create();
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+        var emulator = new GitCliEmulator(repo);
+        var approval = new TestUserApproval();
+
+        // Modify an already-tracked file without staging it
+        var readmePath = Path.Combine(testRepo.WorkingDirectory, "README.md");
+        File.WriteAllText(readmePath, "modified by test -am");
+
+        // -am should auto-stage the tracked modification and commit
+        var commitResponse = await emulator.InvokeAsync(["commit", "-am", "Auto-stage with -am"], approval);
+
+        Assert.Equal(0, commitResponse.ExitCode);
+        Assert.Contains("Auto-stage with -am", commitResponse.StdOut);
+
+        // Working tree should now be clean
+        var statusResponse = await emulator.InvokeAsync(["status"], approval);
+        Assert.Contains("nothing to commit", statusResponse.StdOut);
+    }
+
+    [Fact]
+    public async Task Commit_WithUnstagedChanges_ReturnsHelpfulGuidanceError()
+    {
+        using var testRepo = GitTestRepository.Create();
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+        var emulator = new GitCliEmulator(repo);
+        var approval = new TestUserApproval();
+
+        // Modify an already-tracked file without staging it
+        var readmePath = Path.Combine(testRepo.WorkingDirectory, "README.md");
+        File.WriteAllText(readmePath, "modified without staging");
+
+        // commit -m without -a should return helpful guidance error
+        var commitResponse = await emulator.InvokeAsync(["commit", "-m", "Failing commit"], approval);
+
+        Assert.Equal(1, commitResponse.ExitCode);
+        Assert.Contains("error: nothing to commit (working tree has unstaged changes). Did you forget 'git add <files>' or 'git commit -a'?", commitResponse.StdErr);
+    }
+
+    [Fact]
     public async Task Commit_Amend_OnPushedCommit_RequiresHistoryRewriteApproval()
     {
         using var testRepo = GitTestRepository.Create();

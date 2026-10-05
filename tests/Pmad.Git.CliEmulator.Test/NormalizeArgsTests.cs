@@ -82,4 +82,20 @@ public class NormalizeArgsTests
         var result = GitCliEmulator.NormalizeArgs(args);
         Assert.Equal(["-C", "some/path", "log", "-n", "10"], result);
     }
+
+    [Fact]
+    public void NormalizeArgs_Commit_AmFlag_NormalizedToAAndMFlags()
+    {
+        string[] args = ["commit", "-am", "my message"];
+        var result = GitCliEmulator.NormalizeArgs(args);
+        Assert.Equal(["commit", "-a", "-m", "my message"], result);
+    }
+
+    [Fact]
+    public void NormalizeArgs_Commit_AmFlagAttachedMessage_NormalizedToAAndMFlags()
+    {
+        string[] args = ["commit", "-amMy message"];
+        var result = GitCliEmulator.NormalizeArgs(args);
+        Assert.Equal(["commit", "-a", "-m", "My message"], result);
+    }
 }

@@ -225,11 +225,11 @@ public class GitAIFunctionFactoryTests
         return result?.ToString() ?? string.Empty;
     }
 
-    private static async Task<string> InvokeWithStringAsync(AIFunction fn, string commandLine)
+    private static async Task<string> InvokeWithStringAsync(AIFunction fn, string command)
     {
         var argsList = new AIFunctionArguments
         {
-            ["commandLine"] = commandLine
+            ["command"] = command
         };
         var result = await fn.InvokeAsync(argsList);
         return result?.ToString() ?? string.Empty;

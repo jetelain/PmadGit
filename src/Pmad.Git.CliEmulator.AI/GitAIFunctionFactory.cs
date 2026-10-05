@@ -56,10 +56,10 @@ public static class GitAIFunctionFactory
         var approval = userApproval ?? DenyApproval.Instance;
 
         return AIFunctionFactory.Create(
-            async ([Description("Space-separated git command and arguments, e.g. \"status\", \"commit -m 'Initial commit'\", \"log --oneline -10\"")] string commandLine,
+            async ([Description("Space-separated git command and arguments, e.g. \"status\", \"commit -m 'Initial commit'\", \"log --oneline -10\"")] string command,
                    CancellationToken cancellationToken) =>
             {
-                var args = ParseCommandLine(commandLine);
+                var args = ParseCommandLine(command);
                 var response = await emulator.InvokeAsync(args, approval, cancellationToken).ConfigureAwait(false);
                 return FormatResponse(response);
             },

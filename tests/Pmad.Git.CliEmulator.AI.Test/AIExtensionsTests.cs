@@ -81,7 +81,7 @@ public class AIExtensionsTests
         File.WriteAllText(Path.Combine(testRepo.WorkingDirectory, "README.md"), "modified");
 
         var fn = emulator.CreateAIFunctionFromString(new AlwaysDenyApproval());
-        var result = await fn.InvokeAsync(new AIFunctionArguments { ["commandLine"] = "restore README.md" });
+        var result = await fn.InvokeAsync(new AIFunctionArguments { ["command"] = "restore README.md" });
 
         Assert.StartsWith("[exit 130]", result?.ToString());
     }
@@ -96,7 +96,7 @@ public class AIExtensionsTests
         File.WriteAllText(Path.Combine(testRepo.WorkingDirectory, "README.md"), "modified");
 
         var fn = emulator.CreateAIFunctionFromString();
-        var result = await fn.InvokeAsync(new AIFunctionArguments { ["commandLine"] = "restore README.md" });
+        var result = await fn.InvokeAsync(new AIFunctionArguments { ["command"] = "restore README.md" });
 
         Assert.StartsWith("[exit 130]", result?.ToString());
     }
@@ -110,7 +110,7 @@ public class AIExtensionsTests
 
         var fn = emulator.CreateAIFunctionFromString();
 
-        var result = await fn.InvokeAsync(new AIFunctionArguments { ["commandLine"] = "log --oneline" });
+        var result = await fn.InvokeAsync(new AIFunctionArguments { ["command"] = "log --oneline" });
 
         Assert.Contains("Initial commit", result?.ToString());
         Assert.DoesNotContain("[exit ", result?.ToString());

@@ -11,7 +11,7 @@ internal static class BranchFormatter
         TextWriter writer,
         CancellationToken ct)
     {
-        var currentBranch = await repo.GetCurrentBranchNameAsync(ct).ConfigureAwait(false);
+        var currentBranch = await repo.GetCurrentBranchNameAsync(allowUnborn: true, ct).ConfigureAwait(false);
         var branches = await repo.GetBranchesAsync(includeRemote: false, ct).ConfigureAwait(false);
 
         foreach (var branch in branches.OrderBy(b => b, StringComparer.Ordinal))

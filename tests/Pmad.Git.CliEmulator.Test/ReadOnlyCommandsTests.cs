@@ -40,6 +40,57 @@ public class ReadOnlyCommandsTests
     }
 
     [Fact]
+    public async Task Status_FreshlyInitializedRepository_ReportsOnBranchMainAndNoCommitsYet()
+    {
+        var tempDir = Path.Combine(Path.GetTempPath(), "git-fresh-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempDir);
+        try
+        {
+            using var repo = GitRepositoryWithIndexAndWorkspace.Init(tempDir, initialBranch: "main");
+            using var emulator = new GitCliEmulator(repo);
+            var approval = new TestUserApproval();
+
+            var response = await emulator.InvokeAsync(["status"], approval);
+
+            Assert.Equal(0, response.ExitCode);
+            Assert.Contains("On branch main", response.StdOut);
+            Assert.DoesNotContain("On branch \n", response.StdOut);
+            Assert.DoesNotContain("On branch \r", response.StdOut);
+            Assert.Contains("No commits yet", response.StdOut);
+            Assert.Contains("nothing to commit", response.StdOut);
+        }
+        finally
+        {
+            if (Directory.Exists(tempDir))
+            {
+                Directory.Delete(tempDir, recursive: true);
+            }
+        }
+    }
+
+    [Fact]
+    public async Task Status_ImmediatelyAfterFileEdit_AccuratelyDetectsModifiedFileWithoutDelay()
+    {
+        using var testRepo = GitTestRepository.Create();
+        using var repo = GitRepositoryWithIndexAndWorkspace.Open(testRepo.WorkingDirectory);
+        var emulator = new GitCliEmulator(repo);
+        var approval = new TestUserApproval();
+
+        var readmePath = Path.Combine(testRepo.WorkingDirectory, "README.md");
+        File.WriteAllText(readmePath, "content modified right now");
+
+        var response = await emulator.InvokeAsync(["status"], approval);
+
+        Assert.Equal(0, response.ExitCode);
+        Assert.Contains("Changes not staged for commit:", response.StdOut);
+        Assert.Contains("README.md", response.StdOut);
+
+        var porcelain = await emulator.InvokeAsync(["status", "--porcelain"], approval);
+        Assert.Equal(0, porcelain.ExitCode);
+        Assert.Contains(" M README.md", porcelain.StdOut);
+    }
+
+    [Fact]
     public async Task Log_Oneline_OutputsShortHashesAndSubjects()
     {
         using var testRepo = GitTestRepository.Create();
